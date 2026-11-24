@@ -4,9 +4,9 @@
 
 **Blocked by：** None (can start immediately; requires Reference Mac)
 
-**Status:** ready-for-agent
+**Status:** needs-info
 
-- [ ] 记录 Mac 型号、macOS Build 和私有虚拟显示器 API 的实际可用性。
+- [x] 记录 Mac 型号、macOS Build 和私有虚拟显示器 API 的实际可用性。
 - [ ] 创建原生分辨率、HiDPI Extended Display，并持续采集；锁屏/睡眠后的销毁重建不残留幽灵副屏。
 - [ ] 最小 VideoToolbox 探针以实时模式、无 B 帧生成 HEVC 和 H.264 Annex-B 样本，包含所需参数集及色彩元数据。
 - [ ] 将真实码流样本和元数据提供给 Gate 3，不等到端到端集成才发现互操作问题。
@@ -24,3 +24,19 @@
   - 未产生真实 HEVC/H.264 Annex-B 样本。
 - 因此 issue 07 的 Annex-B Host 互操作仍被本任务阻塞。
 - 需要人在已登录图形桌面的 Reference Host 上授予录屏权限并运行 live 流程。
+
+- 2026-11-24（第二次，已在真实登录桌面执行 live）：**Gate 0 `failed`，不是 pending。**
+  - 环境：`Mac16,12` / macOS `27.3` (`26C5047e`) / Xcode `27.2` (`27B52`)。
+  - Screen Recording 预检通过，`CGVirtualDisplay` 可创建、可销毁，销毁后无幽灵副屏。
+  - **阻塞点**：该 macOS 版本不再为 `CGVirtualDisplay` 发布 2x 模式。
+    `hiDPI = 1` 返回成功、`CGVirtualDisplay.hiDPI` 读回 `2`，但
+    `CGDisplayCopyAllDisplayModes` 只有点/像素相等的模式，`NSScreen.backingScaleFactor = 1.0`。
+    已试 `maxPixelsWide` 1400/2800/5600 × 请求 1400x920 或 2800x1840 ×
+    `hiDPI` 1/2 × `isReference` 开/关，均未产生 `1400x920 pt / 2800x1840 px`；
+    `isReference = YES` 时虚拟屏直接不上线。
+  - 因此采集与编码从未启动，无 Annex-B 样本，issue 07 的互操作仍阻塞。
+  - 证据：`probes/gate0/records/local-live-2026-11-24.json`、`records/README.md`。
+  - 附带修复：旧清理判定用 `CGDisplayIsOnline`，它对已销毁 ID 返回 `-1`（真值），
+    把每次正常销毁都误报成幽灵屏；已改为查询在线显示列表。
+  - **需要决策**：改用仍支持该私有 API HiDPI 的 macOS 版本，或改用其他已获许可的
+    虚拟显示器实现。这不是继续写代码能解决的问题。

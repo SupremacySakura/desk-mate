@@ -2,6 +2,7 @@
 
 #import <CoreGraphics/CoreGraphics.h>
 #import <dispatch/dispatch.h>
+#import <stdlib.h>
 
 @protocol G0CGVirtualDisplayDescriptor <NSObject>
 - (instancetype)init;
@@ -60,6 +61,49 @@ static NSString *G0ModeSummary(CGDisplayModeRef mode) {
                                       CGDisplayModeGetPixelWidth(mode),
                                       CGDisplayModeGetPixelHeight(mode),
                                       CGDisplayModeGetRefreshRate(mode)];
+}
+
+// CGDisplayIsOnline reports a truthy value (-1) for display IDs that no longer
+// exist, so a released virtual display looks "online" forever. Membership in
+// the online display list is the only reliable liveness check.
+static BOOL G0DisplayIsOnlineInList(uint32_t displayID) {
+    uint32_t count = 0;
+    if (CGGetOnlineDisplayList(0, NULL, &count) != kCGErrorSuccess || count == 0) {
+        return NO;
+    }
+    uint32_t *ids = calloc(count, sizeof(uint32_t));
+    if (ids == NULL) {
+        return NO;
+    }
+    BOOL found = NO;
+    if (CGGetOnlineDisplayList(count, ids, &count) == kCGErrorSuccess) {
+        for (uint32_t index = 0; index < count; index++) {
+            if (ids[index] == displayID) {
+                found = YES;
+                break;
+            }
+        }
+    }
+    free(ids);
+    return found;
+}
+
+static BOOL G0AnyBackingScale2Mode(uint32_t displayID) {
+    CFArrayRef modes = CGDisplayCopyAllDisplayModes(displayID, NULL);
+    if (modes == NULL) {
+        return NO;
+    }
+    BOOL found = NO;
+    for (CFIndex index = 0; index < CFArrayGetCount(modes); index++) {
+        CGDisplayModeRef candidate = (CGDisplayModeRef)CFArrayGetValueAtIndex(modes, index);
+        if (CGDisplayModeGetWidth(candidate) != 0 &&
+            CGDisplayModeGetPixelWidth(candidate) == CGDisplayModeGetWidth(candidate) * 2) {
+            found = YES;
+            break;
+        }
+    }
+    CFRelease(modes);
+    return found;
 }
 
 @implementation G0VirtualDisplaySession {
@@ -193,7 +237,7 @@ static NSString *G0ModeSummary(CGDisplayModeRef mode) {
 
     BOOL online = NO;
     for (NSInteger attempt = 0; attempt < 50; attempt++) {
-        if (CGDisplayIsOnline(_displayID)) {
+        if (G0DisplayIsOnlineInList(_displayID)) {
             online = YES;
             break;
         }
@@ -232,13 +276,18 @@ static NSString *G0ModeSummary(CGDisplayModeRef mode) {
     }
 
     if (chosen == NULL) {
+        const BOOL anyHiDPIMode = G0AnyBackingScale2Mode(_displayID);
+        NSString *hint = anyHiDPIMode
+            ? @""
+            : @" The platform published only 1x modes for this virtual display, so CGVirtualDisplaySettings.hiDPI had no effect on this macOS build.";
         return G0Failure([NSString stringWithFormat:
-            @"no %zux%zu pt / %zux%zu px HiDPI mode was published; available: %@",
+            @"no %zux%zu pt / %zux%zu px HiDPI mode was published; available: %@%@",
             expectedPointWidth,
             expectedPointHeight,
             expectedPixelWidth,
             expectedPixelHeight,
-            self.modeSummaries]);
+            self.modeSummaries,
+            hint]);
     }
 
     CGDisplayModeRef current = CGDisplayCopyDisplayMode(_displayID);
@@ -322,7 +371,7 @@ static NSString *G0ModeSummary(CGDisplayModeRef mode) {
     _displayID = kCGNullDirectDisplay;
 
     for (NSInteger attempt = 0; attempt < 50; attempt++) {
-        if (!CGDisplayIsOnline(oldDisplayID)) {
+        if (!G0DisplayIsOnlineInList(oldDisplayID)) {
             return @{
                 @"ok": @YES,
                 @"destroyed": @YES,
@@ -335,7 +384,7 @@ static NSString *G0ModeSummary(CGDisplayModeRef mode) {
     return @{
         @"ok": @NO,
         @"destroyed": @NO,
-        @"onlineAfter": @(CGDisplayIsOnline(oldDisplayID)),
+        @"onlineAfter": @(G0DisplayIsOnlineInList(oldDisplayID)),
         @"error": @"released CGVirtualDisplay but the display ID remained online; inspect for a ghost display",
     };
 }

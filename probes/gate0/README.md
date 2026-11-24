@@ -1,6 +1,6 @@
 # DeskMate Gate 0 独立探针
 
-Status: **pending / not executed**
+Status: **failed on 2026-11-24 (macOS 27.3 publishes only 1x virtual-display modes)**
 
 这个目录只实现任务单 05 的 Gate 0 探针，不修改规格、ADR 或其他任务单。它不会把“主屏镜像”当作 Extended Display 的回退路径，也不会在未满足前置条件时声称 Gate 0 通过。
 

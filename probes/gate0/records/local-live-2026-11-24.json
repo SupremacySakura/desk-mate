@@ -1,0 +1,244 @@
+{
+  "artifactPlan" : [
+    {
+      "annexB" : true,
+      "codec" : "hevc",
+      "colorMetadata" : [
+        "colorPrimaries",
+        "transferFunction",
+        "yCbCrMatrix"
+      ],
+      "container" : "annex-b",
+      "noBFrames" : true,
+      "parameterSets" : [
+        "VPS",
+        "SPS",
+        "PPS"
+      ],
+      "realTime" : true
+    },
+    {
+      "annexB" : true,
+      "codec" : "h264",
+      "colorMetadata" : [
+        "colorPrimaries",
+        "transferFunction",
+        "yCbCrMatrix"
+      ],
+      "container" : "annex-b",
+      "noBFrames" : true,
+      "parameterSets" : [
+        "SPS",
+        "PPS"
+      ],
+      "realTime" : true
+    }
+  ],
+  "artifacts" : [
+
+  ],
+  "capture" : {
+    "audioEnabled" : false,
+    "audioOutputAdded" : false,
+    "audioRequested" : false,
+    "frameRate" : 60,
+    "framesReceived" : 0,
+    "started" : false,
+    "target" : "created-extended-display-only"
+  },
+  "decision" : "failed",
+  "decisionReason" : "One or more live Gate 0 checks failed: live-display-and-capture: virtual display verification failed: no 1400x920 pt / 2800x1840 px HiDPI mode was published; available: (\n    \"800x526 pt / 800x526 px @ 60.00 Hz\",\n    \"800x600 pt / 800x600 px @ 60.00 Hz\",\n    \"1024x672 pt / 1024x672 px @ 60.00 Hz\",\n    \"1024x768 pt / 1024x768 px @ 60.00 Hz\",\n    \"1280x842 pt / 1280x842 px @ 60.00 Hz\",\n    \"1280x960 pt / 1280x960 px @ 60.00 Hz\",\n    \"1344x884 pt / 1344x884 px @ 60.00 Hz\",\n    \"1344x1008 pt / 1344x1008 px @ 60.00 Hz\",\n    \"1400x920 pt / 1400x920 px @ 60.00 Hz\",\n    \"1600x1052 pt / 1600x1052 px @ 60.00 Hz\",\n    \"1600x1200 pt / 1600x1200 px @ 60.00 Hz\",\n    \"2800x1840 pt / 2800x1840 px @ 60.00 Hz\",\n    \"640x480 pt / 640x480 px @ 60.00 Hz\",\n    \"1400x920 pt / 1400x920 px @ 60.00 Hz\"\n) The platform published only 1x modes for this virtual display, so CGVirtualDisplaySettings.hiDPI had no effect on this macOS build.; cleanup: released CGVirtualDisplay and display ID is offline",
+  "display" : {
+    "created" : true,
+    "destroyed" : true,
+    "displayID" : 40,
+    "failure" : "virtual display verification failed: no 1400x920 pt / 2800x1840 px HiDPI mode was published; available: (\n    \"800x526 pt / 800x526 px @ 60.00 Hz\",\n    \"800x600 pt / 800x600 px @ 60.00 Hz\",\n    \"1024x672 pt / 1024x672 px @ 60.00 Hz\",\n    \"1024x768 pt / 1024x768 px @ 60.00 Hz\",\n    \"1280x842 pt / 1280x842 px @ 60.00 Hz\",\n    \"1280x960 pt / 1280x960 px @ 60.00 Hz\",\n    \"1344x884 pt / 1344x884 px @ 60.00 Hz\",\n    \"1344x1008 pt / 1344x1008 px @ 60.00 Hz\",\n    \"1400x920 pt / 1400x920 px @ 60.00 Hz\",\n    \"1600x1052 pt / 1600x1052 px @ 60.00 Hz\",\n    \"1600x1200 pt / 1600x1200 px @ 60.00 Hz\",\n    \"2800x1840 pt / 2800x1840 px @ 60.00 Hz\",\n    \"640x480 pt / 640x480 px @ 60.00 Hz\",\n    \"1400x920 pt / 1400x920 px @ 60.00 Hz\"\n) The platform published only 1x modes for this virtual display, so CGVirtualDisplaySettings.hiDPI had no effect on this macOS build.; cleanup: released CGVirtualDisplay and display ID is offline",
+    "refreshRate" : 60,
+    "requestedLogicalHeight" : 920,
+    "requestedLogicalWidth" : 1400,
+    "requestedPixelHeight" : 1840,
+    "requestedPixelWidth" : 2800,
+    "scale" : 2
+  },
+  "environment" : {
+    "architecture" : "arm64",
+    "buildVersion" : "26C5047e",
+    "chip" : "Apple M4",
+    "kernelRelease" : "27.3.0",
+    "modelIdentifier" : "Mac16,12",
+    "modelName" : "MacBook Air",
+    "productName" : "macOS",
+    "productVersion" : "27.3",
+    "xcodeBuild" : "27B52",
+    "xcodeVersion" : "27.2"
+  },
+  "generatedAt" : "2026-11-24T09:42:51.762Z",
+  "issue" : ".scratch/deskmate/issues/05-gate0-host-display-capture-encode-distribution.md",
+  "lifecycle" : {
+    "behavior" : "Registered distributed lock/unlock and NSWorkspace sleep/wake observers. No lock or sleep event was observed during this run.",
+    "eventsObserved" : [
+
+    ],
+    "hooksImplemented" : true,
+    "hooksRegistered" : true,
+    "manualSteps" : [
+      "Start a live probe with a duration longer than the manual test.",
+      "Lock the Mac and confirm the report contains screenIsLocked and cleanup completed.",
+      "Unlock the Mac, rerun the live probe, and confirm exactly one new Extended Display appears.",
+      "Put the Mac to sleep and wake it, then confirm the previous Extended Display disappeared.",
+      "Repeat with System Settings > Displays open and verify no stale DeskMate display remains."
+    ]
+  },
+  "mode" : "live",
+  "notExecuted" : [
+    "Start ScreenCaptureKit on the created display.",
+    "Encode real-time HEVC/H.264 Annex-B samples with parameter sets and color metadata.",
+    "Exercise lock and sleep to prove teardown behavior.",
+    "Recreate after unlock/wake and verify no ghost display remains.",
+    "Sign with Developer ID.",
+    "Notarize, staple, and launch through Gatekeeper."
+  ],
+  "prerequisites" : [
+    {
+      "detail" : "Observed model/build match the supplied Reference Mac values.",
+      "id" : "reference-mac",
+      "state" : "passed"
+    },
+    {
+      "detail" : "Screen Recording preflight passed for this invocation.",
+      "id" : "screen-recording-permission",
+      "state" : "passed"
+    },
+    {
+      "detail" : "No Developer ID Application identity is installed; cannot sign or submit this probe.",
+      "id" : "developer-id",
+      "state" : "pending"
+    },
+    {
+      "detail" : "No signed, notarized, stapled artifact was submitted to Gatekeeper.",
+      "id" : "notarization-and-gatekeeper",
+      "state" : "pending"
+    },
+    {
+      "detail" : "virtual display verification failed: no 1400x920 pt / 2800x1840 px HiDPI mode was published; available: (\n    \"800x526 pt / 800x526 px @ 60.00 Hz\",\n    \"800x600 pt / 800x600 px @ 60.00 Hz\",\n    \"1024x672 pt / 1024x672 px @ 60.00 Hz\",\n    \"1024x768 pt / 1024x768 px @ 60.00 Hz\",\n    \"1280x842 pt / 1280x842 px @ 60.00 Hz\",\n    \"1280x960 pt / 1280x960 px @ 60.00 Hz\",\n    \"1344x884 pt / 1344x884 px @ 60.00 Hz\",\n    \"1344x1008 pt / 1344x1008 px @ 60.00 Hz\",\n    \"1400x920 pt / 1400x920 px @ 60.00 Hz\",\n    \"1600x1052 pt / 1600x1052 px @ 60.00 Hz\",\n    \"1600x1200 pt / 1600x1200 px @ 60.00 Hz\",\n    \"2800x1840 pt / 2800x1840 px @ 60.00 Hz\",\n    \"640x480 pt / 640x480 px @ 60.00 Hz\",\n    \"1400x920 pt / 1400x920 px @ 60.00 Hz\"\n) The platform published only 1x modes for this virtual display, so CGVirtualDisplaySettings.hiDPI had no effect on this macOS build.; cleanup: released CGVirtualDisplay and display ID is offline",
+      "id" : "live-display-and-capture",
+      "state" : "failed"
+    },
+    {
+      "detail" : "No lock or sleep event was exercised in this run. Use the manual lifecycle steps.",
+      "id" : "lock-sleep-recovery",
+      "state" : "pending"
+    }
+  ],
+  "privateAPI" : {
+    "classes" : {
+      "CGVirtualDisplay" : true,
+      "CGVirtualDisplayDescriptor" : true,
+      "CGVirtualDisplayMode" : true,
+      "CGVirtualDisplaySettings" : true
+    },
+    "frameworkPath" : "/System/Library/Frameworks/CoreGraphics.framework/CoreGraphics",
+    "liveCreation" : "failed",
+    "notes" : [
+      "Availability is observed on this exact macOS build only.",
+      "The classes are private and have no compatibility or distribution guarantee.",
+      "Static presence does not prove display creation, HiDPI mode switching, or cleanup."
+    ],
+    "requiredSelectors" : {
+      "CGVirtualDisplay" : {
+        "applySettings:" : true,
+        "displayID" : true,
+        "hiDPI" : true,
+        "initWithDescriptor:" : true,
+        "modes" : true
+      },
+      "CGVirtualDisplayDescriptor" : {
+        "init" : true,
+        "setBluePrimary:" : true,
+        "setGreenPrimary:" : true,
+        "setMaxPixelsHigh:" : true,
+        "setMaxPixelsWide:" : true,
+        "setName:" : true,
+        "setProductID:" : true,
+        "setQueue:" : true,
+        "setRedPrimary:" : true,
+        "setSerialNum:" : true,
+        "setSizeInMillimeters:" : true,
+        "setVendorID:" : true,
+        "setWhitePoint:" : true
+      },
+      "CGVirtualDisplayMode" : {
+        "height" : true,
+        "initWithWidth:height:refreshRate:" : true,
+        "refreshRate" : true,
+        "width" : true
+      },
+      "CGVirtualDisplaySettings" : {
+        "setHiDPI:" : true,
+        "setModes:" : true,
+        "setRotation:" : true
+      }
+    },
+    "staticAvailability" : "available"
+  },
+  "probe" : "deskmate-gate0",
+  "referenceEnvironment" : {
+    "confirmed" : true,
+    "detail" : "Observed model/build match the supplied Reference Mac values.",
+    "expectedBuild" : "26C5047e",
+    "expectedModel" : "Mac16,12",
+    "observedBuild" : "26C5047e",
+    "observedModel" : "Mac16,12"
+  },
+  "safety" : {
+    "audioCaptureDisabledByDesign" : true,
+    "displayCreationAuthorized" : true,
+    "liveActionsExecuted" : true,
+    "mainDisplayFallbackUsed" : false,
+    "screenCaptureAuthorized" : true
+  },
+  "schemaVersion" : 1,
+  "signing" : {
+    "detail" : "No Developer ID Application identity is installed; cannot sign or submit this probe.",
+    "developerIDAvailable" : false,
+    "developerIDIdentityCount" : 0,
+    "gatekeeperAssessmentEnabled" : true,
+    "gatekeeperStatus" : "not-executed",
+    "notarizationStatus" : "pending",
+    "notarytoolAvailable" : true,
+    "signingStatus" : "pending"
+  },
+  "videoToolbox" : {
+    "candidates" : [
+      {
+        "codec" : "h264",
+        "encoderID" : "com.apple.videotoolbox.videoencoder.ave.avc",
+        "hardwareAccelerated" : true,
+        "name" : "Apple H.264 (HW)"
+      },
+      {
+        "codec" : "h264",
+        "encoderID" : "com.apple.videotoolbox.videoencoder.h264",
+        "name" : "Apple H.264 (SW)"
+      },
+      {
+        "codec" : "hevc",
+        "encoderID" : "com.apple.videotoolbox.videoencoder.ave.hevc",
+        "hardwareAccelerated" : true,
+        "name" : "Apple HEVC (HW)"
+      },
+      {
+        "codec" : "hevc",
+        "encoderID" : "com.apple.videotoolbox.videoencoder.hevc.vcp",
+        "name" : "Apple HEVC (SW)"
+      }
+    ],
+    "encoderListStatus" : 0,
+    "h264CandidateFound" : true,
+    "hardwareH264CandidateFound" : true,
+    "hardwareHEVCCandidateFound" : true,
+    "hevcCandidateFound" : true,
+    "note" : "The encoder list is advisory. A live VTCompressionSession is required to prove hardware HEVC/H.264 availability and accepted properties; an empty H.264/HEVC list is not by itself a gate failure.",
+    "reportedCandidateCount" : 27
+  }
+}

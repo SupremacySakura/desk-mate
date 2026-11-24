@@ -324,25 +324,30 @@ name | expectation | expected-payload-hex | packet-hex
 
 ## 验证状态
 
-2026-11-24 在本机执行并通过的主机侧检查：
+2026-11-24 实测结果（Host 为 MacBook Air `Mac16,12`，Device 为 MatePad Pro
+`MRDI-W00`）：
 
-- 根 `make clean && make test`：协议 21/21、Session 72/72、调度 15/15。
-- Gate 0：`make test`、`make dry-run`，结论保持 pending。
-- Gate 1 Host：真实 libusb 构建、CTest、语法构建、边界脚本与布局脚本；握手 OUT
-  在 `LIBUSB_ERROR_TIMEOUT` 时重试到 `--handshake-timeout-ms` deadline。Device
-  只构建 unsigned HAP 与 native `.so`，未安装或运行。
-- Gate 2A：`make test` 39/39、`validate`、`SHA256SUMS` 26/26；测试与 `validate`
-  实际重算 artifacts 的 SHA-256，拒绝占位或缺失哈希。
-- Gate 3：`make host-check`（surface lease、recovery output、probe cleanup、
-  lifecycle、annex-b 与记录校验）、源码清理契约；未运行真机 AVCodec。
+- 根 `make clean && make test`：协议、Session、调度全部通过。
+- Gate 0：探针 `make test` 通过；live 在真机上 **failed**。Screen Recording 预检
+  通过、虚拟屏可创建可销毁（无幽灵副屏），但 macOS 27.3 不再为该私有 API 发布
+  2x 模式，HiDPI 校验失败，采集与编码从未启动。详见
+  `probes/gate0/records/README.md`。
+- Gate 1：Host 真实 libusb 构建与 CTest 通过，Device unsigned HAP 编译通过。
+  真机 AOA 授权、重枚举、持续双向 Bulk、取消清理均实测通过，两端字节数逐字节
+  相等；`eventfd` 与官方 `closeAccessory` 唤醒通过，定向 `SIGUSR1` 实测失败。
+  **结论 `NOT EVALUATED`**：链路为 USB2.1 Hub / 480 Mbps，不是 Reference Link。
+  详见 `probes/gate1/evidence/2026-11-24-device-run/REPORT.md`。
+- Gate 2A：`make test` 39/39、`validate` 与 `SHA256SUMS` 校验通过。真机只做了
+  只读拓扑识别，没有启用 USB 网络共享，也没有吞吐测量，结论 `pending`。
+- Gate 3：Host 侧检查与记录校验通过；真机 AVCodec 解码 640x360 彩条、Last Good
+  Frame 冻结/恢复、注入卡顿 `69.58 ms` 均有记录。Annex-B Host 样本互操作仍
+  `pending`（被 Gate 0 阻塞）。
 
 仍未执行、因此不得声称通过的硬件门禁：
 
-- Gate 0 live：Reference Host 的 Screen Recording、Extended Display 创建/采集/
-  编码、锁屏与睡眠清理、Developer ID 签名和公证。
-- Gate 1 真机：AOA 授权、三方唤醒、拔线、Device 后台/恢复与真实双向 Bulk。
+- Gate 0：HiDPI Extended Display 创建、持续采集、编码、锁屏/睡眠清理、
+  Developer ID 签名与公证。
+- Gate 1：Reference Link 直连拓扑、受控拔线重连、受控后台冻结、心跳丢失注入。
 - Gate 2A：Reference Link 上的 Device 用户入口、NCM/ECM 识别、ping 与双向
   iperf3 原始证据。
-- Gate 3 真机：AVCodec Flush/Reset/重建、Surface 保留、Last Good Frame 上屏和
-  真实 USB 链路下的恢复时序。
 - Gate 4A：跨端时钟校准、软件打点和高速摄影光学延迟基线。
