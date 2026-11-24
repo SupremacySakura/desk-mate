@@ -1,0 +1,5 @@
+$ /Applications/DevEco-Studio.app/Contents/sdk/default/openharmony/toolchains/hdc -t <serial> install -r probes/gate3/app/entry/build/default/outputs/default/entry-default-signed.hap
+[Info]App install path:/private/tmp/deskmate-wt/07-gate3/probes/gate3/app/entry/build/default/outputs/default/entry-default-signed.hap msg:install bundle successfully. 
+AppMod finish
+
+process exit code: 0

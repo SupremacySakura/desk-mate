@@ -1,0 +1,9 @@
+{
+  "bundleName": "com.deskmate.gate3",
+  "versionName": "1.0.0",
+  "versionCode": 1000000,
+  "apiTargetVersion": 260000026,
+  "appProvisionType": "debug",
+  "debug": true,
+  "codePath": "/data/app/el1/bundle/public/com.deskmate.gate3"
+}

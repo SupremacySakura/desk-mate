@@ -34,8 +34,9 @@ or ADRs.
 - `testdata/`: 640x360 Constrained Baseline Annex-B fixture. SHA-256
   `1122a5720ea1f755fd2c940a5ca4d1afbfc87dc1f9dd91cdde0b7bbbf2fba767`.
 - `records/local-host-checks.json`: only host-executable results.
-- `records/device-pending.json`: supplied device identity plus explicitly
-  unexecuted device work.
+- `records/device-2026-11-24.json`: the executed device run, its signed HAP,
+  measurements, and evidence pointers. Signing material and passwords are not
+  stored in the record.
 - `RUNBOOK.md`: build, install, launch, observation, and record-update steps.
 
 ## Host checks
@@ -80,7 +81,9 @@ when install/run is not `passed`.
 
 ## Build
 
-The known-good unsigned HAP build is:
+Build with DevEco Studio automatic signing enabled locally. The generated
+`build-profile.json5` signing block contains credentials and must not be
+committed.
 
 ```sh
 cd probes/gate3/app
@@ -94,6 +97,6 @@ env \
   clean assembleHap --no-daemon -p product=default -p buildMode=debug
 ```
 
-Expected warning: `No signingConfig found for product default`. The resulting
-HAP is unsigned. See `RUNBOOK.md` for the single install attempt and how to
-record its real output.
+The expected signed artifact is
+`entry/build/default/outputs/default/entry-default-signed.hap`. See
+`RUNBOOK.md` for the install attempt and how to record its real output.

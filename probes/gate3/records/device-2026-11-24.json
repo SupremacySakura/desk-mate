@@ -1,0 +1,240 @@
+{
+  "schema": "deskmate.gate3.records.v1",
+  "record_kind": "device",
+  "created_at": "2026-11-24T13:45:00+08:00",
+  "device": {
+    "identity_source": "hdc",
+    "productModel": "MRDI-W00",
+    "product_name_live": "HUAWEI MatePad Pro",
+    "serial": "<redacted-serial>",
+    "osFullName": "OpenHarmony-7.0.0.111",
+    "software_version_live": "MRDIL-W00 7.0.0.111(SP8C00E111R6P3)",
+    "sdkApiVersion": 26,
+    "resolution": "2800x1840",
+    "resolution_source": "hdc hidumper RenderService screen[0] render resolution and activeMode",
+    "connection": "USB via Bridgesil USB2.1 Hub at USB 2.0 High-Speed; not a Reference Link"
+  },
+  "build": {
+    "state": "passed",
+    "toolchain": "DevEco Studio 26.0.0, hvigor 6.26.8, SDK 26.0.0.105",
+    "product": "default",
+    "hap": "probes/gate3/app/entry/build/default/outputs/default/entry-default-signed.hap",
+    "hap_bytes": 2471801,
+    "hap_sha256": "633f6115558bfd1da204a3ad5c7f18d8738824161fd10786be7452357652d55e",
+    "signature": "signed",
+    "signing": {
+      "mode": "DevEco Studio automatic signing",
+      "provisioning_profile": "Huawei-managed debug profile",
+      "bundle_name": "com.deskmate.gate3",
+      "material_location": "local DevEco configuration; not committed"
+    },
+    "build_output": "BUILD SUCCESSFUL in 5 s 780 ms; SignHap executed",
+    "hap_contents": [
+      "libs/arm64-v8a/libentry.so",
+      "libs/arm64-v8a/libc++_shared.so",
+      "resources/rawfile/gate3-testsrc.h264"
+    ]
+  },
+  "install": {
+    "state": "passed",
+    "command": "/Applications/DevEco-Studio.app/Contents/sdk/default/openharmony/toolchains/hdc -t <serial> install -r probes/gate3/app/entry/build/default/outputs/default/entry-default-signed.hap",
+    "hap_sha256": "633f6115558bfd1da204a3ad5c7f18d8738824161fd10786be7452357652d55e",
+    "hdc_process_exit_code": 0,
+    "output": "[Info]App install path:/private/tmp/deskmate-wt/07-gate3/probes/gate3/app/entry/build/default/outputs/default/entry-default-signed.hap msg:install bundle successfully. \nAppMod finish"
+  },
+  "run": {
+    "state": "passed",
+    "command": "aa start -a EntryAbility -b com.deskmate.gate3",
+    "output": "start ability successfully.",
+    "actions": [
+      "Run recovery suite",
+      "Freeze for LGF check",
+      "Mark LGF stable",
+      "Resume after freeze"
+    ],
+    "observations": [
+      "suite.state complete and verification passed",
+      "the 640x360 color-bar pattern rendered in the XComponent",
+      "the frozen frame remained visible",
+      "manual_observation became stable",
+      "the frame remained visible after resume and frozen became false"
+    ]
+  },
+  "capabilities": [
+    {
+      "mime": "video/avc",
+      "present": true,
+      "name": "OMX.hisi.video.decoder.avc",
+      "hardware": true,
+      "low_latency_feature": true,
+      "surface_pixel_format": false,
+      "width_range": { "min": 128, "max": 8192 },
+      "height_range": { "min": 128, "max": 8192 },
+      "pixel_formats": [2, 3],
+      "profiles": [0, 8, 4]
+    },
+    {
+      "mime": "video/hevc",
+      "present": true,
+      "name": "OMX.hisi.video.decoder.hevc",
+      "hardware": true,
+      "low_latency_feature": true,
+      "surface_pixel_format": false,
+      "width_range": { "min": 128, "max": 8192 },
+      "height_range": { "min": 128, "max": 8192 },
+      "pixel_formats": [2, 3],
+      "profiles": [0, 1]
+    }
+  ],
+  "measurements": {
+    "fixture": {
+      "bytes": 217122,
+      "nals": 125,
+      "access_units": 60,
+      "keyframes": 2,
+      "access_units_with_sps": 2,
+      "access_units_with_pps": 2,
+      "first_access_unit_is_idr_with_sps_pps": true
+    },
+    "initial_decode": {
+      "passed": true,
+      "duration_ns": 62103438,
+      "rendered_outputs": 2,
+      "input_access_units": 8,
+      "parameter_set_units": 1,
+      "low_latency_key_requested": true,
+      "low_latency_key_accepted": true,
+      "decoder": 2,
+      "input_buffers_pushed": 47
+    },
+    "recoveries": [
+      {
+        "action": "flush",
+        "operation_duration_ns": 12129688,
+        "first_output_latency_ns": 29166875,
+        "surface_retained": true,
+        "surface_set_confirmed": true,
+        "parameter_sets_resubmitted": true,
+        "residual_callbacks": 0,
+        "stale_epoch_frees": 0,
+        "stale_input_callbacks": 1,
+        "decoder": 1
+      },
+      {
+        "action": "stop",
+        "operation_duration_ns": 34138125,
+        "first_output_latency_ns": 66287343,
+        "surface_retained": true,
+        "surface_set_confirmed": true,
+        "parameter_sets_resubmitted": true,
+        "residual_callbacks": 0,
+        "stale_epoch_frees": 0,
+        "stale_input_callbacks": 0,
+        "decoder": 1
+      },
+      {
+        "action": "reset",
+        "operation_duration_ns": 45245314,
+        "first_output_latency_ns": 75296875,
+        "surface_retained": true,
+        "surface_set_confirmed": true,
+        "parameter_sets_resubmitted": true,
+        "residual_callbacks": 0,
+        "stale_epoch_frees": 0,
+        "stale_input_callbacks": 1,
+        "decoder": 1
+      },
+      {
+        "action": "rebuild",
+        "operation_duration_ns": 74233750,
+        "first_output_latency_ns": 103627188,
+        "surface_retained": true,
+        "surface_set_confirmed": true,
+        "parameter_sets_resubmitted": true,
+        "residual_callbacks": 0,
+        "stale_epoch_frees": 0,
+        "stale_input_callbacks": 0,
+        "decoder": 2
+      },
+      {
+        "action": "manual-freeze-resume",
+        "operation_duration_ns": 11524375,
+        "first_output_latency_ns": 30118750,
+        "surface_retained": true,
+        "surface_set_confirmed": true,
+        "parameter_sets_resubmitted": true,
+        "residual_callbacks": 0,
+        "stale_epoch_frees": 0,
+        "stale_input_callbacks": 0,
+        "decoder": 2
+      }
+    ],
+    "surface": {
+      "ready": true,
+      "generation": 1,
+      "lease_id": 1,
+      "lease_valid": true,
+      "active_generation": 1,
+      "renderer_surface_set": true,
+      "reference_operations_serialized": true,
+      "decoder_needs_rebuild": false
+    },
+    "callback_audit": {
+      "output_callbacks": 24,
+      "total_callback_events": 85,
+      "callbacks_observed_off_control_thread": true,
+      "residual_decoder_callbacks": 0,
+      "stale_epoch_frees": 0,
+      "surface_invalid_frees": 0,
+      "free_failures": 0,
+      "render_failures": 0,
+      "stale_input_callbacks": 2,
+      "control_thread_violations": 0,
+      "callback_body": "queue-only"
+    },
+    "last_good_frame": {
+      "state_visible": true,
+      "manual_observation": "stable",
+      "frozen": false,
+      "evidence": "router state plus retained Surface Lease; no CPU pixel readback"
+    },
+    "platform_log": {
+      "avcodec_jank_fault": {
+        "duration_ns": 69584055,
+        "surface": "deskmate_gate3_surfaceSurface",
+        "observed_during": "flush",
+        "app_crash": false
+      }
+    }
+  },
+  "evidence": {
+    "directory": "probes/gate3/evidence/2026-11-24-device-run",
+    "suite_evidence_sha256": "4556123a4496b975bd9778dccd3c8b7ea87a062d87b5cb49847bb4fe2e8d1771",
+    "files": [
+      "REPORT.md",
+      "hdc-identity.log",
+      "bundle-info.json",
+      "install.log",
+      "suite-evidence.json",
+      "01-initial.jpeg",
+      "02-suite-complete.jpeg",
+      "03-frozen.jpeg",
+      "04-resumed.jpeg",
+      "hilog-gate3.log",
+      "SHA256SUMS"
+    ]
+  },
+  "no_cpu_pixel_readback": true,
+  "annexb_host_sample_interop": {
+    "state": "pending",
+    "reason": "Issue 05 has not produced the real Host Annex-B sample."
+  },
+  "limitations": [
+    "Surface retention proves lease validity and SetSurface success, not compositor scanout.",
+    "The low-latency configure key was accepted; this does not prove decoder scheduling latency.",
+    "The external snapshots are manual visual evidence; the probe itself performed no CPU pixel readback.",
+    "The platform reported one AVCODEC_JANK_FAULT of 69.58 ms during flush; no app crash or fault-log entry occurred.",
+    "The USB 2.0 hub path is not a Reference Link.",
+    "Annex-B Host sample interoperability remains pending issue 05."
+  ]
+}
