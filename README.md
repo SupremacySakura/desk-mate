@@ -360,8 +360,9 @@ name | expectation | expected-payload-hex | packet-hex
 - Gate 2A：`make test` 39/39、`validate` 与 `SHA256SUMS` 校验通过。真机只做了
   只读拓扑识别，没有启用 USB 网络共享，也没有吞吐测量，结论 `pending`。
 - Gate 3：Host 侧检查与记录校验通过；真机 AVCodec 解码 640x360 彩条、Last Good
-  Frame 冻结/恢复、注入卡顿 `69.58 ms` 均有记录。Annex-B Host 样本互操作仍
-  `pending`（被 Gate 0 阻塞）。
+  Frame 冻结/恢复、注入卡顿 `69.58 ms` 均有记录。Annex-B Host 样本互操作已由
+  下方产品端到端实测确认（功能层面可解码上屏），但 Gate 3 整体仍因缺 Reference
+  Link 保持 `needs-info`。
 - 产品端到端（`apps/host` + `apps/device`，非探针）：2026-11-24 真机实测
   **平板成功显示 Mac 画面**，HEVC 与 H.264 均可上屏；反向触控在 Mac 上生效。
   这一条只证明「成品链路能出画面」，不改变上面任何硬件门禁的结论。
