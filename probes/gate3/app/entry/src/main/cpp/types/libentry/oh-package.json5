@@ -1,0 +1,9 @@
+{
+  "name": "libentry.so",
+  "types": "./Index.d.ts",
+  "version": "1.0.0",
+  "description": "DeskMate Gate 3 native probe",
+  "main": "Index.d.ts",
+  "author": "",
+  "license": ""
+}

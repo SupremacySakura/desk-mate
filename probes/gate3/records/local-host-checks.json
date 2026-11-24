@@ -1,0 +1,79 @@
+{
+  "schema": "deskmate.gate3.records.v1",
+  "record_kind": "local-host",
+  "created_at": "2026-11-24T12:29:02+08:00",
+  "host": {
+    "platform": "Darwin Supremacys-MacBook-Air.local 27.3.0 arm64",
+    "compiler": "Apple clang version 21.0.0 (clang-2100.4.1.1)",
+    "python": "3.11.16"
+  },
+  "fixture": {
+    "path": "probes/gate3/testdata/gate3-testsrc.h264",
+    "sha256": "1122a5720ea1f755fd2c940a5ca4d1afbfc87dc1f9dd91cdde0b7bbbf2fba767",
+    "codec": "h264",
+    "profile": "Constrained Baseline",
+    "level": 31,
+    "width": 640,
+    "height": 360,
+    "pix_fmt": "yuv420p",
+    "access_units": 60,
+    "idr_access_units": 2,
+    "note": "Raw Annex-B has no container timestamps; the probe assigns 30 fps input PTS. ffprobe raw-stream rate heuristics are not used as evidence."
+  },
+  "checks": [
+    {
+      "id": "surface-lease-pairing-and-serialization",
+      "contract": "Owner/lease references are paired, destroyed surfaces stop rendering, stale generations cannot render, and native reference calls never overlap.",
+      "state": "passed",
+      "observed": "surface lease tests: PASS"
+    },
+    {
+      "id": "surface-callback-invalidation",
+      "contract": "A Surface-destroy callback closes output and advances the tagged epoch without touching the decoder; queued output is freed, not rendered.",
+      "state": "passed",
+      "observed": "recovery output tests: PASS (SurfaceCallbackInvalidatesEpochWithoutRunningCleanup included)"
+    },
+    {
+      "id": "recovery-epoch-output-routing",
+      "contract": "Decoder callbacks only queue generation-tagged commands; old-epoch, surface-invalid, and residual destroyed-decoder outputs are freed without reaching the new native instance.",
+      "state": "passed",
+      "observed": "recovery output tests: PASS"
+    },
+    {
+      "id": "lifecycle-sequences",
+      "contract": "Flush, Stop, Reset, and Rebuild execute their expected ordered stages, resend SPS/PPS/IDR, preserve a valid Surface Lease, and never open output after a failed recovery.",
+      "state": "passed",
+      "observed": "lifecycle controller tests: PASS"
+    },
+    {
+      "id": "annexb-parser-and-fixture",
+      "contract": "The 60-AU fixture starts with an IDR carrying SPS/PPS, every IDR repeats SPS/PPS, malformed streams are rejected, and access units are contiguous and bounded.",
+      "state": "passed",
+      "observed": "annex-b tests: PASS"
+    },
+    {
+      "id": "no-cpu-pixel-readback-source-audit",
+      "contract": "Output buffers use only RenderOutputBuffer or FreeOutputBuffer; OH_AVBuffer_GetAddr is used only for encoded input.",
+      "state": "passed",
+      "observed": "rg audit: OH_AVBuffer_GetAddr only at ohos_decoder.cpp:329 input path; no OH_NativeBuffer mapping or pixel readback."
+    }
+  ],
+  "tdd_cycles": [
+    {
+      "seam": "RecoveryOutputRouter callback-safe Surface invalidation",
+      "red": "recovery_output_tests.cpp failed to compile: no member InvalidateSurfaceFromCallback",
+      "green": "Added the API and epoch close; recovery output tests: PASS",
+      "refactor": "Kept decoder lifecycle commands control-thread-only; invocation is complete."
+    },
+    {
+      "seam": "Host executable fixture path",
+      "red": "Annex-B tests failed with 'test stream exists' when run from probes/gate3",
+      "green": "Embedded GATE3_TESTDATA at compile time; annex-b tests: PASS",
+      "refactor": "Removed cwd dependence from the host harness."
+    }
+  ],
+  "annexb_host_sample_interop": {
+    "state": "pending",
+    "reason": "Issue 05 has not produced the real Host Annex-B sample; no substitute was fabricated."
+  }
+}

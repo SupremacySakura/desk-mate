@@ -26,6 +26,7 @@ class ByteIo {
 
   [[nodiscard]] virtual IoResult read(std::span<std::uint8_t> destination) = 0;
   [[nodiscard]] virtual IoResult write(std::span<const std::uint8_t> source) = 0;
+  virtual void cancel() {}
 };
 
 }  // namespace deskmate::protocol
