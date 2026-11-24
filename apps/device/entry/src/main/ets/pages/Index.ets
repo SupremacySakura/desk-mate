@@ -37,6 +37,7 @@ struct Index {
     { state: 'searching', message: 'starting', accessoryFd: -1 };
   @State private engine: string = '{}';
   @State private overlayDim: boolean = false;
+  @State private fps: number = 0;
 
   private accessoryLink: AccessoryLink =
     new AccessoryLink((snapshot: LinkSnapshot) => {
@@ -45,6 +46,8 @@ struct Index {
   private refreshTimer: number = -1;
   private surfaceWidth: number = 1;
   private surfaceHeight: number = 1;
+  private lastRendered: number = 0;
+  private lastRenderedAt: number = 0;
 
   // One pointer drives the host cursor; a second pointer switches the gesture to
   // scroll and cancels the cursor drag so no button is left pressed.
@@ -59,6 +62,7 @@ struct Index {
       this.engine = native.snapshotJson();
       const parsed: EngineSnapshot | undefined = this.parseEngine();
       this.overlayDim = parsed !== undefined && parsed.session === 'streaming';
+      this.updateFps(parsed);
     }, 500);
   }
 
@@ -76,6 +80,22 @@ struct Index {
     } catch (error) {
       return undefined;
     }
+  }
+
+  private updateFps(parsed: EngineSnapshot | undefined): void {
+    if (parsed === undefined) {
+      this.fps = 0;
+      return;
+    }
+    const now: number = Date.now();
+    const rendered: number = parsed.decoderRendered;
+    if (this.lastRenderedAt > 0 && now > this.lastRenderedAt &&
+      rendered >= this.lastRendered) {
+      const delta: number = rendered - this.lastRendered;
+      this.fps = Math.round(delta * 1000 / (now - this.lastRenderedAt));
+    }
+    this.lastRendered = rendered;
+    this.lastRenderedAt = now;
   }
 
   private normalize(x: number, y: number): NormalizedPoint {
@@ -178,7 +198,8 @@ struct Index {
     }
     const profile: string =
       parsed.profile.length > 0 ? parsed.profile : 'negotiating';
-    return `${parsed.session} - ${profile}`;
+    const rate: string = parsed.session === 'streaming' ? ` - ${this.fps} fps` : '';
+    return `${parsed.session} - ${profile}${rate}`;
   }
 
   build() {
