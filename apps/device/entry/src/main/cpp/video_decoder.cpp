@@ -1,6 +1,7 @@
 #include "video_decoder.hpp"
 
 #include <algorithm>
+#include <chrono>
 #include <cstring>
 #include <sstream>
 #include <unistd.h>
@@ -46,6 +47,13 @@ const char *ErrorName(OH_AVErrCode code)
 }
 
 constexpr std::size_t kMaxQueuedFrames = 8;
+
+std::int64_t NowNs()
+{
+    return std::chrono::duration_cast<std::chrono::nanoseconds>(
+               std::chrono::steady_clock::now().time_since_epoch())
+        .count();
+}
 
 }  // namespace
 
@@ -385,10 +393,12 @@ void VideoDecoder::ProcessEvents()
                 break;
             }
             case Event::Kind::OutputReady: {
-                const OH_AVErrCode result =
-                    OH_VideoDecoder_RenderOutputBuffer(codec_, event.index);
+                // Timestamped render lets the display drop frames on its own
+                // when we run ahead of the panel, instead of blocking.
+                const OH_AVErrCode result = OH_VideoDecoder_RenderOutputBufferAtTime(
+                    codec_, event.index, NowNs());
                 if (result != AV_ERR_OK) {
-                    NoteResult("OH_VideoDecoder_RenderOutputBuffer", result);
+                    NoteResult("OH_VideoDecoder_RenderOutputBufferAtTime", result);
                     std::lock_guard lock(mutex_);
                     ++stats_.output_errors;
                 } else {

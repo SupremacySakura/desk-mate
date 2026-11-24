@@ -389,7 +389,16 @@ void DeviceEngine::DrainVideo()
         return;
     }
     auto frames = session_->take_video_frames();
+    // A paused stream keeps the last rendered frame on screen: the frames that
+    // keep arriving are consumed from the session but never pushed, otherwise
+    // the surface would keep advancing while the host believes it is frozen.
+    const bool paused = session_->state() == SessionState::Paused;
     for (auto &frame : frames) {
+        if (paused) {
+            std::lock_guard lock(mutex_);
+            ++frames_dropped_;
+            continue;
+        }
         const bool keyframe =
             (frame.header.flags & protocol::kFlagKeyFrame) != 0;
         if (decoder_->Push(frame.payload, static_cast<std::int64_t>(frame.header.timestamp_us),
@@ -438,8 +447,13 @@ void DeviceEngine::WorkerMain()
 
         bool rebuild = false;
         while (!stop_requested_.load()) {
+            // Only ask for POLLOUT while bytes are actually queued: requesting
+            // it unconditionally makes poll() return immediately on a writable
+            // endpoint and turns this loop into a busy spin.
+            const bool wants_write = io.stats().pending_write_bytes > 0;
             pollfd fds[2] = {
-                {accessory_fd_, static_cast<short>(POLLIN | POLLOUT), 0},
+                {accessory_fd_,
+                 static_cast<short>(POLLIN | (wants_write ? POLLOUT : 0)), 0},
                 {wake_fd_, POLLIN, 0},
             };
             const int ready = ::poll(fds, 2, 1000);
@@ -458,6 +472,10 @@ void DeviceEngine::WorkerMain()
             }
             if ((fds[1].revents & POLLIN) != 0) {
                 PumpTimer();
+            }
+            if ((fds[0].revents & POLLOUT) != 0) {
+                // The endpoint finally drained a NAK'd bulk IN transfer.
+                io.flush_pending();
             }
 
             session_->pump();
