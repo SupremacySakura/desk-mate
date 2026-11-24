@@ -107,6 +107,15 @@ final class AppController: NSObject, NSApplicationDelegate {
     private var framesItem: NSMenuItem?
     private var inputItem: NSMenuItem?
     private var errorItem: NSMenuItem?
+    private var window: NSWindow?
+    private var windowStateLabel: NSTextField?
+    private var windowProfileLabel: NSTextField?
+    private var windowFramesLabel: NSTextField?
+    private var windowInputLabel: NSTextField?
+    private var windowDisplayLabel: NSTextField?
+    private var windowErrorLabel: NSTextField?
+    private var captureCheckbox: NSButton?
+    private var inputCheckbox: NSButton?
     private var displaySession: DisplaySession?
     private var capture: CapturePipeline?
     private var bridge: OpaquePointer?
@@ -125,9 +134,31 @@ final class AppController: NSObject, NSApplicationDelegate {
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        NSApp.setActivationPolicy(.accessory)
+        NSApp.setActivationPolicy(.regular)
         installStatusItem()
+        installWindow()
+        NSApp.activate(ignoringOtherApps: true)
 
+        if options.dryRun {
+            captureWanted = true
+            lastSnapshot = "{\"state\":\"dry-run\",\"running\":true,\"negotiated\":\"local only\",\"inputEvents\":0,\"error\":\"\"}"
+            guard ensurePermissions() else {
+                startTimer()
+                return
+            }
+            do {
+                try attachDisplay()
+            } catch {
+                fail("\(error)")
+                startTimer()
+                return
+            }
+            Task { await startCaptureIfNeeded() }
+            startTimer()
+            return
+        }
+
+        startTimer()
         guard ensurePermissions() else {
             return
         }
@@ -138,17 +169,8 @@ final class AppController: NSObject, NSApplicationDelegate {
             return
         }
 
-        if options.dryRun {
-            captureWanted = true
-            lastSnapshot = "{\"state\":\"dry-run\",\"running\":true,\"negotiated\":\"local only\",\"inputEvents\":0,\"error\":\"\"}"
-            Task { await startCaptureIfNeeded() }
-            startTimer()
-            return
-        }
-
         createBridge()
         observeSystemEvents()
-        startTimer()
         Task { await startCaptureIfNeeded() }
     }
 
@@ -230,7 +252,10 @@ final class AppController: NSObject, NSApplicationDelegate {
         let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         item.button?.title = "DM"
         let menu = NSMenu()
-        menu.addItem(withTitle: "DeskMate", action: nil, keyEquivalent: "")
+        let show = NSMenuItem(title: "显示窗口", action: #selector(showWindow), keyEquivalent: "o")
+        show.target = self
+        menu.addItem(show)
+        menu.addItem(.separator())
 
         func statusLine(_ title: String) -> NSMenuItem {
             let line = NSMenuItem(title: title, action: nil, keyEquivalent: "")
@@ -266,6 +291,122 @@ final class AppController: NSObject, NSApplicationDelegate {
 
     @objc private func quit() {
         NSApp.terminate(nil)
+    }
+
+    @objc private func showWindow() {
+        window?.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+    }
+
+    @objc private func toggleCapture(_ sender: NSButton) {
+        captureWanted = sender.state == .on
+        if captureWanted {
+            Task { await startCaptureIfNeeded() }
+        } else {
+            stopCapture()
+        }
+        syncWindow()
+    }
+
+    @objc private func toggleInput(_ sender: NSButton) {
+        inputWanted = sender.state == .on
+        syncWindow()
+    }
+
+    @objc private func copyStatusFromWindow() {
+        copyStatus()
+    }
+
+    private func installWindow() {
+        let frame = NSRect(x: 0, y: 0, width: 460, height: 330)
+        let window = NSWindow(
+            contentRect: frame,
+            styleMask: [.titled, .closable, .miniaturizable],
+            backing: .buffered,
+            defer: false
+        )
+        window.title = "DeskMate"
+        window.isReleasedWhenClosed = false
+        window.center()
+
+        let content = NSView(frame: frame)
+        let stack = NSStackView()
+        stack.orientation = .vertical
+        stack.alignment = .leading
+        stack.spacing = 8
+        stack.translatesAutoresizingMaskIntoConstraints = false
+
+        let title = NSTextField(labelWithString: "DeskMate 扩展屏")
+        title.font = NSFont.systemFont(ofSize: 17, weight: .semibold)
+        stack.addArrangedSubview(title)
+
+        func row(_ caption: String) -> NSTextField {
+            let label = NSTextField(labelWithString: "\(caption)：—")
+            label.font = NSFont.monospacedSystemFont(ofSize: 12, weight: .regular)
+            label.textColor = .secondaryLabelColor
+            label.lineBreakMode = .byTruncatingTail
+            stack.addArrangedSubview(label)
+            return label
+        }
+
+        windowStateLabel = row("连接")
+        windowProfileLabel = row("码流")
+        windowFramesLabel = row("编码帧")
+        windowInputLabel = row("输入事件")
+        windowDisplayLabel = row("虚拟屏")
+        windowErrorLabel = row("错误")
+        windowErrorLabel?.textColor = .systemRed
+
+        let capture = NSButton(checkboxWithTitle: "发送画面", target: self,
+                               action: #selector(toggleCapture(_:)))
+        let input = NSButton(checkboxWithTitle: "允许反向输入", target: self,
+                             action: #selector(toggleInput(_:)))
+        captureCheckbox = capture
+        inputCheckbox = input
+        let controls = NSStackView(views: [capture, input])
+        controls.orientation = .horizontal
+        controls.spacing = 16
+        stack.addArrangedSubview(controls)
+
+        let copy = NSButton(title: "复制状态", target: self,
+                            action: #selector(copyStatusFromWindow))
+        let quit = NSButton(title: "退出", target: self, action: #selector(quit))
+        let buttons = NSStackView(views: [copy, quit])
+        buttons.orientation = .horizontal
+        buttons.spacing = 8
+        stack.addArrangedSubview(buttons)
+
+        content.addSubview(stack)
+        NSLayoutConstraint.activate([
+            stack.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 20),
+            stack.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -20),
+            stack.topAnchor.constraint(equalTo: content.topAnchor, constant: 18),
+        ])
+        window.contentView = content
+        self.window = window
+        window.makeKeyAndOrderFront(nil)
+    }
+
+    private func syncWindow() {
+        let snapshot = parseSnapshot(lastSnapshot)
+        let state = snapshot?["state"] as? String ?? (options.dryRun ? "dry-run" : "starting")
+        let negotiated = snapshot?["negotiated"] as? String ?? "none"
+        let encoded = capture?.encodedFrameCount ?? 0
+        let inputs = snapshot?["inputEvents"] as? Int ?? 0
+        let info = displaySession?.info
+
+        windowStateLabel?.stringValue = "连接：\(state)"
+        windowProfileLabel?.stringValue =
+            "码流：\(negotiated == "none" ? "\(options.width)x\(options.height)@\(Int(options.frameRate)) \(options.codec)" : negotiated)"
+        windowFramesLabel?.stringValue = "编码帧：\(encoded)"
+        windowInputLabel?.stringValue = "输入事件：\(inputs)"
+        windowDisplayLabel?.stringValue =
+            "虚拟屏：\(info.map { "\($0.displayID) \($0.summary)" } ?? "未连接")"
+        let message = fatalError ?? (snapshot?["error"] as? String ?? "")
+        windowErrorLabel?.stringValue = "错误：\(message.isEmpty ? "无" : message)"
+        windowErrorLabel?.textColor = message.isEmpty ? .secondaryLabelColor : .systemRed
+        captureCheckbox?.state = captureWanted ? .on : .off
+        inputCheckbox?.state = inputWanted ? .on : .off
     }
 
     private func ensurePermissions() -> Bool {
@@ -368,6 +509,7 @@ final class AppController: NSObject, NSApplicationDelegate {
             drainInput(bridge)
         }
         updateTitle()
+        syncWindow()
         reportProgress()
     }
 
