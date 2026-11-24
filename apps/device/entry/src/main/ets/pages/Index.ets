@@ -1,8 +1,9 @@
 import { AccessoryLink, LinkSnapshot } from '../deskmate/AccessoryLink';
 import native from 'libdeskmate_device.so';
-import { window } from '@kit.ArkUI';
+import { display, window } from '@kit.ArkUI';
 
 PersistentStorage.persistProp('deskMateShowFps', false);
+PersistentStorage.persistProp('deskMateCodec', 'auto');
 
 const KIND_TOUCH_DOWN: number = 1;
 const KIND_TOUCH_MOVE: number = 2;
@@ -10,23 +11,40 @@ const KIND_TOUCH_UP: number = 3;
 const KIND_TOUCH_CANCEL: number = 4;
 const KIND_SCROLL: number = 5;
 const FLAG_PRIMARY: number = 0x0001;
-const SCROLL_THRESHOLD: number = 0.0005;
+const SCROLL_THRESHOLD: number = 0.0002;
 
 interface EngineSnapshot {
   session: string;
   failure: string;
   profile: string;
+  codec: string;
+  resolution: string;
+  preferredCodec: string;
+  rxBytes: number;
   lifecycle: string;
   surface: string;
   framesReceived: number;
   framesDropped: number;
   decoderRendered: number;
   decoderSubmitted: number;
+  decoderDropped: number;
   decoderOpens: number;
   inputSent: number;
   inputRejected: number;
   error: string;
 }
+
+interface CodecOption {
+  value: string;
+  title: string;
+  subtitle: string;
+}
+
+const CODEC_OPTIONS: Array<CodecOption> = [
+  { value: 'auto', title: '自动', subtitle: '优先 HEVC' },
+  { value: 'hevc', title: 'HEVC', subtitle: 'H.265' },
+  { value: 'h264', title: 'H.264', subtitle: 'AVC' }
+];
 
 interface NormalizedPoint {
   x: number;
@@ -45,7 +63,13 @@ struct Index {
   @State private frameReady: boolean = false;
   @State private controlsExpanded: boolean = false;
   @StorageLink('deskMateShowFps') private showFps: boolean = false;
+  @StorageLink('deskMateCodec') private preferredCodec: string = 'auto';
   @State private fps: number = 0;
+  @State private bitrateMbps: number = 0;
+  @State private activeCodec: string = '';
+  @State private activeResolution: string = '';
+  @State private droppedFrames: number = 0;
+  @State private codecChangedWhileConnected: boolean = false;
 
   private accessoryLink: AccessoryLink =
     new AccessoryLink((snapshot: LinkSnapshot) => {
@@ -53,8 +77,14 @@ struct Index {
         this.frameReady = false;
         this.enteredThisLink = false;
         this.fps = 0;
+        this.bitrateMbps = 0;
+        this.activeCodec = '';
+        this.activeResolution = '';
+        this.droppedFrames = 0;
+        this.codecChangedWhileConnected = false;
         this.lastRendered = 0;
-        this.lastRenderedAt = 0;
+        this.lastRxBytes = 0;
+        this.lastSampleAt = 0;
         this.engine = '{}';
         this.scrolling = false;
         this.pointerDown = false;
@@ -68,7 +98,8 @@ struct Index {
   private surfaceWidth: number = 1;
   private surfaceHeight: number = 1;
   private lastRendered: number = 0;
-  private lastRenderedAt: number = 0;
+  private lastRxBytes: number = 0;
+  private lastSampleAt: number = 0;
   private enteredThisLink: boolean = false;
   private pointerDown: boolean = false;
 
@@ -77,9 +108,35 @@ struct Index {
   private scrolling: boolean = false;
   private lastX: number = 0;
   private lastY: number = 0;
+  private lastTwoFingerX: number = 0;
   private lastTwoFingerY: number = 0;
 
+  private reportDisplayMetrics(): void {
+    try {
+      const info: display.Display = display.getDefaultDisplaySync();
+      if (info.width > 0 && info.height > 0) {
+        const refreshHz: number = info.refreshRate > 0 ? Math.round(info.refreshRate) : 60;
+        native.setDisplayMetrics(info.width, info.height, refreshHz);
+      }
+    } catch (error) {
+      // Fallback presets inside native DeviceEngine are used if display query is unavailable.
+    }
+  }
+
+  private selectCodec(codec: string): void {
+    if (this.preferredCodec === codec) {
+      return;
+    }
+    this.preferredCodec = codec;
+    native.setPreferredCodec(codec);
+    if (this.link.state === 'connected') {
+      this.codecChangedWhileConnected = true;
+    }
+  }
+
   aboutToAppear(): void {
+    this.reportDisplayMetrics();
+    native.setPreferredCodec(this.preferredCodec);
     this.accessoryLink.start();
     this.refreshTimer = setInterval(() => {
       const json: string = native.snapshotJson();
@@ -90,7 +147,7 @@ struct Index {
       if (this.link.state !== 'connected' || parsed === undefined) {
         return;
       }
-      this.updateFps(parsed);
+      this.updateTelemetry(parsed);
       if (parsed.session === 'streaming' && parsed.surface === 'attached' && parsed.decoderRendered > 0) {
         this.frameReady = true;
         if (!this.enteredThisLink) {
@@ -122,27 +179,58 @@ struct Index {
     }
   }
 
-  private updateFps(parsed: EngineSnapshot | undefined): void {
+  private updateTelemetry(parsed: EngineSnapshot | undefined): void {
     if (parsed === undefined) {
       this.fps = 0;
+      this.bitrateMbps = 0;
+      this.activeCodec = '';
+      this.activeResolution = '';
+      this.droppedFrames = 0;
       return;
     }
+    this.activeCodec = parsed.codec || '';
+    this.activeResolution = parsed.resolution || '';
+    this.droppedFrames = (parsed.framesDropped || 0) + (parsed.decoderDropped || 0);
+
     const now: number = Date.now();
-    const rendered: number = parsed.decoderRendered;
-    if (this.lastRenderedAt > 0 && now > this.lastRenderedAt &&
-      rendered >= this.lastRendered) {
-      const delta: number = rendered - this.lastRendered;
-      this.fps = Math.round(delta * 1000 / (now - this.lastRenderedAt));
-    } else {
-      this.fps = 0;
+    const rendered: number = parsed.decoderRendered || 0;
+    const rxBytes: number = parsed.rxBytes || 0;
+    if (this.lastSampleAt === 0 || rendered < this.lastRendered || rxBytes < this.lastRxBytes) {
+      this.lastRendered = rendered;
+      this.lastRxBytes = rxBytes;
+      this.lastSampleAt = now;
+      return;
     }
+    const elapsedMs: number = now - this.lastSampleAt;
+    if (elapsedMs < 450) {
+      return;
+    }
+    const frameDelta: number = rendered - this.lastRendered;
+    const byteDelta: number = rxBytes - this.lastRxBytes;
+    this.fps = Math.round(frameDelta * 1000 / elapsedMs);
+    this.bitrateMbps = (byteDelta * 8) / (elapsedMs * 1000);
     this.lastRendered = rendered;
-    this.lastRenderedAt = now;
+    this.lastRxBytes = rxBytes;
+    this.lastSampleAt = now;
   }
 
-  private normalize(x: number, y: number): NormalizedPoint {
-    const width: number = this.surfaceWidth > 0 ? this.surfaceWidth : 1;
-    const height: number = this.surfaceHeight > 0 ? this.surfaceHeight : 1;
+  private normalize(x: number, y: number, event?: TouchEvent): NormalizedPoint {
+    let width: number = this.surfaceWidth;
+    let height: number = this.surfaceHeight;
+    if ((width <= 1 || height <= 1) && event !== undefined) {
+      const areaWidth: number = Number(event.target.area.width);
+      const areaHeight: number = Number(event.target.area.height);
+      if (areaWidth > 1 && areaHeight > 1) {
+        width = areaWidth;
+        height = areaHeight;
+      }
+    }
+    if (width <= 0) {
+      width = 1;
+    }
+    if (height <= 0) {
+      height = 1;
+    }
     const point: NormalizedPoint = {
       x: Math.min(1, Math.max(0, x / width)),
       y: Math.min(1, Math.max(0, y / height))
@@ -150,14 +238,18 @@ struct Index {
     return point;
   }
 
-  private averageY(event: TouchEvent): number {
-    const height: number = this.surfaceHeight > 0 ? this.surfaceHeight : 1;
-    let total: number = 0;
-    for (const touch of event.touches) {
-      total += touch.y;
-    }
+  private averagePoint(event: TouchEvent): NormalizedPoint {
     const count: number = event.touches.length;
-    return count > 0 ? (total / count) / height : 0;
+    if (count <= 0) {
+      return { x: 0.5, y: 0.5 };
+    }
+    let totalX: number = 0;
+    let totalY: number = 0;
+    for (const touch of event.touches) {
+      totalX += touch.x;
+      totalY += touch.y;
+    }
+    return this.normalize(totalX / count, totalY / count, event);
   }
 
   private onTouchEvent(event: TouchEvent): void {
@@ -169,18 +261,22 @@ struct Index {
       if (count >= 2) {
         if (!this.scrolling) {
           this.scrolling = true;
-          native.sendInput(KIND_TOUCH_CANCEL, 0, 0, this.lastX, this.lastY,
-            0, 0, 0);
-          this.pointerDown = false;
+          if (this.pointerDown) {
+            native.sendInput(KIND_TOUCH_CANCEL, 0, 0, this.lastX, this.lastY,
+              0, 0, 0);
+            this.pointerDown = false;
+          }
         }
-        this.lastTwoFingerY = this.averageY(event);
+        const avg: NormalizedPoint = this.averagePoint(event);
+        this.lastTwoFingerX = avg.x;
+        this.lastTwoFingerY = avg.y;
         return;
       }
       if (count === 0) {
         return;
       }
       const first: TouchObject = event.touches[0];
-      const point: NormalizedPoint = this.normalize(first.x, first.y);
+      const point: NormalizedPoint = this.normalize(first.x, first.y, event);
       this.lastX = point.x;
       this.lastY = point.y;
       native.sendInput(KIND_TOUCH_DOWN, 0, FLAG_PRIMARY, point.x, point.y,
@@ -191,11 +287,25 @@ struct Index {
 
     if (event.type === TouchType.Move) {
       if (this.scrolling || count >= 2) {
-        const average: number = this.averageY(event);
-        const delta: number = average - this.lastTwoFingerY;
-        this.lastTwoFingerY = average;
-        if (Math.abs(delta) > SCROLL_THRESHOLD) {
-          native.sendInput(KIND_SCROLL, 0, 0, 0.5, 0.5, 0, delta, 0);
+        if (!this.scrolling) {
+          this.scrolling = true;
+          if (this.pointerDown) {
+            native.sendInput(KIND_TOUCH_CANCEL, 0, 0, this.lastX, this.lastY,
+              0, 0, 0);
+            this.pointerDown = false;
+          }
+          const avgStart: NormalizedPoint = this.averagePoint(event);
+          this.lastTwoFingerX = avgStart.x;
+          this.lastTwoFingerY = avgStart.y;
+          return;
+        }
+        const avg: NormalizedPoint = this.averagePoint(event);
+        const dx: number = avg.x - this.lastTwoFingerX;
+        const dy: number = avg.y - this.lastTwoFingerY;
+        this.lastTwoFingerX = avg.x;
+        this.lastTwoFingerY = avg.y;
+        if (Math.abs(dx) > SCROLL_THRESHOLD || Math.abs(dy) > SCROLL_THRESHOLD) {
+          native.sendInput(KIND_SCROLL, 0, 0, avg.x, avg.y, dx, dy, 0);
         }
         return;
       }
@@ -203,7 +313,7 @@ struct Index {
         return;
       }
       const first: TouchObject = event.touches[0];
-      const point: NormalizedPoint = this.normalize(first.x, first.y);
+      const point: NormalizedPoint = this.normalize(first.x, first.y, event);
       this.lastX = point.x;
       this.lastY = point.y;
       native.sendInput(KIND_TOUCH_MOVE, 0, FLAG_PRIMARY, point.x, point.y,
@@ -282,12 +392,23 @@ struct Index {
     return 'Mac 上的扩展桌面将在这里显示。';
   }
 
+  private codecDisplayName(value: string): string {
+    if (value === 'hevc') {
+      return 'HEVC (H.265)';
+    }
+    if (value === 'h264') {
+      return 'H.264 (AVC)';
+    }
+    return '自动（优先 HEVC）';
+  }
+
   private engineDetail(): string {
     const parsed: EngineSnapshot | undefined = this.parseEngine();
     if (parsed === undefined) {
-      return '暂无会话数据';
+      return `暂无会话数据\n偏好编码：${this.codecDisplayName(this.preferredCodec)}`;
     }
-    return `会话：${parsed.session}\n码流：${parsed.profile || '未协商'}\n已输出帧：${parsed.decoderRendered}\n${parsed.failure}\n${parsed.error}`;
+    const dropped: number = (parsed.framesDropped || 0) + (parsed.decoderDropped || 0);
+    return `会话：${parsed.session}\n编码格式：${parsed.codec || '未协商'}（偏好：${this.codecDisplayName(parsed.preferredCodec || this.preferredCodec)}）\n分辨率：${parsed.resolution || parsed.profile || '未协商'}\n实时性能：${this.fps} FPS · ${this.bitrateMbps.toFixed(1)} Mbps\n已输出帧：${parsed.decoderRendered}（丢帧：${dropped}）\n触控事件：${parsed.inputSent}（丢弃：${parsed.inputRejected}）\n${parsed.failure}\n${parsed.error}`;
   }
 
   @Builder
@@ -339,22 +460,76 @@ struct Index {
   @Builder
   private settingsContent() {
     Column({ space: 10 }) {
-      Text('画面').fontSize(14).fontColor('#506073').width('100%')
+      Text('画面与性能').fontSize(14).fontColor('#506073').width('100%')
       Row({ space: 12 }) {
         Column({ space: 4 }) {
-          Text('全屏显示帧率').fontSize(16).fontWeight(FontWeight.Medium).fontColor('#202936')
-          Text('显示平板侧解码输出的帧率').fontSize(13).fontColor('#506073')
+          Text('性能参数浮窗').fontSize(16).fontWeight(FontWeight.Medium).fontColor('#202936')
+          Text('全屏显示帧率、实时码率、编码格式与分辨率').fontSize(13).fontColor('#506073')
         }.alignItems(HorizontalAlign.Start).layoutWeight(1)
         Toggle({ type: ToggleType.Switch, isOn: this.showFps })
-          .selectedColor('#2152BF').accessibilityText('全屏显示帧率')
+          .selectedColor('#2152BF').accessibilityText('性能参数浮窗')
           .onChange((enabled: boolean) => { this.showFps = enabled; })
       }.width('100%').padding(16).backgroundColor(Color.White).borderRadius(12)
+
+      Column({ space: 12 }) {
+        Row({ space: 8 }) {
+          Column({ space: 3 }) {
+            Text('视频编码格式').fontSize(16).fontWeight(FontWeight.Medium).fontColor('#202936')
+            Text(this.activeCodec.length > 0
+              ? `当前协商：${this.activeCodec}${this.activeResolution.length > 0 ? ' · ' + this.activeResolution : ''}`
+              : '选择传输编码格式，默认自动优先使用 HEVC')
+              .fontSize(13).fontColor('#506073')
+          }.alignItems(HorizontalAlign.Start).layoutWeight(1)
+        }.width('100%')
+
+        Row({ space: 8 }) {
+          ForEach(CODEC_OPTIONS, (option: CodecOption) => {
+            Button({ type: ButtonType.Normal }) {
+              Column({ space: 2 }) {
+                Text(option.title)
+                  .fontSize(14)
+                  .fontWeight(FontWeight.Medium)
+                  .fontColor(this.preferredCodec === option.value ? Color.White : '#202936')
+                Text(option.subtitle)
+                  .fontSize(11)
+                  .fontColor(this.preferredCodec === option.value ? '#DCE7FF' : '#5F6F82')
+              }.padding({ top: 8, bottom: 8 })
+            }
+            .layoutWeight(1)
+            .borderRadius(10)
+            .backgroundColor(this.preferredCodec === option.value ? '#2152BF' : '#F1F5FA')
+            .onClick(() => this.selectCodec(option.value))
+          }, (option: CodecOption) => option.value)
+        }.width('100%')
+
+        if (this.codecChangedWhileConnected && this.link.state === 'connected') {
+          Row({ space: 10 }) {
+            Text('编码偏好已更新，重新连接后生效').fontSize(12).fontColor('#315385').layoutWeight(1)
+            Button('立即重连', { type: ButtonType.Normal })
+              .height(32)
+              .padding({ left: 12, right: 12 })
+              .fontSize(12)
+              .fontColor(Color.White)
+              .backgroundColor('#2152BF')
+              .borderRadius(8)
+              .onClick(() => {
+                this.codecChangedWhileConnected = false;
+                this.accessoryLink.reconnect();
+              })
+          }
+          .width('100%')
+          .padding({ left: 10, right: 10, top: 8, bottom: 8 })
+          .backgroundColor('#EEF4FF')
+          .borderRadius(8)
+        }
+      }.width('100%').padding(16).backgroundColor(Color.White).borderRadius(12)
+
       Text('连接').fontSize(14).fontColor('#506073').width('100%').margin({ top: 12 })
       Button({ type: ButtonType.Normal }) {
         Row({ space: 12 }) {
           Column({ space: 4 }) {
             Text('连接诊断').fontSize(16).fontWeight(FontWeight.Medium).fontColor('#202936')
-            Text('查看 USB、会话和画面状态').fontSize(13).fontColor('#506073')
+            Text('查看 USB、会话、码率与解码状态').fontSize(13).fontColor('#506073')
           }.alignItems(HorizontalAlign.Start).layoutWeight(1)
           SymbolGlyph($r('sys.symbol.chevron_right')).fontSize(17).fontColor(['#506073'])
         }.width('100%').padding(16)
@@ -433,9 +608,49 @@ struct Index {
             .onClick(() => { this.controlsExpanded = !this.controlsExpanded; })
           Blank()
           if (this.showFps) {
-            Text(`${this.fps} 帧/秒`).fontSize(13).fontColor(Color.White)
-              .backgroundColor('#B322344D').padding(8).borderRadius(7)
-              .hitTestBehavior(HitTestMode.None)
+            Row({ space: 10 }) {
+              Row({ space: 4 }) {
+                Text(`${this.fps}`)
+                  .fontSize(13)
+                  .fontWeight(FontWeight.Bold)
+                  .fontColor('#7CF5B5')
+                Text('FPS')
+                  .fontSize(11)
+                  .fontColor('#CBD5E1')
+              }
+              Divider().vertical(true).height(12).color('#475569')
+              Row({ space: 4 }) {
+                Text(`${this.bitrateMbps.toFixed(1)}`)
+                  .fontSize(13)
+                  .fontWeight(FontWeight.Bold)
+                  .fontColor(Color.White)
+                Text('Mbps')
+                  .fontSize(11)
+                  .fontColor('#CBD5E1')
+              }
+              Divider().vertical(true).height(12).color('#475569')
+              Text(this.activeCodec.length > 0 ? this.activeCodec : '--')
+                .fontSize(12)
+                .fontWeight(FontWeight.Medium)
+                .fontColor('#93C5FD')
+              if (this.activeResolution.length > 0) {
+                Divider().vertical(true).height(12).color('#475569')
+                Text(this.activeResolution)
+                  .fontSize(12)
+                  .fontColor('#E2E8F0')
+              }
+              if (this.droppedFrames > 0) {
+                Divider().vertical(true).height(12).color('#475569')
+                Text(`丢帧 ${this.droppedFrames}`)
+                  .fontSize(12)
+                  .fontColor('#FCD34D')
+              }
+            }
+            .padding({ left: 12, right: 12, top: 7, bottom: 7 })
+            .backgroundColor('#C8101827')
+            .borderRadius(9)
+            .border({ width: 1, color: '#33FFFFFF' })
+            .hitTestBehavior(HitTestMode.None)
           }
         }
         .width('100%')

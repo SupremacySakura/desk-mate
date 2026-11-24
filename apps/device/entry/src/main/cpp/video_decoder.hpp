@@ -1,6 +1,7 @@
 #pragma once
 
 #include <atomic>
+#include <condition_variable>
 #include <cstdint>
 #include <deque>
 #include <memory>
@@ -39,11 +40,12 @@ public:
     bool Reconfigure(const DecoderConfig &config);
     void Close();
 
-    bool Push(const std::vector<std::uint8_t> &access_unit, std::int64_t pts_us,
+    bool Push(std::vector<std::uint8_t> access_unit, std::int64_t pts_us,
               bool keyframe);
     void SetSurface(void *native_window);
 
-    // Drains queued callback work. Must be called from the control thread.
+    // Compatibility hook; the dedicated decoder control thread processes all
+    // callbacks immediately without blocking the USB I/O thread.
     void ProcessEvents();
 
     struct Stats {
@@ -63,10 +65,10 @@ public:
 
     [[nodiscard]] Stats stats() const;
     [[nodiscard]] std::string last_error() const;
-    [[nodiscard]] bool open() const { return codec_ != nullptr; }
+    [[nodiscard]] bool open() const { return open_.load(std::memory_order_acquire); }
     [[nodiscard]] bool surface_attached() const
     {
-        return codec_ != nullptr && surface_set_;
+        return open_.load(std::memory_order_acquire) && surface_set_;
     }
 
 private:
@@ -99,20 +101,25 @@ private:
     bool DestroyCodec();
     bool PushOne(const PendingFrame &frame, std::uint32_t index,
                  OH_AVBuffer *buffer);
+    void ControlLoop();
+    void DrainEventsAndPump();
     void PumpFrames();
     void NoteResult(const char *operation, OH_AVErrCode result);
     void Enqueue(Event event);
     void Wake();
     void SetError(std::string message);
 
-    int wake_fd_ = -1;
     OH_AVCodec *codec_ = nullptr;
+    std::atomic<bool> open_{false};
     DecoderConfig config_{};
     void *native_window_ = nullptr;
     bool surface_set_ = false;
     std::uint64_t generation_ = 0;
 
     mutable std::mutex mutex_;
+    std::condition_variable control_cv_;
+    bool stop_control_ = false;
+    std::thread control_thread_;
     std::deque<PendingFrame> queued_;
     // Input buffers the codec handed us but we had no frame for yet. Dropping
     // one would permanently shrink the codec's buffer pool and eventually

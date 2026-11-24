@@ -100,22 +100,39 @@ final class CapturePipeline: NSObject, SCStreamOutput, SCStreamDelegate {
             throw CaptureError.encoderCreation("\(error)")
         }
 
-        let content: SCShareableContent
-        do {
-            content = try await SCShareableContent.current
-        } catch {
-            throw CaptureError.start("SCShareableContent.current failed: \(error.localizedDescription)")
+        var targetDisplay: SCDisplay?
+        var lastContentError: Error?
+        for attempt in 0..<25 {
+            do {
+                let content = try await SCShareableContent.current
+                if let found = content.displays.first(where: { $0.displayID == displayID }) {
+                    targetDisplay = found
+                    break
+                }
+            } catch {
+                lastContentError = error
+            }
+            if attempt < 24 {
+                try? await Task.sleep(nanoseconds: 100_000_000)
+            }
         }
-        guard let target = content.displays.first(where: { $0.displayID == displayID }) else {
+        guard let target = targetDisplay else {
+            if let lastContentError {
+                throw CaptureError.start("SCShareableContent.current failed: \(lastContentError.localizedDescription)")
+            }
             throw CaptureError.targetDisplayMissing(displayID)
         }
 
         let configuration = SCStreamConfiguration()
         configuration.width = width
         configuration.height = height
+        // Allow 5% headroom over nominal refresh rate (Sunshine/OBS macOS
+        // pattern) so minor VSYNC clock jitter never causes ScreenCaptureKit
+        // to drop a frame and halve instantaneous FPS.
+        let captureRate = max(frameRate + 2.0, frameRate * 1.05)
         configuration.minimumFrameInterval = CMTime(
             value: 1,
-            timescale: CMTimeScale(frameRate.rounded())
+            timescale: CMTimeScale(captureRate.rounded())
         )
         configuration.queueDepth = 6
         configuration.pixelFormat = kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange

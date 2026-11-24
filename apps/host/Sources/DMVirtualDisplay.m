@@ -2,7 +2,9 @@
 
 #import <CoreGraphics/CoreGraphics.h>
 #import <dispatch/dispatch.h>
+#import <math.h>
 #import <stdlib.h>
+#import <unistd.h>
 
 @protocol DMCGVirtualDisplayDescriptor <NSObject>
 - (instancetype)init;
@@ -88,8 +90,57 @@ static BOOL DMDisplayIsOnlineInList(uint32_t displayID) {
     return found;
 }
 
+static CFDictionaryRef DMCopyAllModesOptions(void) {
+    static CFDictionaryRef options = NULL;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        NSDictionary *dict = @{
+            (__bridge NSString *)kCGDisplayShowDuplicateLowResolutionModes: @YES,
+        };
+        options = (__bridge_retained CFDictionaryRef)dict;
+    });
+    return options;
+}
+
+static void DMWaitShort(double seconds) {
+    if (seconds <= 0) {
+        return;
+    }
+    if ([NSThread isMainThread]) {
+        // SkyLight delivers CGSDisplayNotifyProc updates onto the main run loop;
+        // blocking the main thread with usleep() would starve display discovery.
+        const CFAbsoluteTime deadline = CFAbsoluteTimeGetCurrent() + seconds;
+        for (;;) {
+            const CFAbsoluteTime remaining = deadline - CFAbsoluteTimeGetCurrent();
+            if (remaining <= 0) {
+                break;
+            }
+            const CFRunLoopRunResult result = CFRunLoopRunInMode(
+                kCFRunLoopDefaultMode,
+                remaining < 0.01 ? remaining : 0.01,
+                true
+            );
+            if (result != kCFRunLoopRunHandledSource) {
+                usleep(2000);
+            }
+        }
+    } else {
+        usleep((useconds_t)(seconds * 1000000.0));
+    }
+}
+
+static BOOL DMDisplayHasPublishedModes(uint32_t displayID) {
+    CFArrayRef modes = CGDisplayCopyAllDisplayModes(displayID, DMCopyAllModesOptions());
+    if (modes == NULL) {
+        return NO;
+    }
+    const CFIndex count = CFArrayGetCount(modes);
+    CFRelease(modes);
+    return count > 0;
+}
+
 static BOOL DMAnyBackingScale2Mode(uint32_t displayID) {
-    CFArrayRef modes = CGDisplayCopyAllDisplayModes(displayID, NULL);
+    CFArrayRef modes = CGDisplayCopyAllDisplayModes(displayID, DMCopyAllModesOptions());
     if (modes == NULL) {
         return NO;
     }
@@ -154,26 +205,51 @@ static BOOL DMAnyBackingScale2Mode(uint32_t displayID) {
     descriptor.vendorID = 0x0D53;
     descriptor.productID = 0x0005;
     descriptor.serialNum = 0x0001;
-    descriptor.maxPixelsWide = logicalWidth * scale;
-    descriptor.maxPixelsHigh = logicalHeight * scale;
-    const double widthMM = ((double)(logicalWidth * scale) / 110.0) * 25.4;
-    const double heightMM = ((double)(logicalHeight * scale) / 110.0) * 25.4;
+    const uint32_t pixelWidth = logicalWidth * scale;
+    const uint32_t pixelHeight = logicalHeight * scale;
+    descriptor.maxPixelsWide = pixelWidth;
+    descriptor.maxPixelsHigh = pixelHeight;
+    // Use realistic Retina tablet PPI (~250 PPI) so macOS publishes 2x HiDPI modes.
+    const double ppi = scale == 2 ? 250.0 : 120.0;
+    const double widthMM = ((double)pixelWidth / ppi) * 25.4;
+    const double heightMM = ((double)pixelHeight / ppi) * 25.4;
     descriptor.sizeInMillimeters = CGSizeMake(widthMM, heightMM);
-    descriptor.redPrimary = CGPointMake(0.64, 0.33);
-    descriptor.greenPrimary = CGPointMake(0.30, 0.60);
+    descriptor.redPrimary = CGPointMake(0.68, 0.32);
+    descriptor.greenPrimary = CGPointMake(0.265, 0.69);
     descriptor.bluePrimary = CGPointMake(0.15, 0.06);
     descriptor.whitePoint = CGPointMake(0.3127, 0.3290);
     descriptor.queue = session->_queue;
 
-    id<DMCGVirtualDisplayMode> mode =
-        [(id<DMCGVirtualDisplayMode>)[(id)modeClass alloc] initWithWidth:logicalWidth
-                                                                height:logicalHeight
-                                                           refreshRate:refreshRate];
+    NSMutableArray *modes = [NSMutableArray array];
+    NSMutableArray<NSNumber *> *rates = [NSMutableArray arrayWithObject:@(refreshRate)];
+    if (fabs(refreshRate - 60.0) > 1.0) {
+        [rates addObject:@(60.0)];
+    }
+    for (NSNumber *rateNum in rates) {
+        const double rate = rateNum.doubleValue;
+        if (scale == 2) {
+            id<DMCGVirtualDisplayMode> pixelMode =
+                [(id<DMCGVirtualDisplayMode>)[(id)modeClass alloc] initWithWidth:pixelWidth
+                                                                          height:pixelHeight
+                                                                     refreshRate:rate];
+            if (pixelMode != nil) {
+                [modes addObject:pixelMode];
+            }
+        }
+        id<DMCGVirtualDisplayMode> logicalMode =
+            [(id<DMCGVirtualDisplayMode>)[(id)modeClass alloc] initWithWidth:logicalWidth
+                                                                      height:logicalHeight
+                                                                 refreshRate:rate];
+        if (logicalMode != nil) {
+            [modes addObject:logicalMode];
+        }
+    }
+
     id<DMCGVirtualDisplaySettings> settings =
         [(id<DMCGVirtualDisplaySettings>)[(id)settingsClass alloc] init];
     settings.hiDPI = scale == 2 ? 1 : 0;
     settings.rotation = 0;
-    settings.modes = @[mode];
+    settings.modes = modes;
 
     id<DMCGVirtualDisplay> display =
         [(id<DMCGVirtualDisplay>)[(id)displayClass alloc] initWithDescriptor:descriptor];
@@ -188,7 +264,7 @@ static BOOL DMAnyBackingScale2Mode(uint32_t displayID) {
     }
 
     session->_descriptor = descriptor;
-    session->_mode = mode;
+    session->_mode = modes.firstObject;
     session->_settings = settings;
     session->_display = display;
     session->_displayID = display.displayID;
@@ -217,7 +293,7 @@ static BOOL DMAnyBackingScale2Mode(uint32_t displayID) {
     if (_displayID == kCGNullDirectDisplay) {
         return @[];
     }
-    CFArrayRef modes = CGDisplayCopyAllDisplayModes(_displayID, NULL);
+    CFArrayRef modes = CGDisplayCopyAllDisplayModes(_displayID, DMCopyAllModesOptions());
     if (modes == NULL) {
         return @[];
     }
@@ -235,15 +311,15 @@ static BOOL DMAnyBackingScale2Mode(uint32_t displayID) {
         return DMFailure(@"no live virtual display");
     }
 
-    BOOL online = NO;
-    for (NSInteger attempt = 0; attempt < 50; attempt++) {
-        if (DMDisplayIsOnlineInList(_displayID)) {
-            online = YES;
+    BOOL ready = NO;
+    for (NSInteger attempt = 0; attempt < 160; attempt++) {
+        if (DMDisplayIsOnlineInList(_displayID) && DMDisplayHasPublishedModes(_displayID)) {
+            ready = YES;
             break;
         }
-        usleep(100 * 1000);
+        DMWaitShort(0.025);
     }
-    if (!online) {
+    if (!ready) {
         return DMFailure(@"virtual display never came online");
     }
 
@@ -251,7 +327,18 @@ static BOOL DMAnyBackingScale2Mode(uint32_t displayID) {
         return DMFailure(@"virtual display became the main display; refusing to continue");
     }
     if (CGDisplayIsInMirrorSet(_displayID) || CGDisplayMirrorsDisplay(_displayID) != kCGNullDirectDisplay) {
-        return DMFailure(@"virtual display is in a mirroring set; enable Extended Display mode and retry");
+        CGDisplayConfigRef cfg = NULL;
+        if (CGBeginDisplayConfiguration(&cfg) == kCGErrorSuccess && cfg != NULL) {
+            if (CGConfigureDisplayMirrorOfDisplay(cfg, _displayID, kCGNullDirectDisplay) == kCGErrorSuccess) {
+                CGCompleteDisplayConfiguration(cfg, kCGConfigureForSession);
+                DMWaitShort(0.1);
+            } else {
+                CGCancelDisplayConfiguration(cfg);
+            }
+        }
+        if (CGDisplayIsInMirrorSet(_displayID) || CGDisplayMirrorsDisplay(_displayID) != kCGNullDirectDisplay) {
+            return DMFailure(@"virtual display is in a mirroring set; enable Extended Display mode and retry");
+        }
     }
 
     const size_t expectedPointWidth = _logicalWidth;
@@ -260,7 +347,8 @@ static BOOL DMAnyBackingScale2Mode(uint32_t displayID) {
     const size_t expectedPixelHeight = _logicalHeight * _scale;
 
     CGDisplayModeRef chosen = NULL;
-    CFArrayRef modes = CGDisplayCopyAllDisplayModes(_displayID, NULL);
+    CGDisplayModeRef fallbackSameSize = NULL;
+    CFArrayRef modes = CGDisplayCopyAllDisplayModes(_displayID, DMCopyAllModesOptions());
     if (modes != NULL) {
         for (CFIndex index = 0; index < CFArrayGetCount(modes); index++) {
             CGDisplayModeRef candidate = (CGDisplayModeRef)CFArrayGetValueAtIndex(modes, index);
@@ -268,11 +356,24 @@ static BOOL DMAnyBackingScale2Mode(uint32_t displayID) {
                 CGDisplayModeGetHeight(candidate) == expectedPointHeight &&
                 CGDisplayModeGetPixelWidth(candidate) == expectedPixelWidth &&
                 CGDisplayModeGetPixelHeight(candidate) == expectedPixelHeight) {
-                chosen = CGDisplayModeRetain(candidate);
-                break;
+                const double rate = CGDisplayModeGetRefreshRate(candidate);
+                if (rate <= 0 || fabs(rate - _refreshRate) <= 1.0) {
+                    chosen = CGDisplayModeRetain(candidate);
+                    break;
+                }
+                if (fallbackSameSize == NULL) {
+                    fallbackSameSize = CGDisplayModeRetain(candidate);
+                }
             }
         }
         CFRelease(modes);
+    }
+    if (chosen == NULL && fallbackSameSize != NULL) {
+        chosen = fallbackSameSize;
+        fallbackSameSize = NULL;
+    }
+    if (fallbackSameSize != NULL) {
+        CGDisplayModeRelease(fallbackSameSize);
     }
 
     if (chosen == NULL) {
@@ -291,12 +392,15 @@ static BOOL DMAnyBackingScale2Mode(uint32_t displayID) {
     }
 
     CGDisplayModeRef current = CGDisplayCopyDisplayMode(_displayID);
+    const double currentRate = current != NULL ? CGDisplayModeGetRefreshRate(current) : 0.0;
+    const double chosenRate = CGDisplayModeGetRefreshRate(chosen);
     const BOOL alreadySelected =
         current != NULL &&
         CGDisplayModeGetPixelWidth(current) == expectedPixelWidth &&
         CGDisplayModeGetPixelHeight(current) == expectedPixelHeight &&
         CGDisplayModeGetWidth(current) == expectedPointWidth &&
-        CGDisplayModeGetHeight(current) == expectedPointHeight;
+        CGDisplayModeGetHeight(current) == expectedPointHeight &&
+        fabs(currentRate - chosenRate) <= 0.5;
     if (current != NULL) {
         CGDisplayModeRelease(current);
     }
@@ -331,7 +435,7 @@ static BOOL DMAnyBackingScale2Mode(uint32_t displayID) {
     if (pixelWidth != expectedPixelWidth || pixelHeight != expectedPixelHeight) {
         return DMFailure([NSString stringWithFormat:@"pixel mode verification failed: %@", summary]);
     }
-    if (refreshRate > 0 && fabs(refreshRate - _refreshRate) > 0.5) {
+    if (refreshRate > 0 && chosenRate > 0 && fabs(refreshRate - chosenRate) > 1.5) {
         return DMFailure([NSString stringWithFormat:@"refresh verification failed: %@", summary]);
     }
     if (CGDisplayIsInMirrorSet(_displayID) || CGDisplayMirrorsDisplay(_displayID) != kCGNullDirectDisplay) {
@@ -370,7 +474,7 @@ static BOOL DMAnyBackingScale2Mode(uint32_t displayID) {
     _queue = nil;
     _displayID = kCGNullDirectDisplay;
 
-    for (NSInteger attempt = 0; attempt < 50; attempt++) {
+    for (NSInteger attempt = 0; attempt < 120; attempt++) {
         if (!DMDisplayIsOnlineInList(oldDisplayID)) {
             return @{
                 @"ok": @YES,
@@ -378,7 +482,7 @@ static BOOL DMAnyBackingScale2Mode(uint32_t displayID) {
                 @"onlineAfter": @NO,
             };
         }
-        usleep(100 * 1000);
+        DMWaitShort(0.025);
     }
 
     return @{

@@ -1,72 +1,128 @@
+import AppKit
 import CoreGraphics
 import Foundation
 
-/// Translates normalized Device input back into macOS events on the target
-/// Extended Display. Scroll is a wheel event, so it needs no cursor position.
+/// Translates normalized Device input back into macOS HID events on the target
+/// Extended Display.
 enum InputInjector {
+    private static let eventSource = CGEventSource(stateID: .hidSystemState)
+    private static var lastPoint: CGPoint?
+    private static var lastDownTime: TimeInterval = 0
+    private static var lastDownPoint: CGPoint?
+    private static var clickCount: Int64 = 1
+    private static var scrollRemainderX: Double = 0
+    private static var scrollRemainderY: Double = 0
+
     static func inject(_ event: DMInputEventValue, displayBounds: CGRect) -> Bool {
         switch event.kind {
         case .touchDown, .touchMove, .touchUp, .touchCancel:
             return injectPointer(event, displayBounds: displayBounds)
         case .scroll:
-            return injectScroll(event)
+            return injectScroll(event, displayBounds: displayBounds)
         case .key:
             return false
         }
     }
 
-    private static func injectPointer(_ event: DMInputEventValue, displayBounds: CGRect) -> Bool {
-        let point = CGPoint(
-            x: displayBounds.origin.x + displayBounds.width * CGFloat(clamp(event.x)),
-            y: displayBounds.origin.y + displayBounds.height * CGFloat(clamp(event.y))
+    private static func mapPoint(_ x: Float, _ y: Float, in bounds: CGRect) -> CGPoint {
+        CGPoint(
+            x: bounds.origin.x + bounds.width * CGFloat(clamp(x)),
+            y: bounds.origin.y + bounds.height * CGFloat(clamp(y))
         )
-        guard let move = CGEvent(
-            mouseEventSource: nil,
-            mouseType: .mouseMoved,
-            mouseCursorPosition: point,
-            mouseButton: .left
-        ) else {
-            return false
-        }
-        move.post(tap: .cghidEventTap)
+    }
 
+    private static func injectPointer(_ event: DMInputEventValue, displayBounds: CGRect) -> Bool {
+        let point = mapPoint(event.x, event.y, in: displayBounds)
+        let prev = lastPoint ?? point
+        let deltaX = Int64((point.x - prev.x).rounded())
+        let deltaY = Int64((point.y - prev.y).rounded())
         let isPrimaryDown = (event.flags & 0x0001) != 0
+
         switch event.kind {
         case .touchDown:
-            postMouse(.leftMouseDown, at: point)
-        case .touchUp, .touchCancel:
-            postMouse(.leftMouseUp, at: point)
-        case .touchMove:
-            if isPrimaryDown {
-                postMouse(.leftMouseDragged, at: point)
+            let now = ProcessInfo.processInfo.systemUptime
+            let interval = NSEvent.doubleClickInterval > 0 ? NSEvent.doubleClickInterval : 0.5
+            if let prevDown = lastDownPoint,
+               (now - lastDownTime) <= interval,
+               hypot(point.x - prevDown.x, point.y - prevDown.y) <= 18.0 {
+                clickCount = min(clickCount + 1, 3)
+            } else {
+                clickCount = 1
             }
+            lastDownTime = now
+            lastDownPoint = point
+            lastPoint = point
+            // Ensure cross-display cursor teleport succeeds before clicking.
+            CGWarpMouseCursorPosition(point)
+            CGAssociateMouseAndMouseCursorPosition(1)
+            postMouse(.mouseMoved, at: point, deltaX: 0, deltaY: 0, clickState: 0)
+            postMouse(.leftMouseDown, at: point, deltaX: 0, deltaY: 0, clickState: clickCount)
+        case .touchMove:
+            lastPoint = point
+            if isPrimaryDown {
+                // Never post .mouseMoved during a drag; doing so cancels macOS
+                // window dragging and text selection.
+                postMouse(.leftMouseDragged, at: point, deltaX: deltaX, deltaY: deltaY, clickState: clickCount)
+            } else {
+                postMouse(.mouseMoved, at: point, deltaX: deltaX, deltaY: deltaY, clickState: 0)
+            }
+        case .touchUp, .touchCancel:
+            lastPoint = point
+            postMouse(.leftMouseUp, at: point, deltaX: deltaX, deltaY: deltaY, clickState: clickCount)
         default:
-            break
+            return false
         }
         return true
     }
 
-    private static func postMouse(_ type: CGEventType, at point: CGPoint) {
+    private static func postMouse(
+        _ type: CGEventType,
+        at point: CGPoint,
+        deltaX: Int64,
+        deltaY: Int64,
+        clickState: Int64
+    ) {
         guard let event = CGEvent(
-            mouseEventSource: nil,
+            mouseEventSource: eventSource,
             mouseType: type,
             mouseCursorPosition: point,
             mouseButton: .left
         ) else {
             return
         }
+        if deltaX != 0 || deltaY != 0 {
+            event.setIntegerValueField(.mouseEventDeltaX, value: deltaX)
+            event.setIntegerValueField(.mouseEventDeltaY, value: deltaY)
+        }
+        if clickState > 0 {
+            event.setIntegerValueField(.mouseEventClickState, value: clickState)
+        }
         event.post(tap: .cghidEventTap)
     }
 
-    private static func injectScroll(_ event: DMInputEventValue) -> Bool {
-        /* dx/dy are normalized display sizes; map to whole wheel lines. */
-        let vertical = Int32((-event.dy * 40).rounded())
-        let horizontal = Int32((event.dx * 40).rounded())
+    private static func injectScroll(_ event: DMInputEventValue, displayBounds: CGRect) -> Bool {
+        let point = mapPoint(event.x, event.y, in: displayBounds)
+        if lastPoint == nil || !displayBounds.contains(lastPoint!) {
+            CGWarpMouseCursorPosition(point)
+            CGAssociateMouseAndMouseCursorPosition(1)
+            postMouse(.mouseMoved, at: point, deltaX: 0, deltaY: 0, clickState: 0)
+            lastPoint = point
+        }
+
+        // Scale normalized finger travel to display points with sub-pixel
+        // accumulation so gentle two-finger scrolling never rounds to zero.
+        scrollRemainderY += Double(event.dy) * Double(displayBounds.height) * 1.25
+        scrollRemainderX += Double(event.dx) * Double(displayBounds.width) * 1.25
+        let vertical = Int32(scrollRemainderY.rounded(.towardZero))
+        let horizontal = Int32(scrollRemainderX.rounded(.towardZero))
+        scrollRemainderY -= Double(vertical)
+        scrollRemainderX -= Double(horizontal)
+
         guard vertical != 0 || horizontal != 0 else {
             return false
         }
         guard let scroll = CGEvent(
-            scrollWheelEvent2Source: nil,
+            scrollWheelEvent2Source: eventSource,
             units: .pixel,
             wheelCount: 2,
             wheel1: vertical,
@@ -75,6 +131,7 @@ enum InputInjector {
         ) else {
             return false
         }
+        scroll.location = point
         scroll.post(tap: .cghidEventTap)
         return true
     }

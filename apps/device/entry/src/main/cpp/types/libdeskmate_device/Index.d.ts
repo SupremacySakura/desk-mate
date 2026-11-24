@@ -15,4 +15,6 @@ export const sendInput: (
   keycode: number
 ) => boolean;
 export const noteLifecycle: (event: string) => boolean;
+export const setPreferredCodec: (codec: string) => boolean;
+export const setDisplayMetrics: (width: number, height: number, refreshHz: number) => boolean;
 export const snapshotJson: () => string;

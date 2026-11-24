@@ -5,6 +5,9 @@
 #include "deskmate/session.hpp"
 
 #include <libusb-1.0/libusb.h>
+#ifdef __APPLE__
+#include <pthread/qos.h>
+#endif
 
 #include <algorithm>
 #include <array>
@@ -37,12 +40,6 @@ constexpr std::size_t kMaxRxBufferBytes = 256U * 1024U;
 constexpr std::size_t kHostSchedulerMaxVideoUrbs = 8;
 constexpr std::size_t kHostSchedulerMaxPendingVideoBytes = 2U * 1024U * 1024U;
 constexpr std::uint64_t kHostSchedulerMaxUnsentFrameAgeNs = 100'000'000ULL;
-constexpr int kMaxHandshakeAttempts = 5;
-/* In-place session rebuilds are right while the tablet has not opened the
-   accessory yet. Once it answers and then stalls mid-handshake, the device side
-   is holding a stale session, and only a link hangup makes it rebuild - so
-   after this many in-place retries the link is dropped and re-claimed. */
-constexpr int kInPlaceRetriesBeforeRelink = 2;
 /* 12 KiB payload + 32 B header stays under the tablet's 16 KiB accessory read
    buffer; larger packets are truncated by the driver. 64 fragments per frame
    (the protocol maximum) still covers a 768 KiB keyframe. */
@@ -178,6 +175,9 @@ class UsbByteIo final : public deskmate::protocol::ByteIo {
   }
 
   void rx_loop() {
+#ifdef __APPLE__
+    pthread_set_qos_class_self_np(QOS_CLASS_USER_INTERACTIVE, 0);
+#endif
     std::array<std::uint8_t, 4096> chunk{};
     while (!rx_stop_.load(std::memory_order_acquire)) {
       int transferred = 0;
@@ -352,16 +352,26 @@ bool send_aoa_string(libusb_device_handle *handle, std::uint16_t index,
   return true;
 }
 
-bool switch_to_accessory(libusb_context *context, std::uint16_t vendor_id,
-                         std::uint16_t product_id, std::string &error) {
+enum class ConnectOutcome {
+  Connected,
+  NoDevice,
+  Error,
+};
+
+ConnectOutcome switch_to_accessory(libusb_context *context,
+                                   std::uint16_t vendor_id,
+                                   std::uint16_t product_id,
+                                   std::string &error) {
   libusb_device *device = find_device(context, vendor_id, product_id, false);
   if (device == nullptr) {
-    if (find_device(context, 0, 0, true) != nullptr) {
+    if (libusb_device *existing = find_device(context, 0, 0, true);
+        existing != nullptr) {
+      libusb_unref_device(existing);
       error = "";
-      return true; /* already an accessory */
+      return ConnectOutcome::Connected; /* already an accessory */
     }
-    error = "no device with the configured HDC VID/PID";
-    return false;
+    error.clear();
+    return ConnectOutcome::NoDevice;
   }
 
   libusb_device_handle *handle = nullptr;
@@ -369,7 +379,7 @@ bool switch_to_accessory(libusb_context *context, std::uint16_t vendor_id,
   libusb_unref_device(device);
   if (open_rc != LIBUSB_SUCCESS || handle == nullptr) {
     error = "libusb_open failed: " + libusb_text(open_rc);
-    return false;
+    return ConnectOutcome::Error;
   }
 
   std::uint8_t protocol_bytes[2] = {0, 0};
@@ -382,7 +392,7 @@ bool switch_to_accessory(libusb_context *context, std::uint16_t vendor_id,
     error = "AOA GET_PROTOCOL failed: " + libusb_text(protocol_rc) +
             " (device may not implement AOA)";
     libusb_close(handle);
-    return false;
+    return ConnectOutcome::Error;
   }
   const std::uint16_t protocol = static_cast<std::uint16_t>(protocol_bytes[0]) |
                                  static_cast<std::uint16_t>(protocol_bytes[1])
@@ -390,7 +400,7 @@ bool switch_to_accessory(libusb_context *context, std::uint16_t vendor_id,
   if (protocol < 1) {
     error = "AOA GET_PROTOCOL returned version 0";
     libusb_close(handle);
-    return false;
+    return ConnectOutcome::Error;
   }
 
   const char *strings[4] = {"DeskMate", "DeskMate Extended Display",
@@ -399,7 +409,7 @@ bool switch_to_accessory(libusb_context *context, std::uint16_t vendor_id,
   for (std::uint16_t index = 0; index < 4; ++index) {
     if (!send_aoa_string(handle, index, strings[index], error)) {
       libusb_close(handle);
-      return false;
+      return ConnectOutcome::Error;
     }
   }
   std::uint8_t no_data = 0;
@@ -411,9 +421,9 @@ bool switch_to_accessory(libusb_context *context, std::uint16_t vendor_id,
   libusb_close(handle);
   if (start_rc < 0) {
     error = "AOA START failed: " + libusb_text(start_rc);
-    return false;
+    return ConnectOutcome::Error;
   }
-  return true;
+  return ConnectOutcome::Connected;
 }
 
 }  // namespace
@@ -444,18 +454,33 @@ struct DMBridge {
   bool rx_wakeup = false;
   std::deque<PendingVideo> video_queue;
   std::atomic<std::uint64_t> frames_dropped_backlog{0};
+  std::mutex input_mutex;
+  std::deque<deskmate::protocol::InputEvent> pending_inputs;
+  std::mutex snapshot_mutex;
+  std::string cached_state{"idle"};
+  std::string cached_negotiated{"none"};
+  bool cached_input_enabled{false};
 
   std::thread worker;
   std::atomic<bool> stop_requested{false};
   std::atomic<bool> running{false};
+  std::atomic<bool> auto_match_resolution{false};
   std::atomic<bool> needs_keyframe{false};
   std::atomic<std::uint32_t> keyframe_request_id{0};
+  std::atomic<std::int32_t> negotiated_width{0};
+  std::atomic<std::int32_t> negotiated_height{0};
   std::atomic<std::int32_t> negotiated_refresh_hz{0};
+  std::atomic<std::int32_t> negotiated_codec{0};
 
   DMLogCallback log_callback = nullptr;
   void *log_context = nullptr;
   DMIntentCallback intent_callback = nullptr;
   void *intent_context = nullptr;
+  std::atomic<int32_t> last_dispatched_capture_intent{0};
+  int32_t pending_capture_intent = -1;
+  int32_t pending_input_intent = -1;
+  DMInputCallback input_callback = nullptr;
+  void *input_context = nullptr;
 
   std::atomic<std::uint64_t> frames_submitted{0};
   std::atomic<std::uint64_t> frames_sent{0};
@@ -503,14 +528,10 @@ class HostBoundaryImpl final : public deskmate::protocol::HostBoundary {
   explicit HostBoundaryImpl(DMBridge *bridge) : bridge_(bridge) {}
 
   void set_capture_encoding_intent(bool enabled) override {
-    if (bridge_->intent_callback != nullptr) {
-      bridge_->intent_callback(enabled ? 1 : 0, -1, bridge_->intent_context);
-    }
+    bridge_->pending_capture_intent = enabled ? 1 : 0;
   }
   void set_input_injection_intent(bool enabled) override {
-    if (bridge_->intent_callback != nullptr) {
-      bridge_->intent_callback(-1, enabled ? 1 : 0, bridge_->intent_context);
-    }
+    bridge_->pending_input_intent = enabled ? 1 : 0;
   }
 
  private:
@@ -575,6 +596,8 @@ DMBridge *dm_bridge_create(const DMBridgeConfig *config) {
   if (config != nullptr) {
     bridge->config = *config;
   }
+  bridge->auto_match_resolution.store(
+      bridge->config.auto_match_device_resolution != 0);
   if (bridge->config.width <= 0) {
     bridge->config.width = 2800;
   }
@@ -589,6 +612,13 @@ DMBridge *dm_bridge_create(const DMBridgeConfig *config) {
     bridge->context = nullptr;
   }
   return bridge;
+}
+
+void dm_bridge_set_auto_match_resolution(DMBridge *bridge, int32_t enabled) {
+  if (bridge == nullptr) {
+    return;
+  }
+  bridge->auto_match_resolution.store(enabled != 0);
 }
 
 void dm_bridge_set_log(DMBridge *bridge, DMLogCallback callback, void *context) {
@@ -606,6 +636,15 @@ void dm_bridge_set_intent_callback(DMBridge *bridge, DMIntentCallback callback,
   }
   bridge->intent_callback = callback;
   bridge->intent_context = context;
+}
+
+void dm_bridge_set_input_callback(DMBridge *bridge, DMInputCallback callback,
+                                  void *context) {
+  if (bridge == nullptr) {
+    return;
+  }
+  bridge->input_callback = callback;
+  bridge->input_context = context;
 }
 
 namespace {
@@ -667,28 +706,47 @@ void start_session(DMBridge *bridge) {
         deskmate::protocol::DisplayResolution{width, height, 60});
   }
 
+  session_config.accept_device_resolution =
+      bridge->auto_match_resolution.load();
   auto session = std::make_unique<deskmate::protocol::HostSession>(
       *bridge->io, *bridge->clock, session_config, bridge->boundary);
   session->start();
   std::lock_guard lock(bridge->session_mutex);
+  bridge->negotiated_width.store(0);
+  bridge->negotiated_height.store(0);
   bridge->negotiated_refresh_hz.store(0);
+  bridge->negotiated_codec.store(0);
   bridge->keyframe_request_id.store(0);
   bridge->needs_keyframe.store(false);
+  bridge->pending_capture_intent = -1;
+  bridge->pending_input_intent = -1;
   bridge->session = std::move(session);
 }
 
-bool connect_once(DMBridge *bridge) {
+void wait_stop_or(DMBridge *bridge, std::chrono::milliseconds duration) {
+  std::unique_lock video_lock(bridge->video_mutex);
+  bridge->wake_cv.wait_for(video_lock, duration, [bridge] {
+    return bridge->stop_requested.load();
+  });
+}
+
+ConnectOutcome connect_once(DMBridge *bridge) {
   if (bridge->context == nullptr) {
     bridge->set_error("libusb_init failed");
-    return false;
+    return ConnectOutcome::Error;
   }
   std::string error;
-  if (!switch_to_accessory(bridge->context, kHdcVendorId, kHdcProductId,
-                           error)) {
+  const ConnectOutcome switch_outcome = switch_to_accessory(
+      bridge->context, kHdcVendorId, kHdcProductId, error);
+  if (switch_outcome == ConnectOutcome::NoDevice) {
+    bridge->clear_error();
+    return ConnectOutcome::NoDevice;
+  }
+  if (switch_outcome == ConnectOutcome::Error) {
     if (!error.empty()) {
       bridge->set_error(error);
-      return false;
     }
+    return ConnectOutcome::Error;
   }
 
   libusb_device *device = nullptr;
@@ -700,25 +758,34 @@ bool connect_once(DMBridge *bridge) {
     if (device != nullptr) {
       break;
     }
-    std::this_thread::sleep_for(std::chrono::milliseconds(200));
+    wait_stop_or(bridge, std::chrono::milliseconds(200));
+  }
+  if (bridge->stop_requested.load()) {
+    if (device != nullptr) {
+      libusb_unref_device(device);
+    }
+    return ConnectOutcome::NoDevice;
   }
   if (device == nullptr) {
     bridge->set_error("accessory 18d1:2d00 did not enumerate");
-    return false;
+    return ConnectOutcome::Error;
   }
 
   const int open_rc = libusb_open(device, &bridge->handle);
   if (open_rc != LIBUSB_SUCCESS || bridge->handle == nullptr) {
     libusb_unref_device(device);
+    bridge->handle = nullptr;
     bridge->set_error("cannot open accessory: " + libusb_text(open_rc));
-    return false;
+    return ConnectOutcome::Error;
   }
 
   BulkEndpoints endpoints;
   if (!find_bulk_endpoints(device, endpoints, error)) {
     libusb_unref_device(device);
+    libusb_close(bridge->handle);
+    bridge->handle = nullptr;
     bridge->set_error(error);
-    return false;
+    return ConnectOutcome::Error;
   }
   libusb_unref_device(device);
 
@@ -726,8 +793,10 @@ bool connect_once(DMBridge *bridge) {
   const int claim_rc =
       libusb_claim_interface(bridge->handle, endpoints.interface_number);
   if (claim_rc != LIBUSB_SUCCESS) {
+    libusb_close(bridge->handle);
+    bridge->handle = nullptr;
     bridge->set_error("libusb_claim_interface failed: " + libusb_text(claim_rc));
-    return false;
+    return ConnectOutcome::Error;
   }
   bridge->interface_claimed = true;
 
@@ -750,9 +819,10 @@ bool connect_once(DMBridge *bridge) {
          << static_cast<int>(endpoints.endpoint_out) << std::dec;
     bridge->log(line.str());
   }
+  bridge->clear_error();
   bridge->clock = std::make_unique<deskmate::protocol::SteadyClock>();
   start_session(bridge);
-  return true;
+  return ConnectOutcome::Connected;
 }
 
 void teardown_link(DMBridge *bridge) {
@@ -760,8 +830,27 @@ void teardown_link(DMBridge *bridge) {
     std::lock_guard lock(bridge->session_mutex);
     bridge->needs_keyframe.store(false);
     bridge->keyframe_request_id.store(0);
+    bridge->negotiated_width.store(0);
+    bridge->negotiated_height.store(0);
     bridge->negotiated_refresh_hz.store(0);
+    bridge->negotiated_codec.store(0);
+    bridge->pending_capture_intent = -1;
+    bridge->pending_input_intent = -1;
     bridge->session.reset();
+  }
+  if (bridge->last_dispatched_capture_intent.exchange(0) != 0 &&
+      bridge->intent_callback != nullptr) {
+    bridge->intent_callback(0, 0, bridge->intent_context);
+  }
+  {
+    std::lock_guard lock(bridge->input_mutex);
+    bridge->pending_inputs.clear();
+  }
+  {
+    std::lock_guard lock(bridge->snapshot_mutex);
+    bridge->cached_state = "idle";
+    bridge->cached_negotiated = "none";
+    bridge->cached_input_enabled = false;
   }
   bridge->io.reset();
   bridge->clock.reset();
@@ -776,25 +865,37 @@ void teardown_link(DMBridge *bridge) {
 }
 
 void worker_main(DMBridge *bridge) {
-  int link_failures = 0;
+#ifdef __APPLE__
+  pthread_set_qos_class_self_np(QOS_CLASS_USER_INTERACTIVE, 0);
+#endif
   int handshake_failures = 0;
+  std::uint64_t link_rx_start = bridge->rx_bytes.load();
   while (!bridge->stop_requested.load()) {
     if (bridge->handle == nullptr) {
-      if (!connect_once(bridge)) {
-        if (bridge->stop_requested.load()) {
-          break;
+      const ConnectOutcome outcome = connect_once(bridge);
+      if (bridge->stop_requested.load()) {
+        break;
+      }
+      if (outcome == ConnectOutcome::NoDevice) {
+        {
+          std::lock_guard snap_lock(bridge->snapshot_mutex);
+          bridge->cached_state = "idle";
+          bridge->cached_negotiated = "none";
+          bridge->cached_input_enabled = false;
         }
-        ++link_failures;
-        if (link_failures >= kMaxHandshakeAttempts) {
-          bridge->set_error("giving up after repeated USB link failures");
-          break;
-        }
-        std::this_thread::sleep_for(std::chrono::seconds(1));
+        bridge->running.store(false);
+        wait_stop_or(bridge, std::chrono::milliseconds(500));
         continue;
       }
-      link_failures = 0;
+      if (outcome == ConnectOutcome::Error) {
+        bridge->running.store(false);
+        wait_stop_or(bridge, std::chrono::milliseconds(1000));
+        continue;
+      }
+      link_rx_start = bridge->rx_bytes.load();
+      handshake_failures = 0;
       bridge->running.store(true);
-      bridge->log("usb link up; waiting for the tablet to send ClientHello");
+      bridge->log("usb link up; waiting for the tablet to allow the USB accessory and send ClientHello");
     }
 
     /* The link stays claimed for as long as the tablet keeps it. A handshake
@@ -814,6 +915,9 @@ void worker_main(DMBridge *bridge) {
       bool terminal = false;
       bool has_pending_output = false;
       bool write_blocked = false;
+      bool got_new_input = false;
+      int32_t dispatch_capture_intent = -1;
+      int32_t dispatch_input_intent = -1;
       {
         std::lock_guard lock(bridge->session_mutex);
         if (bridge->session == nullptr) {
@@ -858,6 +962,17 @@ void worker_main(DMBridge *bridge) {
           if (bridge->io != nullptr) {
             write_blocked = bridge->io->consume_write_blocked();
           }
+          auto input_batch = bridge->session->take_input_events();
+          if (!input_batch.empty()) {
+            std::lock_guard input_lock(bridge->input_mutex);
+            for (const auto &event : input_batch) {
+              if (bridge->pending_inputs.size() >= 512) {
+                bridge->pending_inputs.pop_front();
+              }
+              bridge->pending_inputs.push_back(event);
+            }
+            got_new_input = true;
+          }
           if (!terminal) {
             if (const auto &idr = bridge->session->pending_idr_request();
                 idr.has_value()) {
@@ -867,10 +982,36 @@ void worker_main(DMBridge *bridge) {
               bridge->needs_keyframe.store(false);
               bridge->keyframe_request_id.store(0);
             }
+            std::string snap_state = state_name(bridge->session->state());
+            std::string snap_negotiated = "none";
             if (const auto &stream = bridge->session->negotiated_stream();
                 stream.has_value()) {
+              bridge->negotiated_width.store(
+                  static_cast<std::int32_t>(stream->profile.resolution.width));
+              bridge->negotiated_height.store(
+                  static_cast<std::int32_t>(stream->profile.resolution.height));
               bridge->negotiated_refresh_hz.store(
                   static_cast<std::int32_t>(stream->profile.resolution.refresh_hz));
+              bridge->negotiated_codec.store(
+                  stream->profile.encoder == deskmate::protocol::VideoEncoder::Hevc
+                      ? 2
+                      : 1);
+              std::ostringstream summary;
+              summary << (stream->profile.encoder ==
+                                  deskmate::protocol::VideoEncoder::Hevc
+                              ? "hevc"
+                              : "h264")
+                      << " " << stream->profile.resolution.width << "x"
+                      << stream->profile.resolution.height << "@"
+                      << stream->profile.resolution.refresh_hz;
+              snap_negotiated = summary.str();
+            }
+            const bool snap_input = bridge->session->input_injection_intent();
+            {
+              std::lock_guard snap_lock(bridge->snapshot_mutex);
+              bridge->cached_state = std::move(snap_state);
+              bridge->cached_negotiated = std::move(snap_negotiated);
+              bridge->cached_input_enabled = snap_input;
             }
           } else {
             bridge->needs_keyframe.store(false);
@@ -880,7 +1021,22 @@ void worker_main(DMBridge *bridge) {
             failure = std::string(deskmate::protocol::session_failure_name(
                 *bridge->session->failure()));
           }
+          dispatch_capture_intent = bridge->pending_capture_intent;
+          dispatch_input_intent = bridge->pending_input_intent;
+          bridge->pending_capture_intent = -1;
+          bridge->pending_input_intent = -1;
         }
+      }
+      if ((dispatch_capture_intent >= 0 || dispatch_input_intent >= 0) &&
+          bridge->intent_callback != nullptr) {
+        if (dispatch_capture_intent >= 0) {
+          bridge->last_dispatched_capture_intent.store(dispatch_capture_intent);
+        }
+        bridge->intent_callback(dispatch_capture_intent, dispatch_input_intent,
+                                bridge->intent_context);
+      }
+      if (got_new_input && bridge->input_callback != nullptr) {
+        bridge->input_callback(bridge->input_context);
       }
       const auto now = std::chrono::steady_clock::now();
       if (bridge->perf_trace && (now >= next_perf_log || terminal)) {
@@ -949,8 +1105,7 @@ void worker_main(DMBridge *bridge) {
         }
         if (state == "awaiting_client_hello") {
           line += " (waiting for the tablet to allow the USB accessory, attempt " +
-                  std::to_string(handshake_failures + 1) + "/" +
-                  std::to_string(kMaxHandshakeAttempts) + ")";
+                  std::to_string(handshake_failures + 1) + ")";
         }
         bridge->log(line);
       }
@@ -971,48 +1126,35 @@ void worker_main(DMBridge *bridge) {
       break;
     }
 
+    const bool device_answered = bridge->rx_bytes.load() > link_rx_start;
     const bool handshake_retry =
         (failure == "hello_timeout" || failure == "ready_timeout") &&
-        bridge->handle != nullptr;
+        bridge->handle != nullptr && !device_answered;
     if (handshake_retry) {
-      ++handshake_failures;
-      bridge->reconnects.fetch_add(1);
-      if (handshake_failures >= kMaxHandshakeAttempts) {
-        bridge->set_error(
-            "giving up after " + std::to_string(handshake_failures) +
-            " handshake attempts; last failure: " + failure +
-            " (keep the tablet app in the foreground across the AOA flip, "
-            "then relaunch)");
-        break;
-      }
-      /* Once the tablet has answered at least once, an in-place retry can be
-         swallowed by the stale device session. Drop the link so the tablet's
-         worker rebuilds; the next attempt re-claims and starts clean. */
-      if (bridge->rx_bytes.load() > 0 &&
-          handshake_failures >= kInPlaceRetriesBeforeRelink) {
-        bridge->set_error(failure + " (device answered but stalled; relinking)");
-        bridge->log("handshake stalled after the tablet answered; relinking");
+      libusb_device *still_there = find_device(bridge->context, 0, 0, true);
+      if (still_there == nullptr) {
+        bridge->clear_error();
+        bridge->log("accessory detached during handshake; waiting for reconnection");
         teardown_link(bridge);
-        std::this_thread::sleep_for(std::chrono::seconds(1));
+        wait_stop_or(bridge, std::chrono::milliseconds(500));
         continue;
       }
+      libusb_unref_device(still_there);
+      ++handshake_failures;
+      bridge->reconnects.fetch_add(1);
       bridge->set_error(failure +
                         " (retrying the session, tablet has not answered)");
       bridge->log("handshake timed out; retrying the session on the same link");
       start_session(bridge);
-      std::this_thread::sleep_for(std::chrono::seconds(1));
+      wait_stop_or(bridge, std::chrono::milliseconds(300));
       continue;
     }
 
     bridge->set_error(failure.empty() ? "session terminated" : failure);
     teardown_link(bridge);
     ++handshake_failures;
-    if (handshake_failures >= kMaxHandshakeAttempts) {
-      bridge->set_error("giving up after repeated session failures");
-      break;
-    }
     bridge->reconnects.fetch_add(1);
-    std::this_thread::sleep_for(std::chrono::seconds(1));
+    wait_stop_or(bridge, std::chrono::milliseconds(500));
   }
   bridge->running.store(false);
 }
@@ -1090,15 +1232,11 @@ int32_t dm_bridge_take_input(DMBridge *bridge, DMInputEvent *out,
   if (bridge == nullptr || out == nullptr || capacity <= 0) {
     return 0;
   }
-  std::unique_lock lock(bridge->session_mutex, std::try_to_lock);
-  if (!lock.owns_lock() || bridge->session == nullptr) {
-    return 0;
-  }
-  const auto events = bridge->session->take_input_events();
+  std::lock_guard lock(bridge->input_mutex);
   const int32_t count =
-      std::min<int32_t>(capacity, static_cast<int32_t>(events.size()));
+      std::min<int32_t>(capacity, static_cast<int32_t>(bridge->pending_inputs.size()));
   for (int32_t index = 0; index < count; ++index) {
-    const auto &event = events[static_cast<std::size_t>(index)];
+    const auto &event = bridge->pending_inputs.front();
     out[index].kind = static_cast<int32_t>(event.kind);
     out[index].pointer_id = event.pointer_id;
     out[index].flags = event.flags;
@@ -1107,6 +1245,7 @@ int32_t dm_bridge_take_input(DMBridge *bridge, DMInputEvent *out,
     out[index].dx = event.dx;
     out[index].dy = event.dy;
     out[index].keycode = event.keycode;
+    bridge->pending_inputs.pop_front();
   }
   bridge->input_events.fetch_add(static_cast<std::uint64_t>(count));
   return count;
@@ -1120,24 +1259,20 @@ uint32_t dm_bridge_keyframe_request_id(DMBridge *bridge) {
   return bridge != nullptr ? bridge->keyframe_request_id.load() : 0;
 }
 
+int32_t dm_bridge_negotiated_width(DMBridge *bridge) {
+  return bridge != nullptr ? bridge->negotiated_width.load() : 0;
+}
+
+int32_t dm_bridge_negotiated_height(DMBridge *bridge) {
+  return bridge != nullptr ? bridge->negotiated_height.load() : 0;
+}
+
 int32_t dm_bridge_negotiated_refresh_hz(DMBridge *bridge) {
-  if (bridge == nullptr) {
-    return 0;
-  }
-  const std::int32_t cached = bridge->negotiated_refresh_hz.load();
-  if (cached > 0) {
-    return cached;
-  }
-  std::unique_lock lock(bridge->session_mutex, std::try_to_lock);
-  if (lock.owns_lock() && bridge->session != nullptr) {
-    if (const auto &stream = bridge->session->negotiated_stream();
-        stream.has_value()) {
-      const auto hz = static_cast<std::int32_t>(stream->profile.resolution.refresh_hz);
-      bridge->negotiated_refresh_hz.store(hz);
-      return hz;
-    }
-  }
-  return 0;
+  return bridge != nullptr ? bridge->negotiated_refresh_hz.load() : 0;
+}
+
+int32_t dm_bridge_negotiated_codec(DMBridge *bridge) {
+  return bridge != nullptr ? bridge->negotiated_codec.load() : 0;
 }
 
 int32_t dm_bridge_host_event(DMBridge *bridge, int32_t event) {
@@ -1167,11 +1302,28 @@ int32_t dm_bridge_host_event(DMBridge *bridge, int32_t event) {
     default:
       return -1;
   }
-  std::lock_guard lock(bridge->session_mutex);
-  if (bridge->session == nullptr) {
-    return -1;
+  deskmate::protocol::SessionCommandStatus status;
+  int32_t dispatch_capture = -1;
+  int32_t dispatch_input = -1;
+  {
+    std::lock_guard lock(bridge->session_mutex);
+    if (bridge->session == nullptr) {
+      return -1;
+    }
+    status = bridge->session->handle_host_event(mapped);
+    dispatch_capture = bridge->pending_capture_intent;
+    dispatch_input = bridge->pending_input_intent;
+    bridge->pending_capture_intent = -1;
+    bridge->pending_input_intent = -1;
   }
-  const auto status = bridge->session->handle_host_event(mapped);
+  if ((dispatch_capture >= 0 || dispatch_input >= 0) &&
+      bridge->intent_callback != nullptr) {
+    if (dispatch_capture >= 0) {
+      bridge->last_dispatched_capture_intent.store(dispatch_capture);
+    }
+    bridge->intent_callback(dispatch_capture, dispatch_input,
+                            bridge->intent_context);
+  }
   return status == deskmate::protocol::SessionCommandStatus::Ok ? 0 : 1;
 }
 
@@ -1183,26 +1335,10 @@ char *dm_bridge_snapshot(DMBridge *bridge) {
   std::string negotiated = "none";
   bool input_enabled = false;
   {
-    std::unique_lock lock(bridge->session_mutex, std::try_to_lock);
-    if (!lock.owns_lock()) {
-      return nullptr;
-    }
-    if (bridge->session != nullptr) {
-      state = state_name(bridge->session->state());
-      if (const auto &stream = bridge->session->negotiated_stream();
-          stream.has_value()) {
-        std::ostringstream summary;
-        summary << (stream->profile.encoder ==
-                            deskmate::protocol::VideoEncoder::Hevc
-                        ? "hevc"
-                        : "h264")
-                << " " << stream->profile.resolution.width << "x"
-                << stream->profile.resolution.height << "@"
-                << stream->profile.resolution.refresh_hz;
-        negotiated = summary.str();
-      }
-      input_enabled = bridge->session->input_injection_intent();
-    }
+    std::lock_guard lock(bridge->snapshot_mutex);
+    state = bridge->cached_state;
+    negotiated = bridge->cached_negotiated;
+    input_enabled = bridge->cached_input_enabled;
   }
   std::string error;
   {

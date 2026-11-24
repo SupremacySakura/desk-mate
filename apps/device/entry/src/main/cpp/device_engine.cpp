@@ -58,21 +58,18 @@ std::uint32_t RandomNonce()
     return value;
 }
 
-CapabilitySet DeviceCapabilities()
+void AppendResolutionUnique(std::vector<DisplayResolution> &list,
+                            std::uint16_t width, std::uint16_t height,
+                            std::uint16_t refresh_hz)
 {
-    CapabilitySet capabilities;
-    capabilities.encoders = {VideoEncoder::Hevc, VideoEncoder::H264};
-    capabilities.pixel_formats = {PixelFormat::Nv12};
-    capabilities.resolutions = {
-        DisplayResolution{2800, 1840, 120},
-        DisplayResolution{2800, 1840, 90},
-        DisplayResolution{2800, 1840, 60},
-        DisplayResolution{1920, 1280, 120},
-        DisplayResolution{1920, 1280, 60},
-        DisplayResolution{1280, 800, 120},
-        DisplayResolution{1280, 800, 60},
-    };
-    return capabilities;
+    if (width == 0 || height == 0 || refresh_hz == 0 ||
+        list.size() >= protocol::kMaxCapabilityItems) {
+        return;
+    }
+    const DisplayResolution candidate{width, height, refresh_hz};
+    if (std::find(list.begin(), list.end(), candidate) == list.end()) {
+        list.push_back(candidate);
+    }
 }
 
 const char *StateName(SessionState state)
@@ -226,6 +223,9 @@ bool DeviceEngine::StartSession(int accessory_fd)
         session_failure_.clear();
         session_state_ = "starting";
         decoder_stats_ = {};
+        rx_bytes_ = 0;
+        active_codec_.clear();
+        active_resolution_.clear();
         ++sessions_started_;
     }
     running_.store(true);
@@ -304,6 +304,87 @@ void DeviceEngine::NoteLifecycle(const std::string &event)
 {
     std::lock_guard lock(mutex_);
     lifecycle_ = event;
+}
+
+void DeviceEngine::SetPreferredCodec(const std::string &codec)
+{
+    std::lock_guard lock(mutex_);
+    if (codec == "hevc" || codec == "h264" || codec == "auto") {
+        preferred_codec_ = codec;
+    } else {
+        preferred_codec_ = "auto";
+    }
+    OH_LOG_INFO(LOG_APP, "preferred codec set to %{public}s",
+                preferred_codec_.c_str());
+}
+
+void DeviceEngine::SetDisplayMetrics(int pixel_width, int pixel_height,
+                                     int refresh_hz)
+{
+    if (pixel_width < 640 || pixel_height < 480) {
+        return;
+    }
+    // Always advertise landscape dimensions (wider edge first).
+    int w = std::max(pixel_width, pixel_height);
+    int h = std::min(pixel_width, pixel_height);
+    // Keep dimensions even for 4:2:0 NV12 / HiDPI 2x compatibility.
+    w &= ~1;
+    h &= ~1;
+    int hz = 60;
+    if (refresh_hz >= 115) {
+        hz = 120;
+    } else if (refresh_hz >= 85) {
+        hz = 90;
+    }
+    std::lock_guard lock(mutex_);
+    display_width_ = w;
+    display_height_ = h;
+    display_refresh_hz_ = hz;
+    OH_LOG_INFO(LOG_APP, "device display metrics %{public}dx%{public}d@%{public}d",
+                w, h, hz);
+}
+
+CapabilitySet DeviceEngine::BuildDeviceCapabilities() const
+{
+    std::string codec;
+    int width = 2800;
+    int height = 1840;
+    int refresh_hz = 120;
+    {
+        std::lock_guard lock(mutex_);
+        codec = preferred_codec_;
+        width = display_width_;
+        height = display_height_;
+        refresh_hz = display_refresh_hz_;
+    }
+
+    CapabilitySet capabilities;
+    if (codec == "hevc") {
+        capabilities.encoders = {VideoEncoder::Hevc};
+    } else if (codec == "h264") {
+        capabilities.encoders = {VideoEncoder::H264};
+    } else {
+        capabilities.encoders = {VideoEncoder::Hevc, VideoEncoder::H264};
+    }
+    capabilities.pixel_formats = {PixelFormat::Nv12};
+
+    const auto native_w = static_cast<std::uint16_t>(width);
+    const auto native_h = static_cast<std::uint16_t>(height);
+    const auto native_hz = static_cast<std::uint16_t>(refresh_hz);
+    AppendResolutionUnique(capabilities.resolutions, native_w, native_h, native_hz);
+    if (native_hz > 90) {
+        AppendResolutionUnique(capabilities.resolutions, native_w, native_h, 90);
+    }
+    if (native_hz > 60) {
+        AppendResolutionUnique(capabilities.resolutions, native_w, native_h, 60);
+    }
+    // Standard fallback presets (total capped at kMaxCapabilityItems = 8).
+    AppendResolutionUnique(capabilities.resolutions, 2800, 1840, 120);
+    AppendResolutionUnique(capabilities.resolutions, 2800, 1840, 60);
+    AppendResolutionUnique(capabilities.resolutions, 1920, 1280, 120);
+    AppendResolutionUnique(capabilities.resolutions, 1920, 1280, 60);
+    AppendResolutionUnique(capabilities.resolutions, 1280, 800, 60);
+    return capabilities;
 }
 
 bool DeviceEngine::SendInput(std::uint8_t kind, std::uint8_t pointer_id,
@@ -387,10 +468,11 @@ bool DeviceEngine::EnsureDecoder()
         profile_dirty_ = false;
         if (ok) {
             ++decoder_opens_;
-            negotiated_ = std::string(config.mime) + " " +
-                          std::to_string(config.width) + "x" +
-                          std::to_string(config.height) + "@" +
-                          std::to_string(config.frame_rate);
+            active_codec_ = profile->encoder == VideoEncoder::Hevc ? "HEVC" : "H.264";
+            active_resolution_ = std::to_string(config.width) + "x" +
+                                 std::to_string(config.height) + "@" +
+                                 std::to_string(config.frame_rate);
+            negotiated_ = std::string(config.mime) + " " + active_resolution_;
         } else {
             last_error_ = decoder_->last_error();
         }
@@ -466,7 +548,8 @@ void DeviceEngine::DrainVideo()
         }
         const bool keyframe =
             (frame.header.flags & protocol::kFlagKeyFrame) != 0;
-        if (decoder_->Push(frame.payload, static_cast<std::int64_t>(frame.header.timestamp_us),
+        if (decoder_->Push(std::move(frame.payload),
+                           static_cast<std::int64_t>(frame.header.timestamp_us),
                            keyframe)) {
             std::lock_guard lock(mutex_);
             ++frames_received_;
@@ -508,15 +591,21 @@ void DeviceEngine::WorkerMain()
     int rebuilds = 0;
     auto last_report_ns = std::chrono::steady_clock::now();
     while (!stop_requested_.load()) {
+        const CapabilitySet capabilities = BuildDeviceCapabilities();
+        DeviceSessionConfig session_config;
+        session_config.session_nonce = RandomNonce();
+        session_config.capabilities = capabilities;
+        session_config.limits.initial_idr_timeout_ns = 10'000'000'000ULL;
         {
             std::lock_guard lock(mutex_);
+            session_failure_.clear();
             session_ = std::make_unique<DeviceSession>(
-                io, clock, DeviceSessionConfig{RandomNonce(), DeviceCapabilities()},
-                &boundary);
+                io, clock, std::move(session_config), &boundary);
         }
         session_->start();
 
         bool rebuild = false;
+        bool is_io_failure = false;
         SessionState last_published_state = SessionState::Idle;
         config_dirty_.store(true, std::memory_order_release);
         while (!stop_requested_.load()) {
@@ -533,6 +622,7 @@ void DeviceEngine::WorkerMain()
             if (ready < 0 && errno != EINTR) {
                 std::lock_guard lock(mutex_);
                 last_error_ = std::string("poll failed: ") + std::strerror(errno);
+                is_io_failure = true;
                 rebuild = true;
                 break;
             }
@@ -540,6 +630,7 @@ void DeviceEngine::WorkerMain()
                 io.note_poll_revents(fds[0].revents);
                 std::lock_guard lock(mutex_);
                 last_error_ = "accessory descriptor hung up";
+                is_io_failure = true;
                 rebuild = true;
                 break;
             }
@@ -548,31 +639,6 @@ void DeviceEngine::WorkerMain()
             if (woke_by_eventfd) {
                 PumpTimer();
             }
-            session_->pump();
-
-            if (config_dirty_.exchange(false, std::memory_order_acq_rel)) {
-                bool dirty = false;
-                bool release = false;
-                {
-                    std::lock_guard lock(mutex_);
-                    dirty = profile_dirty_;
-                    release = release_requested_;
-                    release_requested_ = false;
-                }
-                if (release && decoder_ != nullptr) {
-                    decoder_->Close();
-                    decoder_.reset();
-                }
-                ApplyPendingSurface();
-                if (dirty) {
-                    (void)EnsureDecoder();
-                }
-            }
-            if (decoder_ != nullptr) {
-                decoder_->ProcessEvents();
-            }
-            DrainVideo();
-
             if (has_pending_input_.exchange(false, std::memory_order_acq_rel)) {
                 std::deque<InputEvent> pending_input;
                 {
@@ -595,16 +661,45 @@ void DeviceEngine::WorkerMain()
                     input_events_rejected_ += rejected;
                 }
             }
+            session_->pump();
+
+            if (config_dirty_.exchange(false, std::memory_order_acq_rel)) {
+                bool dirty = false;
+                bool release = false;
+                {
+                    std::lock_guard lock(mutex_);
+                    dirty = profile_dirty_;
+                    release = release_requested_;
+                    release_requested_ = false;
+                }
+                if (release && decoder_ != nullptr) {
+                    decoder_->Close();
+                    decoder_.reset();
+                }
+                ApplyPendingSurface();
+                if (dirty) {
+                    (void)EnsureDecoder();
+                }
+            }
+            DrainVideo();
 
             const SessionState current_state = session_->state();
+            if (current_state == SessionState::Streaming) {
+                rebuilds = 0;
+            }
             if (woke_by_eventfd || current_state != last_published_state ||
                 session_->is_terminal()) {
                 last_published_state = current_state;
                 const VideoDecoder::Stats latest_decoder =
                     decoder_ != nullptr ? decoder_->stats() : VideoDecoder::Stats{};
+                const auto io_snapshot = io.stats();
                 std::lock_guard lock(mutex_);
                 decoder_stats_ = latest_decoder;
+                rx_bytes_ = io_snapshot.bytes_read;
                 session_state_ = StateName(current_state);
+                if (current_state == SessionState::Streaming) {
+                    last_error_.clear();
+                }
                 if (session_->failure().has_value()) {
                     session_failure_ =
                         std::string(protocol::session_failure_name(
@@ -614,6 +709,8 @@ void DeviceEngine::WorkerMain()
 
             if (session_->is_terminal()) {
                 const auto failure = session_->failure();
+                is_io_failure = failure.has_value() &&
+                                *failure == protocol::SessionFailure::IoError;
                 OH_LOG_ERROR(LOG_APP,
                              "session terminal state=%{public}s "
                              "failure=%{public}s detail=%{public}s "
@@ -708,12 +805,17 @@ void DeviceEngine::WorkerMain()
         if (!rebuild || stop_requested_.load()) {
             break;
         }
-        if (++rebuilds > kMaxSessionRebuilds) {
-            std::lock_guard lock(mutex_);
-            last_error_ = "session rebuild limit reached";
-            break;
+        if (is_io_failure) {
+            if (++rebuilds > kMaxSessionRebuilds) {
+                std::lock_guard lock(mutex_);
+                last_error_ = "session rebuild limit reached";
+                break;
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(300));
+        } else {
+            rebuilds = 0;
+            std::this_thread::sleep_for(std::chrono::milliseconds(400));
         }
-        std::this_thread::sleep_for(std::chrono::milliseconds(300));
     }
 
     timer.Stop();
@@ -744,6 +846,10 @@ std::string DeviceEngine::SnapshotJson() const
          << "\"session\":\"" << session_state_ << "\","
          << "\"failure\":\"" << session_failure_ << "\","
          << "\"profile\":\"" << negotiated_ << "\","
+         << "\"codec\":\"" << active_codec_ << "\","
+         << "\"resolution\":\"" << active_resolution_ << "\","
+         << "\"preferredCodec\":\"" << preferred_codec_ << "\","
+         << "\"rxBytes\":" << rx_bytes_ << ","
          << "\"lifecycle\":\"" << lifecycle_ << "\","
          << "\"surface\":\"" << (surface_id_.empty() ? "none" : "attached") << "\","
          << "\"framesReceived\":" << frames_received_ << ","

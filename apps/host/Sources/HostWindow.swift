@@ -10,13 +10,19 @@ struct HostWindowState: Equatable {
     var guidance = "打开平板上的 DeskMate，再接上 USB 数据线。"
     var badge = "未连接"
     var linked = false
-    var source = "未选择"
+    var source = "自动创建虚拟显示器"
+    var streamSummary = ""
     var video = "等待连接"
     var input = "未开启"
     var screenPermission = false
     var inputPermission = false
     var videoEnabled = true
     var inputEnabled = false
+    var autoVirtualDisplay = true
+    var position: DisplayPosition = .right
+    var liveFps = 0
+    var liveBitrateMbps = 0.0
+    var inputEventCount = 0
     var choices: [DisplayChoice] = []
     var selected: UInt32?
     var fixedSource = false
@@ -41,6 +47,8 @@ struct HostWindow: View {
 
     @ObservedObject var model: HostWindowModel
     let chooseSource: (UInt32?) -> Void
+    let setAutoVirtual: (Bool) -> Void
+    let setPosition: (DisplayPosition) -> Void
     let setVideo: (Bool) -> Void
     let setInput: (Bool) -> Void
     let openPermission: (Bool) -> Void
@@ -155,7 +163,12 @@ struct HostWindow: View {
                         .labelsHidden().toggleStyle(.switch).controlSize(.small)
                 }
                 Divider()
-                row("反向输入") { Text(state.input).foregroundStyle(.secondary) }
+                row("反向输入") {
+                    Text(state.input).foregroundStyle(.secondary)
+                    if !state.inputPermission {
+                        Button("去授权") { openPermission(false) }.buttonStyle(.link)
+                    }
+                }
             }
             HStack {
                 Button("查看诊断") { model.showDiagnostics = true }.buttonStyle(.link)
@@ -175,24 +188,48 @@ struct HostWindow: View {
     private var settings: some View {
         VStack(alignment: .leading, spacing: 15) {
             group("扩展显示") {
-                row("显示来源") {
-                    if state.fixedSource {
-                        Text(state.source).foregroundStyle(.secondary)
-                    } else {
-                        Picker("显示来源", selection: Binding(get: { state.selected }, set: chooseSource)) {
-                            Text("请选择扩展显示器").tag(nil as UInt32?).disabled(true)
-                            ForEach(state.choices) { item in Text(item.title).tag(Optional(item.id)) }
-                        }
-                        .labelsHidden()
-                        .fixedSize()
+                if !state.fixedSource {
+                    row("自动创建虚拟显示器") {
+                        Toggle("自动创建虚拟显示器", isOn: Binding(get: { state.autoVirtualDisplay }, set: setAutoVirtual))
+                            .labelsHidden().toggleStyle(.switch).controlSize(.small)
                     }
-                }
-                if state.needsRestart {
-                    Text("已保存新来源，重新打开 DeskMate 后生效。").font(.caption).foregroundStyle(.secondary)
-                } else if state.choices.isEmpty && !state.fixedSource {
-                    Text("未找到可借用的扩展显示器。主屏与镜像屏不会出现在列表中。")
+                    Text("连接平板时自动按平板物理分辨率创建 HiDPI 虚拟屏，断开连接后自动销毁，无需 BetterDisplay。")
                         .font(.caption).foregroundStyle(.secondary)
+                    Divider()
                 }
+                if !state.autoVirtualDisplay || state.fixedSource {
+                    row("显示来源") {
+                        if state.fixedSource {
+                            Text(state.source).foregroundStyle(.secondary)
+                        } else {
+                            Picker("显示来源", selection: Binding(get: { state.selected }, set: chooseSource)) {
+                                Text("请选择扩展显示器").tag(nil as UInt32?).disabled(true)
+                                ForEach(state.choices) { item in Text(item.title).tag(Optional(item.id)) }
+                            }
+                            .labelsHidden()
+                            .fixedSize()
+                        }
+                    }
+                    if state.needsRestart {
+                        Text("已保存新来源，重新打开 DeskMate 后生效。").font(.caption).foregroundStyle(.secondary)
+                    } else if state.choices.isEmpty && !state.fixedSource {
+                        Text("未找到可借用的扩展显示器。主屏与镜像屏不会出现在列表中。")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                    Divider()
+                }
+                row("虚拟显示器位置") {
+                    Picker("虚拟显示器位置", selection: Binding(get: { state.position }, set: setPosition)) {
+                        ForEach(DisplayPosition.allCases) { pos in
+                            Text(pos.label).tag(pos)
+                        }
+                    }
+                    .labelsHidden()
+                    .pickerStyle(.segmented)
+                    .frame(maxWidth: 280)
+                }
+                Text("调整副屏相对于 Mac 主屏的排列方向，连接中修改会立即生效。")
+                    .font(.caption).foregroundStyle(.secondary)
             }
             group("系统权限") {
                 row("屏幕录制") { permission(state.screenPermission, screen: true) }

@@ -62,7 +62,7 @@ std::int64_t NowNs()
 
 }  // namespace
 
-VideoDecoder::VideoDecoder(int wake_fd) : wake_fd_(wake_fd) {}
+VideoDecoder::VideoDecoder(int wake_fd) { (void)wake_fd; }
 
 VideoDecoder::~VideoDecoder()
 {
@@ -89,9 +89,7 @@ void VideoDecoder::NoteResult(const char *operation, OH_AVErrCode result)
 
 void VideoDecoder::Wake()
 {
-    const std::uint64_t value = 1;
-    const ssize_t written = ::write(wake_fd_, &value, sizeof(value));
-    (void)written;
+    control_cv_.notify_one();
 }
 
 void VideoDecoder::Enqueue(Event event)
@@ -104,7 +102,7 @@ void VideoDecoder::Enqueue(Event event)
         }
         events_.push_back(event);
     }
-    Wake();
+    control_cv_.notify_one();
 }
 
 void VideoDecoder::OnError(OH_AVCodec *, std::int32_t error_code, void *user_data)
@@ -244,6 +242,7 @@ bool VideoDecoder::DestroyCodec()
         std::lock_guard lock(mutex_);
         queued_.clear();
         input_ready_.clear();
+        events_.clear();
     }
     return result == AV_ERR_OK;
 }
@@ -275,7 +274,10 @@ bool VideoDecoder::Open(const DecoderConfig &config, void *native_window)
         stats_.width = config.width;
         stats_.height = config.height;
         last_error_.clear();
+        stop_control_ = false;
     }
+    open_.store(true, std::memory_order_release);
+    control_thread_ = std::thread([this] { ControlLoop(); });
     return true;
 }
 
@@ -288,6 +290,15 @@ bool VideoDecoder::Reconfigure(const DecoderConfig &config)
 
 void VideoDecoder::Close()
 {
+    open_.store(false, std::memory_order_release);
+    {
+        std::lock_guard lock(mutex_);
+        stop_control_ = true;
+    }
+    control_cv_.notify_all();
+    if (control_thread_.joinable()) {
+        control_thread_.join();
+    }
     if (codec_ == nullptr) {
         return;
     }
@@ -321,10 +332,10 @@ void VideoDecoder::SetSurface(void *native_window)
                 static_cast<std::int32_t>(result));
 }
 
-bool VideoDecoder::Push(const std::vector<std::uint8_t> &access_unit,
+bool VideoDecoder::Push(std::vector<std::uint8_t> access_unit,
                         std::int64_t pts_us, bool keyframe)
 {
-    if (codec_ == nullptr) {
+    if (!open_.load(std::memory_order_acquire)) {
         return false;
     }
     {
@@ -338,16 +349,12 @@ bool VideoDecoder::Push(const std::vector<std::uint8_t> &access_unit,
             queued_.pop_front();
             ++stats_.frames_dropped;
         }
-        queued_.push_back(PendingFrame{access_unit, pts_us, keyframe});
+        queued_.push_back(PendingFrame{std::move(access_unit), pts_us, keyframe});
         ++stats_.frames_submitted;
     }
-    // The codec hands over its whole input pool right after Start(), which is
-    // usually before the first access unit arrives. Those buffers wait in
-    // input_ready_ and only get filled from PumpFrames(), which used to run
-    // solely on OnNeedInputBuffer. With nothing pushed the codec never asks
-    // for another buffer, so the pool stayed empty and no frame was ever
-    // decoded: the surface stayed black for both HEVC and H.264.
-    PumpFrames();
+    // Wake the dedicated decoder control thread immediately without blocking
+    // the USB I/O thread on OH_VideoDecoder or SurfaceFlinger calls.
+    control_cv_.notify_one();
     return true;
 }
 
@@ -403,14 +410,36 @@ bool VideoDecoder::PushOne(const PendingFrame &frame, std::uint32_t index,
 
 void VideoDecoder::ProcessEvents()
 {
+    // Events and frame submission are handled directly on control_thread_.
+}
+
+void VideoDecoder::ControlLoop()
+{
+    for (;;) {
+        {
+            std::unique_lock lock(mutex_);
+            control_cv_.wait(lock, [this] {
+                return stop_control_ || !events_.empty() ||
+                       (!queued_.empty() && !input_ready_.empty());
+            });
+            if (stop_control_) {
+                return;
+            }
+        }
+        DrainEventsAndPump();
+    }
+}
+
+void VideoDecoder::DrainEventsAndPump()
+{
     std::deque<Event> events;
     {
         std::lock_guard lock(mutex_);
         events.swap(events_);
     }
     for (const Event &event : events) {
-        if (codec_ == nullptr) {
-            break;
+        if (codec_ == nullptr || !open_.load(std::memory_order_acquire)) {
+            return;
         }
         switch (event.kind) {
             case Event::Kind::InputReady: {
@@ -422,7 +451,6 @@ void VideoDecoder::ProcessEvents()
                     }
                     input_ready_.emplace_back(event.index, event.buffer);
                 }
-                PumpFrames();
                 break;
             }
             case Event::Kind::OutputReady: {
@@ -463,6 +491,9 @@ void VideoDecoder::ProcessEvents()
                 break;
             }
         }
+    }
+    if (codec_ != nullptr && open_.load(std::memory_order_acquire)) {
+        PumpFrames();
     }
 }
 

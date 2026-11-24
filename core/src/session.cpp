@@ -79,7 +79,8 @@ bool supports_profile(const CapabilitySet& capabilities, const StreamProfile& pr
 }
 
 std::optional<StreamProfile> intersect_capabilities(const CapabilitySet& host,
-                                                    const CapabilitySet& device) {
+                                                    const CapabilitySet& device,
+                                                    bool accept_device_resolution = false) {
   StreamProfile selected;
   bool have_encoder = false;
   bool have_pixel_format = false;
@@ -99,11 +100,16 @@ std::optional<StreamProfile> intersect_capabilities(const CapabilitySet& host,
       break;
     }
   }
-  for (const DisplayResolution& resolution : host.resolutions) {
-    if (contains_value(device.resolutions, resolution)) {
-      selected.resolution = resolution;
-      have_resolution = true;
-      break;
+  if (accept_device_resolution && !device.resolutions.empty()) {
+    selected.resolution = device.resolutions.front();
+    have_resolution = true;
+  } else {
+    for (const DisplayResolution& resolution : host.resolutions) {
+      if (contains_value(device.resolutions, resolution)) {
+        selected.resolution = resolution;
+        have_resolution = true;
+        break;
+      }
     }
   }
   if (!have_encoder || !have_pixel_format || !have_resolution) {
@@ -428,7 +434,12 @@ class EndpointCore {
  private:
   void arm_timeout(SessionFailure failure) {
     timeout_failure_ = failure;
-    deadline_ns_ = saturating_add(clock_.now_ns(), limits_.stage_timeout_ns);
+    const std::uint64_t timeout_ns =
+        (failure == SessionFailure::InitialIdrTimeout &&
+         limits_.initial_idr_timeout_ns != 0)
+            ? limits_.initial_idr_timeout_ns
+            : limits_.stage_timeout_ns;
+    deadline_ns_ = saturating_add(clock_.now_ns(), timeout_ns);
   }
 
   void disarm_timeout() {
@@ -1391,8 +1402,9 @@ struct HostSession::Impl final : EndpointCore {
       fail_with(SessionFailure::MalformedControlMessage, true);
       return;
     }
-    const auto selected =
-        intersect_capabilities(config_.capabilities, device_capabilities.value());
+    const auto selected = intersect_capabilities(
+        config_.capabilities, device_capabilities.value(),
+        config_.accept_device_resolution);
     set_session_nonce(header.session_nonce);
     if (!selected.has_value()) {
       fail_with(SessionFailure::NoCommonCapabilities, true);
@@ -2371,6 +2383,7 @@ struct DeviceSession::Impl final : EndpointCore {
     requested_recovery_id_.reset();
     pending_unsolicited_recovery_seq_.reset();
     transition(SessionState::AwaitingFirstIdr, SessionFailure::InitialIdrTimeout);
+    begin_liveness();
     queue_commit_ack(committed_config_id, *stream_id, false);
   }
 

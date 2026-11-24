@@ -47,6 +47,8 @@ public:
                    std::uint32_t keycode);
 
     void NoteLifecycle(const std::string &event);
+    void SetPreferredCodec(const std::string &codec);
+    void SetDisplayMetrics(int pixel_width, int pixel_height, int refresh_hz);
     std::string SnapshotJson() const;
 
     // Called by the session boundary on the worker thread.
@@ -57,6 +59,7 @@ private:
     DeviceEngine();
 
     void WorkerMain();
+    protocol::CapabilitySet BuildDeviceCapabilities() const;
     bool EnsureDecoder();
     void ApplyPendingSurface();
     void DrainVideo();
@@ -83,14 +86,21 @@ private:
     std::deque<protocol::InputEvent> input_queue_;
     std::uint64_t frames_received_ = 0;
     std::uint64_t frames_dropped_ = 0;
+    std::uint64_t rx_bytes_ = 0;
     std::uint64_t input_events_sent_ = 0;
     std::uint64_t input_events_rejected_ = 0;
     std::uint64_t decoder_opens_ = 0;
     std::uint64_t sessions_started_ = 0;
     std::uint64_t worker_exits_ = 0;
+    std::string preferred_codec_ = "auto";
+    int display_width_ = 2800;
+    int display_height_ = 1840;
+    int display_refresh_hz_ = 120;
     std::string session_state_ = "idle";
     std::string session_failure_;
     std::string negotiated_;
+    std::string active_codec_;
+    std::string active_resolution_;
     VideoDecoder::Stats decoder_stats_{};
 };
 

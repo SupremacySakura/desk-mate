@@ -22,6 +22,7 @@ typedef struct DMInputEvent {
 
 typedef void (*DMLogCallback)(const char *message, void *context);
 typedef void (*DMIntentCallback)(int32_t capture, int32_t input, void *context);
+typedef void (*DMInputCallback)(void *context);
 
 typedef struct DMBridgeConfig {
     const char *device_selector; /* NULL for auto-detect 12d1:5000 */
@@ -29,6 +30,7 @@ typedef struct DMBridgeConfig {
     int32_t height;
     int32_t refresh_hz;
     int32_t prefer_hevc;
+    int32_t auto_match_device_resolution;
 } DMBridgeConfig;
 
 DMBridge *dm_bridge_create(const DMBridgeConfig *config);
@@ -37,11 +39,15 @@ void dm_bridge_destroy(DMBridge *bridge);
 void dm_bridge_set_log(DMBridge *bridge, DMLogCallback callback, void *context);
 void dm_bridge_set_intent_callback(DMBridge *bridge, DMIntentCallback callback,
                                    void *context);
+void dm_bridge_set_input_callback(DMBridge *bridge, DMInputCallback callback,
+                                  void *context);
 
 /* Starts the USB/AOA/session worker. Returns 0 on success. */
 int32_t dm_bridge_start(DMBridge *bridge);
 /* Stops the worker and returns the device to its normal (HDC) mode. */
 void dm_bridge_stop(DMBridge *bridge);
+/* Updates whether new sessions auto-accept the connected device's resolution. */
+void dm_bridge_set_auto_match_resolution(DMBridge *bridge, int32_t enabled);
 
 /* Queues one Annex-B access unit. Safe to call from any thread. */
 int32_t dm_bridge_submit_video(DMBridge *bridge, const uint8_t *data, size_t size,
@@ -54,8 +60,12 @@ int32_t dm_bridge_take_input(DMBridge *bridge, DMInputEvent *out, int32_t capaci
 int32_t dm_bridge_needs_keyframe(DMBridge *bridge);
 /* Non-zero recovery_id when the scheduler needs a fresh IDR; 0 otherwise. */
 uint32_t dm_bridge_keyframe_request_id(DMBridge *bridge);
-/* Returns the negotiated refresh rate in Hz, or 0 if not yet negotiated. */
+/* Returns the negotiated stream profile parameters, or 0 if not yet negotiated.
+   codec: 0 = none, 1 = h264, 2 = hevc. */
+int32_t dm_bridge_negotiated_width(DMBridge *bridge);
+int32_t dm_bridge_negotiated_height(DMBridge *bridge);
 int32_t dm_bridge_negotiated_refresh_hz(DMBridge *bridge);
+int32_t dm_bridge_negotiated_codec(DMBridge *bridge);
 
 /* Host system events; values mirror deskmate::protocol::HostEvent. */
 enum {

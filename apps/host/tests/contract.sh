@@ -12,6 +12,7 @@ fail() {
 
 [[ -x "$BIN" ]] || fail "missing executable: $BIN"
 [[ -f "$PLIST" ]] || fail "missing Info.plist"
+[[ -f "$APP/Contents/Resources/AppIcon.icns" ]] || fail "missing AppIcon.icns"
 
 /usr/libexec/PlistBuddy -c 'Print :LSUIElement' "$PLIST" | grep -qx false \
   || fail "the desktop client must launch as a regular app"

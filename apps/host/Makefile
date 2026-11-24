@@ -76,10 +76,11 @@ $(OBJC_OBJECT): $(ROOT)/Sources/DMVirtualDisplay.m $(BRIDGE_HEADER) | $(BUILD_DI
 		-c "$<" \
 		-o "$@"
 
-build: $(CORE_OBJECTS) $(BRIDGE_OBJECT) $(OBJC_OBJECT) | $(BUILD_DIR) $(MODULE_CACHE)
+build: $(CORE_OBJECTS) $(BRIDGE_OBJECT) $(OBJC_OBJECT) $(ROOT)/Resources/AppIcon.icns | $(BUILD_DIR) $(MODULE_CACHE)
 	@rm -rf "$(APP)"
-	@mkdir -p "$(APP)/Contents/MacOS"
+	@mkdir -p "$(APP)/Contents/MacOS" "$(APP)/Contents/Resources"
 	@cp "$(ROOT)/Info.plist" "$(APP)/Contents/Info.plist"
+	@cp "$(ROOT)/Resources/AppIcon.icns" "$(APP)/Contents/Resources/AppIcon.icns"
 	@printf 'Linking %s\n' "$(BIN)"
 	@CLANG_MODULE_CACHE_PATH="$(MODULE_CACHE)/clang" \
 		SWIFT_MODULE_CACHE_PATH="$(MODULE_CACHE)/swift" \

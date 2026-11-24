@@ -237,6 +237,40 @@ napi_value NoteLifecycle(napi_env env, napi_callback_info info)
     return Boolean(env, true);
 }
 
+napi_value SetPreferredCodec(napi_env env, napi_callback_info info)
+{
+    std::size_t argc = 1;
+    napi_value argv[1] = {nullptr};
+    std::string codec;
+    if (napi_get_cb_info(env, info, &argc, argv, nullptr, nullptr) != napi_ok ||
+        argc < 1 || !ReadString(env, argv[0], codec)) {
+        return Boolean(env, false);
+    }
+    deskmate::device::DeviceEngine::Instance().SetPreferredCodec(codec);
+    return Boolean(env, true);
+}
+
+napi_value SetDisplayMetrics(napi_env env, napi_callback_info info)
+{
+    std::size_t argc = 3;
+    napi_value argv[3] = {nullptr};
+    if (napi_get_cb_info(env, info, &argc, argv, nullptr, nullptr) != napi_ok ||
+        argc < 3) {
+        return Boolean(env, false);
+    }
+    std::int32_t width = 0;
+    std::int32_t height = 0;
+    std::int32_t refresh_hz = 0;
+    if (napi_get_value_int32(env, argv[0], &width) != napi_ok ||
+        napi_get_value_int32(env, argv[1], &height) != napi_ok ||
+        napi_get_value_int32(env, argv[2], &refresh_hz) != napi_ok) {
+        return Boolean(env, false);
+    }
+    deskmate::device::DeviceEngine::Instance().SetDisplayMetrics(width, height,
+                                                                 refresh_hz);
+    return Boolean(env, true);
+}
+
 napi_value SnapshotJson(napi_env env, napi_callback_info)
 {
     return String(env,
@@ -288,6 +322,10 @@ napi_value Init(napi_env env, napi_value exports)
          napi_default, nullptr},
         {"noteLifecycle", nullptr, NoteLifecycle, nullptr, nullptr, nullptr,
          napi_default, nullptr},
+        {"setPreferredCodec", nullptr, SetPreferredCodec, nullptr, nullptr,
+         nullptr, napi_default, nullptr},
+        {"setDisplayMetrics", nullptr, SetDisplayMetrics, nullptr, nullptr,
+         nullptr, napi_default, nullptr},
         {"snapshotJson", nullptr, SnapshotJson, nullptr, nullptr, nullptr,
          napi_default, nullptr},
     };

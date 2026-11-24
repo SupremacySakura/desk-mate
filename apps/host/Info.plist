@@ -8,6 +8,8 @@
 	<string>DeskMate</string>
 	<key>CFBundleExecutable</key>
 	<string>DeskMate</string>
+	<key>CFBundleIconFile</key>
+	<string>AppIcon</string>
 	<key>CFBundleIdentifier</key>
 	<string>dev.deskmate.host</string>
 	<key>CFBundleInfoDictionaryVersion</key>

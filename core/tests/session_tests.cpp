@@ -3680,6 +3680,86 @@ void test_each_handshake_stage_times_out_after_two_seconds() {
   }
 }
 
+void test_host_accepts_device_native_resolution_and_codec_preference() {
+  HostSessionConfig host_config = default_host_config();
+  host_config.accept_device_resolution = true;
+  host_config.capabilities = CapabilitySet{
+      {VideoEncoder::Hevc, VideoEncoder::H264},
+      {PixelFormat::Nv12},
+      {{1920, 1200, 60}},
+  };
+
+  DeviceSessionConfig device_config = default_device_config();
+  device_config.capabilities = CapabilitySet{
+      {VideoEncoder::H264},
+      {PixelFormat::Nv12},
+      {{3120, 2080, 120}, {2800, 1840, 60}},
+  };
+
+  SessionPair pair(host_config, device_config);
+  drive_to_committed(pair);
+  CHECK_EQ(static_cast<int>(pair.host.state()),
+           static_cast<int>(SessionState::Streaming));
+  const auto negotiated = pair.host.negotiated_stream();
+  CHECK(negotiated.has_value());
+  CHECK_EQ(static_cast<int>(negotiated->profile.encoder),
+           static_cast<int>(VideoEncoder::H264));
+  CHECK_EQ(negotiated->profile.resolution, (DisplayResolution{3120, 2080, 120}));
+}
+
+void test_custom_initial_idr_timeout_outlives_stage_timeout() {
+  {
+    DeviceSessionConfig device_config = default_device_config();
+    device_config.limits.stage_timeout_ns = 2'000'000'000ULL;
+    device_config.limits.initial_idr_timeout_ns = 10'000'000'000ULL;
+
+    SessionPair pair(default_host_config(), device_config);
+    drive_to_committed(pair);
+    CHECK_EQ(static_cast<int>(pair.device.state()),
+             static_cast<int>(SessionState::AwaitingFirstIdr));
+
+    for (int second = 0; second < 5; ++second) {
+      pair.clock.advance_ns(1'000'000'000ULL);
+      pair.pump();
+    }
+    CHECK_EQ(static_cast<int>(pair.host.state()),
+             static_cast<int>(SessionState::Streaming));
+    CHECK_EQ(static_cast<int>(pair.device.state()),
+             static_cast<int>(SessionState::AwaitingFirstIdr));
+
+    CHECK_EQ(pair.host.send_video_frame(
+                 std::vector<std::uint8_t>{0xDE, 0xAD, 0xBE, 0xEF}, 5000, true),
+             VideoSendStatus::Sent);
+    pair.host.pump();
+    pair.device.pump();
+    CHECK_EQ(static_cast<int>(pair.device.state()),
+             static_cast<int>(SessionState::Streaming));
+    CHECK_EQ(pair.device.take_video_frames().size(), 1U);
+  }
+  {
+    DeviceSessionConfig device_config = default_device_config();
+    device_config.limits.stage_timeout_ns = 2'000'000'000ULL;
+    device_config.limits.initial_idr_timeout_ns = 10'000'000'000ULL;
+
+    SessionPair pair(default_host_config(), device_config);
+    drive_to_committed(pair);
+    for (int second = 0; second < 9; ++second) {
+      pair.clock.advance_ns(1'000'000'000ULL);
+      pair.pump();
+    }
+    CHECK_EQ(static_cast<int>(pair.device.state()),
+             static_cast<int>(SessionState::AwaitingFirstIdr));
+
+    pair.clock.advance_ns(1'000'000'000ULL);
+    pair.device.pump();
+    CHECK_EQ(static_cast<int>(pair.device.state()),
+             static_cast<int>(SessionState::Failed));
+    CHECK(pair.device.failure().has_value());
+    CHECK_EQ(static_cast<int>(*pair.device.failure()),
+             static_cast<int>(SessionFailure::InitialIdrTimeout));
+  }
+}
+
 struct TestCase {
   const char* name;
   void (*run)();
@@ -3841,6 +3921,10 @@ int main() {
        test_paused_resume_rollback_keeps_both_ends_paused_and_resumable},
       {"resume failure returns to paused and preserves grace and old stream",
        test_resume_failure_returns_to_paused_and_preserves_grace_and_old_stream},
+      {"host accepts device native resolution and codec preference",
+       test_host_accepts_device_native_resolution_and_codec_preference},
+      {"custom initial idr timeout outlives stage timeout",
+       test_custom_initial_idr_timeout_outlives_stage_timeout},
   };
   for (const auto& test : tests) {
     const int before = failures;

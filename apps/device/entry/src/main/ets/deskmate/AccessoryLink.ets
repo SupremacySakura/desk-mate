@@ -55,6 +55,13 @@ export class AccessoryLink {
     this.tick();
   }
 
+  reconnect(): void {
+    this.closeAccessory();
+    this.retryRequired = false;
+    this.publish('searching', 'reconnecting USB session');
+    this.tick();
+  }
+
   private fail(message: string): void {
     if (this.disposed) {
       return;

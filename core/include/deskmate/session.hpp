@@ -320,6 +320,8 @@ enum class BoundaryResult {
 
 struct SessionLimits {
   std::uint64_t stage_timeout_ns{kHandshakeStageTimeoutNs};
+  // Zero falls back to `stage_timeout_ns`.
+  std::uint64_t initial_idr_timeout_ns{0};
   std::uint64_t pause_grace_timeout_ns{kDefaultPauseGraceTimeoutNs};
   std::size_t video_fragment_payload{kDefaultVideoFragmentPayload};
 };
@@ -331,6 +333,10 @@ struct HostSessionConfig {
   std::uint32_t protocol_revision{kProtocolRevision};
   SessionLimits limits{};
   SendSchedulerConfig scheduler{};
+  // When true, accept the peer's preferred resolution instead of requiring it
+  // to appear in `capabilities.resolutions` (used when Host auto-creates a
+  // virtual display sized to match the connected tablet).
+  bool accept_device_resolution{false};
 };
 
 struct DeviceSessionConfig {
