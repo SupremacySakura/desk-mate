@@ -35,6 +35,10 @@ constexpr int kMaxHandshakeAttempts = 5;
    is holding a stale session, and only a link hangup makes it rebuild - so
    after this many in-place retries the link is dropped and re-claimed. */
 constexpr int kInPlaceRetriesBeforeRelink = 2;
+/* 12 KiB payload + 32 B header stays under the tablet's 16 KiB accessory read
+   buffer; larger packets are truncated by the driver. 64 fragments per frame
+   (the protocol maximum) still covers a 768 KiB keyframe. */
+constexpr std::size_t kVideoFragmentPayload = 12U * 1024U;
 constexpr std::size_t kMaxPendingVideoFrames = 8;
 /* The tablet shows a USB-accessory consent dialog the first time an accessory
    claims the interface. The protocol default of 2 s expires before anyone can
@@ -480,6 +484,13 @@ void start_session(DMBridge *bridge) {
      answer with the previous attempt's StreamReady/StreamCommitted. */
   session_config.initial_config_id = (random_nonzero_u32() & 0x7FFFFFFFU) | 1U;
   session_config.limits.stage_timeout_ns = kHandshakeStageTimeoutNs;
+  /* The tablet's accessory read() is message-oriented and its buffer tops out
+     at 16 KiB (64 KiB requests fail with EINVAL); anything beyond the read
+     buffer is discarded by the driver, not returned by a later read. A 32 KiB
+     fragment therefore arrives truncated and desynchronises the stream decoder,
+     which showed up as streaming for ~2 s and then heartbeat_timeout. Keep every
+     packet, header included, comfortably below that 16 KiB ceiling. */
+  session_config.limits.video_fragment_payload = kVideoFragmentPayload;
   if (bridge->config.prefer_hevc != 0) {
     session_config.capabilities.encoders = {
         deskmate::protocol::VideoEncoder::Hevc,
