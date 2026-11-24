@@ -4,7 +4,7 @@
 
 **Blocked by：** 02: 首次握手到可显示状态
 
-**Status:** ready-for-human
+**Status:** done
 
 - [x] 暂停立即触发停编且有 ACK；恢复重新协商，心跳 1 秒与静默 3 秒失联使用确定性时钟验证。
 - [x] STREAMING 中 PREPARE/READY/COMMIT/COMMITTED 的失败或超时保留旧流，重复 config_id 不重复清理资源。
@@ -16,3 +16,4 @@
 ## Comments
 
 - 实现完成。暂停/恢复重协商、运行中配置切换保留旧流、四时间戳校时、公开错误状态与清理顺序均由 `core/tests/session_tests.cpp` 覆盖。真实阻塞 `accessoryFd` 的唤醒结论由 Gate 1 提供，本任务不作该声明。
+- 2026-11-24：全部验收项勾选，代码已合入 `main`（fast-forward 至 `6a9937e`）；`make test` 全绿。

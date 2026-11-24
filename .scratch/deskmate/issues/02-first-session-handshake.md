@@ -4,7 +4,7 @@
 
 **Blocked by：** 01: 候选协议端到端回声
 
-**Status:** ready-for-human
+**Status:** done
 
 - [x] Host/Device 按 HELLO、PREPARE、READY、COMMIT、COMMITTED、首个有效 IDR 的次序推进 Session。
 - [x] Host 在 COMMITTED 前不发送新流 IDR；Device 只接受匹配 Session Nonce 和 Stream Epoch 的消息。
@@ -15,3 +15,4 @@
 ## Comments
 
 - 实现完成。HELLO→PREPARE→READY→COMMIT→COMMITTED→首 IDR 状态机、能力交集、proto_rev 校验与 2 秒阶段超时均由 `core/tests/session_tests.cpp` 用确定性时钟覆盖。
+- 2026-11-24：全部验收项勾选，代码已合入 `main`（fast-forward 至 `6a9937e`）；`make test` 全绿。

@@ -8,6 +8,7 @@
 - 规格文件为 `.scratch/<feature-slug>/spec.md`
 - 每个实现任务单单独保存为 `.scratch/<feature-slug>/issues/<NN>-<slug>.md`，从 `01` 开始编号；不要将多个任务单合并到一个文件中
 - 在每个议题文件顶部附近用 `Status:` 行记录分诊状态（角色字符串见 `triage-labels.md`）
+- 任务单完成后，勾选全部验收项，将 `Status:` 设为 `done`（完成状态，不属于分诊标签），并在 `## Comments` 记录合并提交与验证命令
 - 在文件末尾的 `## Comments` 标题下追加评论和对话记录
 
 ## 当技能要求“发布到议题跟踪器”时

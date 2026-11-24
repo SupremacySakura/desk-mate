@@ -4,7 +4,7 @@
 
 **Blocked by：** 02: 首次握手到可显示状态
 
-**Status:** ready-for-human
+**Status:** done
 
 - [x] 控制、输入和校时消息可在视频分片边界优先调度，视频在途深度受配置限制。
 - [x] 最大待发字节数与最老帧年龄均可触发旧 GOP 清理和新 IDR 请求。
@@ -16,3 +16,4 @@
 ## Comments
 
 - 实现完成。优先级调度、在途深度限制、按字节/帧年龄触发 GOP 清理、recovery_id 代际门控与 STOPPING 立即取消均由 `core/tests/scheduling_tests.cpp` 覆盖。
+- 2026-11-24：全部验收项勾选，代码已合入 `main`（fast-forward 至 `6a9937e`）；`make test` 全绿。
