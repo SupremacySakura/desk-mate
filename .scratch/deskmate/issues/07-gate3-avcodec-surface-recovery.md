@@ -23,4 +23,15 @@
   - 限制：Surface 保留只证明 lease 有效与 `SetSurface` 成功，不证明合成器扫描输出；
     低延迟 configure key 被接受，但不证明解码调度延迟；外部截图是人工视觉证据。
   - 未完成：Annex-B Host 样本互操作，等待 issue 05 产出真实样本。
+- 2026-11-24（产品端到端互操作，补 issue 05 遗留项）：
+  - 用真实成品 `apps/host` + `apps/device` 走 AOA 链路，Mac 采集→VideoToolbox
+    编码→12 KiB 分片→设备 `OH_VideoDecoder`→XComponent Surface 全链路打通，
+    平板显示 Mac 桌面，HEVC 与 H.264 两种码流都验证过。
+  - 黑屏根因是产品解码器的输入 buffer 死锁，不是 Annex-B 互操作问题：
+    `Start()` 一次性交出整个输入池时首帧还没到，buffer 被暂存后没有任何路径
+    再次喂帧，编解码器因此不再回调。修复是 `Push()` 入队后立即 `PumpFrames()`。
+  - 因此「Annex-B + 参数集 + 色彩元数据」的 Host 互操作在**功能层面**已确认
+    可解码上屏；但本条仍不升级 Gate 3 的整体结论（缺 Reference Link、缺延迟基线，
+    且 Last Good Frame 的合成器扫描输出仍未被证明）。
+  - 帧率偏低（约 9 fps / 470 KB/s）已记录为未解决项，未做性能优化。
 - 结论：设备侧功能通过；因缺少 Host 样本互操作与 Reference Link，Gate 3 整体仍待收口。
