@@ -1,0 +1,12 @@
+{
+  "developer_mode_required": null,
+  "device_serial": "59GYD25716204513",
+  "evidence": [],
+  "notes": "Do not mark verified until the exact Device UI path and absence of Developer Mode are observed.",
+  "observed_at_utc": null,
+  "operator": null,
+  "path": null,
+  "status": "not_executed",
+  "steps": [],
+  "user_operable": null
+}

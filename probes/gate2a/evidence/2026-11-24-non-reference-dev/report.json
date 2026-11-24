@@ -1,0 +1,554 @@
+{
+  "artifacts": [
+    {
+      "path": "raw/commands.json",
+      "sha256": "ae19ff9c25c04ee476a3a4823658fa7122b23cc7c42be7ca07fd888c341edaa9"
+    },
+    {
+      "path": "raw/device.json",
+      "sha256": "2a45a9c239efea709d01637995b69e978d7a4eb2923b99a4bb3873bc13c8d289"
+    },
+    {
+      "path": "raw/hdc-api_version.txt",
+      "sha256": "d93a4f16221015dbb13830c31d3d4c83a2966d44a03446bb43c524dcbdef14fa"
+    },
+    {
+      "path": "raw/hdc-ifconfig.txt",
+      "sha256": "f03ee9603234812c1ae9e82b64a63a264355a9c27e951a8b85d908804635ad6a"
+    },
+    {
+      "path": "raw/hdc-model.txt",
+      "sha256": "156ae35229f3dc59f4e913f56a3ab9da7626387f26c70a084c0b7a0322ed51f7"
+    },
+    {
+      "path": "raw/hdc-os_version.txt",
+      "sha256": "ebd6fe9f2db2916b3751121c3a1dd6274e05466b6ca21c13f8e113952533ec15"
+    },
+    {
+      "path": "raw/hdc-product_name.txt",
+      "sha256": "33001276875788e7e8e506400faba7eec55c74c2a4a744e97290742d5c1860a5"
+    },
+    {
+      "path": "raw/hdc-software_version.txt",
+      "sha256": "4975d47cae4102cb6284d81c2f621fbfc8b50648c120bab42bde1e39eb7c60f1"
+    },
+    {
+      "path": "raw/hdc-targets.txt",
+      "sha256": "f87eb26e78e5e596f540dc26289cf24152c54df5d6fe920b9dd87973a044f3af"
+    },
+    {
+      "path": "raw/host.json",
+      "sha256": "3b89e5a275f99900c60953e2ec0637617b4e59c0848052d7612344564b3c2137"
+    },
+    {
+      "path": "raw/ifconfig.txt",
+      "sha256": "914dc2b3fecc937a2ac233be61996ac8a76f4adcfb944fcdd73171ee86e8d132"
+    },
+    {
+      "path": "raw/ioreg-ecm.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "raw/ioreg-interfaces.txt",
+      "sha256": "b46b26fbaa982d9d372b18b11a451605cf44167587c8f35ffe9e8fa8488ea82f"
+    },
+    {
+      "path": "raw/ioreg-ncm.txt",
+      "sha256": "678c47e7866c3b72d41d79db25c3c374ca30ad02669a1c62f7d02de74d25db6a"
+    },
+    {
+      "path": "raw/ioreg-usb.txt",
+      "sha256": "ee684ce113d77a33fbfb65e6d4c80cba38bffbea11d531e027054cd4a5479ff5"
+    },
+    {
+      "path": "raw/networksetup-hardware-ports.txt",
+      "sha256": "f785e2ebf790146429e10aa091c3e7d373579660b268b9a989825ebf2022fc11"
+    },
+    {
+      "path": "raw/networksetup-services.txt",
+      "sha256": "6ef5345afa163f35f8a8bbbc7bc7387bdab19ed0b68e76d8c006c2fa3114aa61"
+    },
+    {
+      "path": "raw/sw-vers.txt",
+      "sha256": "447a1b5a3e4e063858692971aff1e0d46f11410cd4ee6ee2043b390dc444ec93"
+    },
+    {
+      "path": "raw/sysctl-cpu-brand.txt",
+      "sha256": "4d1c285545864bb0f7afc350a768fd88492c172d7c4ea2f354eefd9036048a72"
+    },
+    {
+      "path": "raw/sysctl-hw-memsize.txt",
+      "sha256": "c42316e609a7bc837c19fd213e9c8bb81b92613a194f5dab1f8cbc0efabb8f9b"
+    },
+    {
+      "path": "raw/sysctl-hw-model.txt",
+      "sha256": "4798cda9aa4de09d669a524b7e88174a6f9eb44ad03ff7f1bdcb36347a220479"
+    },
+    {
+      "path": "raw/system-profiler-usb.json",
+      "sha256": "e2927006e126f6b63f3d2d73482e182b811b379fb4152bb2637458b288d212ed"
+    },
+    {
+      "path": "raw/uname.txt",
+      "sha256": "c1669e1d8edca98769c37d494b76442a1d6e5ffffd7b4da1fb63aef8ebaf6f01"
+    }
+  ],
+  "decision": {
+    "reasons": [
+      "no NCM/ECM network interface is associated with the target device",
+      "manual Device USB-sharing entry verification is pending",
+      "Reference Link measurements are pending"
+    ],
+    "status": "pending"
+  },
+  "device_entry": {
+    "developer_mode_required": null,
+    "evidence": [],
+    "path": null,
+    "status": "not_executed",
+    "user_operable": null
+  },
+  "device_network": {
+    "driver_family": "none",
+    "eligible": false,
+    "interface": null,
+    "native_bundled_driver": false,
+    "network_driver_bundle_id": null,
+    "network_driver_class": null,
+    "reason": "native NCM/ECM interfaces were found, but they are not associated with target device serial 59GYD25716204513",
+    "rndis_detected": false
+  },
+  "generated_at_utc": "2026-11-24T04:57:11Z",
+  "host_network": {
+    "associated_device_interface": null,
+    "candidate_interfaces": [
+      {
+        "associated_to_target_device": false,
+        "association": "different_serial",
+        "driver_bundle_id": "com.apple.driver.usb.cdc.ncm",
+        "driver_class": "AppleUSBNCMControl",
+        "driver_family": "ncm",
+        "macos_hardware_port": "USB 10/100/1G/2.5G LAN",
+        "macos_network_service": "USB 10/100/1G/2.5G LAN",
+        "name": "en5",
+        "native_bundled_driver": true,
+        "usb_id_product": 33110,
+        "usb_id_vendor": 3034,
+        "usb_product": "USB 10_100_1G_2_5G LAN",
+        "usb_serial": "4013000001",
+        "usb_topology": {
+          "ancestors": [
+            {
+              "class": "AppleT8132USBXHCI",
+              "location": "01000000",
+              "name": "AppleT8132USBXHCI",
+              "product": null,
+              "vendor": null
+            },
+            {
+              "class": "IOUSBHostDevice",
+              "location": "01200000",
+              "name": "USB3.2 Hub",
+              "product": "USB3.2 Hub",
+              "vendor": "Bridgesil"
+            }
+          ],
+          "direct_to_host": false,
+          "hub_count": 1,
+          "hubs": [
+            {
+              "class": "IOUSBHostDevice",
+              "location": "01200000",
+              "name": "USB3.2 Hub",
+              "product": "USB3.2 Hub",
+              "vendor": "Bridgesil"
+            }
+          ],
+          "negotiated_speed_mbps": 5000,
+          "observed_hubs": [
+            {
+              "class": "IOUSBHostDevice",
+              "location": "01100000",
+              "name": "USB2.1 Hub",
+              "product": "USB2.1 Hub",
+              "vendor": "Bridgesil"
+            },
+            {
+              "class": "IOUSBHostDevice",
+              "location": "01140000",
+              "name": "USB2.1 Hub",
+              "product": "USB2.1 Hub",
+              "vendor": "GenesysLogic"
+            },
+            {
+              "class": "IOUSBHostDevice",
+              "location": "01200000",
+              "name": "USB3.2 Hub",
+              "product": "USB3.2 Hub",
+              "vendor": "Bridgesil"
+            },
+            {
+              "class": "IOUSBHostDevice",
+              "location": "01240000",
+              "name": "USB3.1 Hub",
+              "product": "USB3.1 Hub",
+              "vendor": "GenesysLogic"
+            }
+          ],
+          "reason": "device path contains USB hub(s), so it is not a Reference Link",
+          "reference_link": false,
+          "target_device": {
+            "class": "IOUSBHostDevice",
+            "id_product": 33110,
+            "id_vendor": 3034,
+            "interfaces": [],
+            "link_speed_mbps": 5000,
+            "location": "01210000",
+            "name": "USB 10/100/1G/2.5G LAN",
+            "owner": null,
+            "product": "USB 10_100_1G_2_5G LAN",
+            "serial": "4013000001",
+            "vendor": "Realtek"
+          }
+        },
+        "usb_vendor": "Realtek"
+      }
+    ],
+    "hardware_ports": [
+      {
+        "device": "en3",
+        "hardware_port": "Ethernet Adapter (en3)"
+      },
+      {
+        "device": "en4",
+        "hardware_port": "Ethernet Adapter (en4)"
+      },
+      {
+        "device": "en5",
+        "hardware_port": "USB 10/100/1G/2.5G LAN"
+      },
+      {
+        "device": "bridge0",
+        "hardware_port": "Thunderbolt Bridge"
+      },
+      {
+        "device": "en0",
+        "hardware_port": "Wi-Fi"
+      },
+      {
+        "device": "en1",
+        "hardware_port": "Thunderbolt 1"
+      },
+      {
+        "device": "en2",
+        "hardware_port": "Thunderbolt 2"
+      }
+    ],
+    "interfaces": [
+      {
+        "flags": "8049<UP,LOOPBACK,RUNNING,MULTICAST>",
+        "ipv4_configured": true,
+        "mtu": 16384,
+        "name": "lo0",
+        "status": null
+      },
+      {
+        "flags": "8010<POINTOPOINT,MULTICAST>",
+        "ipv4_configured": false,
+        "mtu": 1280,
+        "name": "gif0",
+        "status": null
+      },
+      {
+        "flags": "0<>",
+        "ipv4_configured": false,
+        "mtu": 1280,
+        "name": "stf0",
+        "status": null
+      },
+      {
+        "flags": "8863<UP,BROADCAST,SMART,RUNNING,SIMPLEX,MULTICAST>",
+        "ipv4_configured": false,
+        "mtu": 1500,
+        "name": "anpi0",
+        "status": "inactive"
+      },
+      {
+        "flags": "8863<UP,BROADCAST,SMART,RUNNING,SIMPLEX,MULTICAST>",
+        "ipv4_configured": false,
+        "mtu": 1500,
+        "name": "anpi1",
+        "status": "inactive"
+      },
+      {
+        "flags": "8863<UP,BROADCAST,SMART,RUNNING,SIMPLEX,MULTICAST>",
+        "ipv4_configured": false,
+        "mtu": 1500,
+        "name": "en3",
+        "status": "inactive"
+      },
+      {
+        "flags": "8863<UP,BROADCAST,SMART,RUNNING,SIMPLEX,MULTICAST>",
+        "ipv4_configured": false,
+        "mtu": 1500,
+        "name": "en4",
+        "status": "inactive"
+      },
+      {
+        "flags": "8963<UP,BROADCAST,SMART,RUNNING,PROMISC,SIMPLEX,MULTICAST>",
+        "ipv4_configured": false,
+        "mtu": 1500,
+        "name": "en1",
+        "status": "inactive"
+      },
+      {
+        "flags": "8963<UP,BROADCAST,SMART,RUNNING,PROMISC,SIMPLEX,MULTICAST>",
+        "ipv4_configured": false,
+        "mtu": 1500,
+        "name": "en2",
+        "status": "inactive"
+      },
+      {
+        "flags": "8863<UP,BROADCAST,SMART,RUNNING,SIMPLEX,MULTICAST>",
+        "ipv4_configured": false,
+        "mtu": 1500,
+        "name": "bridge0",
+        "status": "inactive"
+      },
+      {
+        "flags": "8822<BROADCAST,SMART,SIMPLEX,MULTICAST>",
+        "ipv4_configured": false,
+        "mtu": 1500,
+        "name": "ap1",
+        "status": null
+      },
+      {
+        "flags": "8863<UP,BROADCAST,SMART,RUNNING,SIMPLEX,MULTICAST>",
+        "ipv4_configured": true,
+        "mtu": 1500,
+        "name": "en0",
+        "status": "active"
+      },
+      {
+        "flags": "8863<UP,BROADCAST,SMART,RUNNING,SIMPLEX,MULTICAST>",
+        "ipv4_configured": false,
+        "mtu": 1500,
+        "name": "awdl0",
+        "status": "active"
+      },
+      {
+        "flags": "8863<UP,BROADCAST,SMART,RUNNING,SIMPLEX,MULTICAST>",
+        "ipv4_configured": false,
+        "mtu": 1500,
+        "name": "llw0",
+        "status": null
+      },
+      {
+        "flags": "8051<UP,POINTOPOINT,RUNNING,MULTICAST>",
+        "ipv4_configured": false,
+        "mtu": 1380,
+        "name": "utun0",
+        "status": null
+      },
+      {
+        "flags": "8051<UP,POINTOPOINT,RUNNING,MULTICAST>",
+        "ipv4_configured": false,
+        "mtu": 2000,
+        "name": "utun1",
+        "status": null
+      },
+      {
+        "flags": "8051<UP,POINTOPOINT,RUNNING,MULTICAST>",
+        "ipv4_configured": false,
+        "mtu": 1000,
+        "name": "utun2",
+        "status": null
+      },
+      {
+        "flags": "8051<UP,POINTOPOINT,RUNNING,MULTICAST>",
+        "ipv4_configured": false,
+        "mtu": 1500,
+        "name": "utun3",
+        "status": null
+      },
+      {
+        "flags": "8822<BROADCAST,SMART,SIMPLEX,MULTICAST>",
+        "ipv4_configured": false,
+        "mtu": 1500,
+        "name": "nan0",
+        "status": "inactive"
+      },
+      {
+        "flags": "8050<POINTOPOINT,RUNNING,MULTICAST>",
+        "ipv4_configured": false,
+        "mtu": 1280,
+        "name": "utun4",
+        "status": null
+      },
+      {
+        "flags": "8863<UP,BROADCAST,SMART,RUNNING,SIMPLEX,MULTICAST>",
+        "ipv4_configured": false,
+        "mtu": 1500,
+        "name": "en5",
+        "status": "inactive"
+      }
+    ],
+    "services": [
+      {
+        "enabled": true,
+        "name": "USB 10/100/1G/2.5G LAN"
+      },
+      {
+        "enabled": true,
+        "name": "M3"
+      },
+      {
+        "enabled": true,
+        "name": "Thunderbolt Bridge"
+      },
+      {
+        "enabled": true,
+        "name": "Wi-Fi"
+      },
+      {
+        "enabled": true,
+        "name": "iPhone USB"
+      }
+    ]
+  },
+  "measurements": {
+    "ping": null,
+    "reason": "throughput, RTT, and jitter were not executed",
+    "reference_link": false,
+    "status": "not_executed",
+    "throughput": null
+  },
+  "probe": "gate2a-usb-network",
+  "reference_environment": {
+    "device": {
+      "api_version": "26",
+      "interface_names": [
+        "lo",
+        "dummy0",
+        "ifb0",
+        "ifb1",
+        "ip_vti0",
+        "ip6_vti0",
+        "sit0",
+        "ip6tnl0",
+        "Hisilicon0",
+        "wlan0",
+        "p2p0",
+        "wlan1",
+        "chba0",
+        "nan0",
+        "ancowlan0",
+        "anco-wlan1"
+      ],
+      "model": "MRDI-W00",
+      "os_version": "7.0.0",
+      "product_name": "HUAWEI MatePad Pro",
+      "serial": "59GYD25716204513",
+      "software_version": "MRDIL-W00 7.0.0.111(SP8C00E111R6P3)"
+    },
+    "host": {
+      "architecture": "arm64",
+      "chip": "Apple M4",
+      "memory_bytes": 17179869184,
+      "model": "Mac16,12",
+      "os_build": "26C5047e",
+      "os_version": "27.3"
+    }
+  },
+  "schema_version": 1,
+  "scope": {
+    "depends_on_aoa_result": false,
+    "product_channel": false,
+    "reference_link_measurements_only": true,
+    "reverse_input_supported": false
+  },
+  "usb_topology": {
+    "ancestors": [
+      {
+        "class": "AppleT8132USBXHCI",
+        "location": "01000000",
+        "name": "AppleT8132USBXHCI",
+        "product": null,
+        "vendor": null
+      },
+      {
+        "class": "IOUSBHostDevice",
+        "location": "01100000",
+        "name": "USB2.1 Hub",
+        "product": "USB2.1 Hub",
+        "vendor": "Bridgesil"
+      }
+    ],
+    "direct_to_host": false,
+    "hub_count": 1,
+    "hubs": [
+      {
+        "class": "IOUSBHostDevice",
+        "location": "01100000",
+        "name": "USB2.1 Hub",
+        "product": "USB2.1 Hub",
+        "vendor": "Bridgesil"
+      }
+    ],
+    "link_speed_mbps": 480,
+    "observed_hubs": [
+      {
+        "class": "IOUSBHostDevice",
+        "location": "01100000",
+        "name": "USB2.1 Hub",
+        "product": "USB2.1 Hub",
+        "vendor": "Bridgesil"
+      },
+      {
+        "class": "IOUSBHostDevice",
+        "location": "01140000",
+        "name": "USB2.1 Hub",
+        "product": "USB2.1 Hub",
+        "vendor": "GenesysLogic"
+      },
+      {
+        "class": "IOUSBHostDevice",
+        "location": "01200000",
+        "name": "USB3.2 Hub",
+        "product": "USB3.2 Hub",
+        "vendor": "Bridgesil"
+      },
+      {
+        "class": "IOUSBHostDevice",
+        "location": "01240000",
+        "name": "USB3.1 Hub",
+        "product": "USB3.1 Hub",
+        "vendor": "GenesysLogic"
+      }
+    ],
+    "reason": "device path contains USB hub(s), so it is not a Reference Link",
+    "reference_link": false,
+    "target_device": {
+      "class": "IOUSBHostDevice",
+      "id_product": 20480,
+      "id_vendor": 4817,
+      "interfaces": [
+        {
+          "driver_bundle_id": null,
+          "driver_class": null,
+          "interface_class": 255,
+          "interface_protocol": 1,
+          "interface_subclass": 80,
+          "name": "HDC Interface"
+        }
+      ],
+      "link_speed_mbps": 480,
+      "location": "01130000",
+      "name": "HDC Device",
+      "owner": "pid 67816, hdc",
+      "product": "HDC Device",
+      "serial": "59GYD25716204513",
+      "vendor": "HISILICON"
+    }
+  }
+}

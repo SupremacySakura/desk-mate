@@ -1,0 +1,118 @@
+lo        Link encap:Local Loopback  
+          inet <redacted>  Mask:<redacted-ip> 
+          UP LOOPBACK RUNNING  MTU:65536  Metric:1
+          RX packets:24785 errors:0 dropped:0 overruns:0 frame:0 
+          TX packets:24785 errors:0 dropped:0 overruns:0 carrier:0 
+          collisions:0 txqueuelen:1000 
+          RX bytes:76702156 TX bytes:76702156 
+
+dummy0    Link encap:Ethernet  HWaddr <redacted-mac>
+          BROADCAST NOARP  MTU:1500  Metric:1
+          RX packets:0 errors:0 dropped:0 overruns:0 frame:0 
+          TX packets:0 errors:0 dropped:0 overruns:0 carrier:0 
+          collisions:0 txqueuelen:1000 
+          RX bytes:0 TX bytes:0 
+
+ifb0      Link encap:Ethernet  HWaddr <redacted-mac>
+          BROADCAST NOARP  MTU:1500  Metric:1
+          RX packets:0 errors:0 dropped:0 overruns:0 frame:0 
+          TX packets:0 errors:0 dropped:0 overruns:0 carrier:0 
+          collisions:0 txqueuelen:32 
+          RX bytes:0 TX bytes:0 
+
+ifb1      Link encap:Ethernet  HWaddr <redacted-mac>
+          BROADCAST NOARP  MTU:1500  Metric:1
+          RX packets:0 errors:0 dropped:0 overruns:0 frame:0 
+          TX packets:0 errors:0 dropped:0 overruns:0 carrier:0 
+          collisions:0 txqueuelen:32 
+          RX bytes:0 TX bytes:0 
+
+ip_vti0   Link encap:UNSPEC  
+          NOARP  MTU:1480  Metric:1
+          RX packets:0 errors:0 dropped:0 overruns:0 frame:0 
+          TX packets:0 errors:0 dropped:0 overruns:0 carrier:0 
+          collisions:0 txqueuelen:1000 
+          RX bytes:0 TX bytes:0 
+
+ip6_vti0  Link encap:UNSPEC  
+          NOARP  MTU:1428  Metric:1
+          RX packets:0 errors:0 dropped:0 overruns:0 frame:0 
+          TX packets:0 errors:0 dropped:0 overruns:0 carrier:0 
+          collisions:0 txqueuelen:1000 
+          RX bytes:0 TX bytes:0 
+
+sit0      Link encap:IPv6-in-IPv4  
+          NOARP  MTU:1480  Metric:1
+          RX packets:0 errors:0 dropped:0 overruns:0 frame:0 
+          TX packets:0 errors:0 dropped:0 overruns:0 carrier:0 
+          collisions:0 txqueuelen:1000 
+          RX bytes:0 TX bytes:0 
+
+ip6tnl0   Link encap:UNSPEC  
+          NOARP  MTU:1452  Metric:1
+          RX packets:0 errors:0 dropped:0 overruns:0 frame:0 
+          TX packets:0 errors:0 dropped:0 overruns:0 carrier:0 
+          collisions:0 txqueuelen:1000 
+          RX bytes:0 TX bytes:0 
+
+Hisilicon0 Link encap:Ethernet  HWaddr <redacted-mac>
+          BROADCAST MULTICAST  MTU:1500  Metric:1
+          RX packets:0 errors:0 dropped:0 overruns:0 frame:0 
+          TX packets:0 errors:0 dropped:0 overruns:0 carrier:0 
+          collisions:0 txqueuelen:1000 
+          RX bytes:0 TX bytes:0 
+
+wlan0     Link encap:Ethernet  HWaddr <redacted-mac>
+          inet <redacted>  Bcast:<redacted-ip>  Mask:<redacted-ip> 
+          UP BROADCAST RUNNING MULTICAST  MTU:1500  Metric:1
+          RX packets:19547400 errors:0 dropped:44 overruns:0 frame:0 
+          TX packets:5929653 errors:0 dropped:0 overruns:0 carrier:0 
+          collisions:0 txqueuelen:1000 
+          RX bytes:22696314336 TX bytes:1398425889 
+
+p2p0      Link encap:Ethernet  HWaddr <redacted-mac>
+          UP BROADCAST MULTICAST  MTU:1500  Metric:1
+          RX packets:8829709 errors:0 dropped:0 overruns:0 frame:0 
+          TX packets:1398062 errors:0 dropped:0 overruns:0 carrier:0 
+          collisions:0 txqueuelen:1000 
+          RX bytes:12385029829 TX bytes:282546515 
+
+wlan1     Link encap:Ethernet  HWaddr <redacted-mac>
+          inet <redacted>  Bcast:<redacted-ip>  Mask:<redacted-ip> 
+          UP BROADCAST RUNNING MULTICAST  MTU:1500  Metric:1
+          RX packets:13419729 errors:0 dropped:0 overruns:0 frame:0 
+          TX packets:10510325 errors:0 dropped:0 overruns:0 carrier:0 
+          collisions:0 txqueuelen:1000 
+          RX bytes:5969192990 TX bytes:7149332001 
+
+chba0     Link encap:Ethernet  HWaddr <redacted-mac>
+          inet <redacted>  Bcast:<redacted-ip>  Mask:<redacted-ip> 
+          UP BROADCAST RUNNING MULTICAST  MTU:1500  Metric:1
+          RX packets:4283817 errors:0 dropped:0 overruns:0 frame:0 
+          TX packets:1097158 errors:0 dropped:0 overruns:0 carrier:0 
+          collisions:0 txqueuelen:1000 
+          RX bytes:6010126537 TX bytes:172541362 
+
+nan0      Link encap:Ethernet  HWaddr <redacted-mac>
+          BROADCAST MULTICAST  MTU:1500  Metric:1
+          RX packets:0 errors:0 dropped:0 overruns:0 frame:0 
+          TX packets:0 errors:0 dropped:0 overruns:0 carrier:0 
+          collisions:0 txqueuelen:1000 
+          RX bytes:0 TX bytes:0 
+
+ancowlan0 Link encap:Ethernet  HWaddr <redacted-mac>
+          inet <redacted>  Bcast:<redacted-ip>  Mask:<redacted-ip> 
+          UP BROADCAST RUNNING MULTICAST  MTU:1500  Metric:1
+          RX packets:420296 errors:0 dropped:0 overruns:0 frame:0 
+          TX packets:705724 errors:0 dropped:0 overruns:0 carrier:0 
+          collisions:0 txqueuelen:1000 
+          RX bytes:29758595 TX bytes:2209477446 
+
+anco-wlan1 Link encap:Ethernet  HWaddr <redacted-mac>
+          inet <redacted>  Bcast:<redacted-ip>  Mask:<redacted-ip> 
+          UP BROADCAST RUNNING MULTICAST  MTU:1500  Metric:1
+          RX packets:29 errors:0 dropped:0 overruns:0 frame:0 
+          TX packets:9312 errors:0 dropped:0 overruns:0 carrier:0 
+          collisions:0 txqueuelen:1000 
+          RX bytes:2126 TX bytes:744454 
+

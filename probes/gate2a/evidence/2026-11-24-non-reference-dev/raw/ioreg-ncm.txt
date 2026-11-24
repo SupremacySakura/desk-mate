@@ -1,0 +1,101 @@
++-o AppleUSBNCMControl  <class AppleUSBNCMControl, id 0x1000085f1, registered, matched, active, busy 0 (7 ms), retain 8>
+  | {
+  |   "IOClass" = "AppleUSBNCMControl"
+  |   "CFBundleIdentifier" = "com.apple.driver.usb.cdc.ncm"
+  |   "IOProviderClass" = "IOUSBHostInterface"
+  |   "NetworkInterfaceFlags" = 0
+  |   "NCMOperatingMode" = 0
+  |   "IOProbeScore" = 59000
+  |   "bInterfaceSubClass" = 13
+  |   "IOMatchedAtBoot" = Yes
+  |   "IOMatchCategory" = "IODefaultMatchCategory"
+  |   "IOPersonalityPublisher" = "com.apple.driver.usb.cdc.ncm"
+  |   "bInterfaceProtocol" = "*"
+  |   "CFBundleIdentifierKernel" = "com.apple.driver.usb.cdc.ncm"
+  |   "bInterfaceClass" = 2
+  | }
+  | 
+  +-o AppleUSBNCMData  <class AppleUSBNCMData, id 0x100008604, registered, matched, active, busy 0 (5 ms), retain 7>
+    | {
+    |   "IOMatchedAtBoot" = Yes
+    |   "InputRecordCount" = 4
+    |   "IOMaxPacketSize" = 1522
+    |   "IOPacketFilters" = {"IONetworkFilterGroup"=307,"IOEthernetWakeOnLANFilterGroup"=0}
+    |   "IORevision" = ""
+    |   "IOMinPacketSize" = 64
+    |   "NTBFormatsSupported" = 1
+    |   "OutputSizeMax" = 17404
+    |   "IOModel" = "USB"
+    |   "OutputSize" = 17404
+    |   "IOPersonalityPublisher" = "com.apple.driver.usb.cdc.ncm"
+    |   "NTBFormat" = 0
+    |   "IOMediumDictionary" = {"00000020"={"Index"=0,"Type"=32,"Flags"=0,"Speed"=0},"00100023"={"Index"=0,"Type"=1048611,"Flags"=0,"Speed"=10000000},"00100036"={"Index"=0,"Type"=1048630,"Flags"=0,"Speed"=2500000000},"00100035"={"Index"=0,"Type"=1048629,"Flags"=0,"Speed"=10000000000},"00100026"={"Index"=0,"Type"=1048614,"Flags"=0,"Speed"=100000000},"00000022"={"Index"=0,"Type"=34,"Flags"=0,"Speed"=0},"00100030"={"Index"=0,"Type"=1048624,"Flags"=0,"Speed"=1000000000},"00100037"={"Index"=0,"Type"=1048631,"Flags"=0,"Speed"=5000000000}}
+    |   "idVendor" = 3034
+    |   "InputSize" = 32764
+    |   "IOMACAddress" = <redacted-mac>
+    |   "idProduct" = 33110
+    |   "AVBControllerState" = 1
+    |   "IOLinkSpeed" = 0
+    |   "InputSizeMax" = 36860
+    |   "CFBundleIdentifier" = "com.apple.driver.usb.cdc.ncm"
+    |   "DatagramSizeMax" = 1518
+    |   "IOVendor" = "USB NCM"
+    |   "IOProviderClass" = "AppleUSBNCMControl"
+    |   "IOSelectedMedium" = "00000020"
+    |   "DatagramOutputCountMax" = 1024
+    |   "IOFeatures" = 4
+    |   "IOClass" = "AppleUSBNCMData"
+    |   "CFBundleIdentifierKernel" = "com.apple.driver.usb.cdc.ncm"
+    |   "IOLinkStatus" = 1
+    |   "IOActiveMedium" = "00000022"
+    |   "NetworkInterfaceFlags" = 0
+    |   "IOMatchCategory" = "IODefaultMatchCategory"
+    |   "OutputRecordCount" = 7
+    |   "IOProbeScore" = 0
+    |   "DatagramOutputCount" = 1024
+    |   "DatagramOutputCountCalculatedMax" = 1024
+    | }
+    | 
+    +-o en5  <class IOEthernetInterface, id 0x100008606, registered, matched, active, busy 0 (5 ms), retain 11>
+      | {
+      |   "IOLocation" = ""
+      |   "IORequiredPacketFilters" = {"IONetworkFilterGroup"=19,"IOEthernetWakeOnLANFilterGroup"=0}
+      |   "IOLinkActiveCount" = 0
+      |   "BSD Name" = "en5"
+      |   "IOMaxTransferUnit" = 1500
+      |   "IOInterfaceType" = 6
+      |   "IOInterfaceFlags" = 34915
+      |   "IOMediaAddressLength" = 6
+      |   "IOInterfaceState" = 3
+      |   "IOMediaHeaderLength" = 14
+      |   "IOActivePacketFilters" = {"IONetworkFilterGroup"=19,"IOEthernetWakeOnLANFilterGroup"=0}
+      |   "IOInterfaceExtraFlags" = 1073741952
+      |   "IOPrimaryInterface" = No
+      |   "IOControllerEnabled" = Yes
+      |   "IOInterfaceUnit" = 5
+      |   "IOInterfaceNamePrefix" = "en"
+      |   "IOBuiltin" = No
+      |   "IONetworkData" = {"IONetworkStatsKey"={"Size"=20,"Data"=<0000000000000000000000000000000000000000>,"Access Types"=9},"IOEthernetStatsKey"={"Size"=216,"Data"=<000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000>,"Access Types"=9}}
+      | }
+      | 
+      +-o IONetworkStack  <class IONetworkStack, id 0x100000746, registered, matched, active, busy 0 (1 ms), retain 22>
+        | {
+        |   "IOProbeScore" = 0
+        |   "CFBundleIdentifier" = "com.apple.iokit.IONetworkingFamily"
+        |   "IOMatchCategory" = "IONetworkStack"
+        |   "IOClass" = "IONetworkStack"
+        |   "IOPersonalityPublisher" = "com.apple.iokit.IONetworkingFamily"
+        |   "IOProviderClass" = "IOResources"
+        |   "CFBundleIdentifierKernel" = "com.apple.iokit.IONetworkingFamily"
+        |   "IOMatchedAtBoot" = Yes
+        |   "IOUserClientClass" = "IONetworkStackUserClient"
+        |   "IOResourceMatch" = "IOBSD"
+        | }
+        | 
+        +-o IONetworkStackUserClient  <class IONetworkStackUserClient, id 0x100000cdb, !registered, !matched, active, busy 0, retain 5>
+            {
+              "IOUserClientCreator" = "pid 348, configd"
+              "IOUserClientDefaultLocking" = Yes
+            }
+            
+

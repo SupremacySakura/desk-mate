@@ -1,0 +1,8 @@
+{
+  "architecture": "arm64",
+  "chip": "Apple M4",
+  "memory_bytes": 17179869184,
+  "model": "Mac16,12",
+  "os_build": "26C5047e",
+  "os_version": "27.3"
+}
