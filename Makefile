@@ -7,7 +7,9 @@ LDFLAGS ?=
 
 BUILD_DIR := build
 LIB := $(BUILD_DIR)/libdeskmate-protocol.a
-TEST_BIN := $(BUILD_DIR)/deskmate-tests
+PROTOCOL_TEST_BIN := $(BUILD_DIR)/deskmate-tests
+SESSION_TEST_BIN := $(BUILD_DIR)/deskmate-session-tests
+TEST_BINS := $(PROTOCOL_TEST_BIN) $(SESSION_TEST_BIN)
 
 LIB_SOURCES := $(wildcard core/src/*.cpp)
 TEST_SOURCES := $(wildcard core/tests/*.cpp)
@@ -17,7 +19,7 @@ DEPS := $(LIB_OBJECTS:.o=.d) $(TEST_OBJECTS:.o=.d)
 
 .PHONY: all lib test clean
 
-all: $(LIB) $(TEST_BIN)
+all: $(LIB) $(TEST_BINS)
 
 lib: $(LIB)
 
@@ -25,16 +27,21 @@ $(LIB): $(LIB_OBJECTS)
 	mkdir -p $(dir $@)
 	$(AR) rcs $@ $^
 
-$(TEST_BIN): $(TEST_OBJECTS) $(LIB)
+$(PROTOCOL_TEST_BIN): $(BUILD_DIR)/core/tests/protocol_tests.o $(LIB)
 	mkdir -p $(dir $@)
-	$(CXX) $(LDFLAGS) $(TEST_OBJECTS) $(LIB) -o $@
+	$(CXX) $(LDFLAGS) $^ -o $@
+
+$(SESSION_TEST_BIN): $(BUILD_DIR)/core/tests/session_tests.o $(LIB)
+	mkdir -p $(dir $@)
+	$(CXX) $(LDFLAGS) $^ -o $@
 
 $(BUILD_DIR)/%.o: %.cpp
 	mkdir -p $(dir $@)
 	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -MMD -MP -c $< -o $@
 
-test: $(TEST_BIN)
-	./$(TEST_BIN) testdata/golden
+test: $(TEST_BINS)
+	./$(PROTOCOL_TEST_BIN) testdata/golden
+	./$(SESSION_TEST_BIN)
 
 clean:
 	rm -rf $(BUILD_DIR)

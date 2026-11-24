@@ -2,8 +2,8 @@
 
 DeskMate 是 macOS Host 与 HarmonyOS NEXT Device 之间的有线 Extended Display 与
 Reverse Input 项目。当前仓库处于 **Design / Pending Hardware Verification**；
-本目录中的协议实现是任务单 01 的 proposed V1 共享核心，不是已完成硬件验证的
-产品协议。
+本目录中的协议与 Session 实现是 proposed V1 共享核心，不是已完成硬件验证的产品
+协议。
 
 ## 当前范围
 
@@ -12,11 +12,17 @@ Reverse Input 项目。当前仓库处于 **Design / Pending Hardware Verificati
 - 测试视频分片重组、分片乱序补齐、帧序号不连续检测和 Recovery IDR 前缀。
 - 控制、输入与校时消息的非分片约束；音频与未知顶层类型被明确拒绝并丢弃。
 - 基于 `ByteIo` 接缝的 Host/Device 控制回声与测试视频端到端契约测试。
+- Host/Device 从 `CLIENT_HELLO` 到 `STREAM_COMMITTED` 和首个匹配 Stream Epoch
+  的 IDR 的两端握手状态机。
+- 编码器、像素格式和分辨率的双方能力交集协商；空交集与 `proto_rev` 不匹配会
+  返回明确错误并终止 Session。
+- 可注入的单调时钟与内存测试时钟；双方各握手阶段的 2 秒超时无需真实 sleep。
+- PREPARE 幂等、非破坏性边界、COMMIT 失败、`DISPLAY_ERROR` 和首帧超时的确定性
+  契约测试。
 - 合法与非法 golden vectors。
 
-本任务不实现 Session 状态机、握手、帧级优先调度或 GOP 恢复策略。CLIENT_HELLO
-的 `proto_rev` 单调性、重复 `config_id` 的幂等性、RECOVERY/COMMIT 的流代际语义
-由后续 Session 层消费本协议事件实现。
+当前实现不包含暂停/恢复、运行中重配、心跳、帧级优先调度或 GOP 恢复策略。这些
+属于后续任务，不能由本目录的实现推断为已完成。
 
 ## 构建与测试
 
@@ -27,13 +33,15 @@ CMake。
 make test
 ```
 
-`make` 或 `make lib` 会生成共享静态库 `build/libdeskmate-protocol.a`，供后续
-Session/调度器与 Host/Device 适配层链接。
+`make` 会生成共享静态库 `build/libdeskmate-protocol.a`、协议测试程序
+`build/deskmate-tests` 和 Session 测试程序 `build/deskmate-session-tests`。
+`make lib` 只生成静态库。
 
-测试程序接收 golden 目录作为参数，Makefile 已传入 `testdata/golden`：
+也可以分别运行测试：
 
 ```sh
 ./build/deskmate-tests testdata/golden
+./build/deskmate-session-tests
 ```
 
 清理构建产物：
@@ -48,9 +56,11 @@ make clean
 core/include/deskmate/
   protocol.hpp          线上类型、头部/包/控制载荷编码与基础校验
   message_stream.hpp    流式包解码、视频重组与协议事件
+  session.hpp           Host/Device 握手、能力协商、公开状态与边界结果
+  clock.hpp             单调时钟接缝、SteadyClock 与测试用 ManualClock
   byte_io.hpp           Session/调度器可复用的字节 I/O 接缝
 core/src/               共享核心实现
-core/tests/             无框架集成测试与 Host/Device 契约 harness
+core/tests/             无框架协议测试与 Host/Device Session 契约测试
 testdata/golden/        独立于 C++ 编码器生成的合法/非法线上字节
 ```
 
@@ -63,6 +73,59 @@ testdata/golden/        独立于 C++ 编码器生成的合法/非法线上字�
   分片重复/乱序/不连续。连接仍可继续。
 - `StreamError`：无法继续可靠定界的致命错误。解码器进入 `failed()` 状态；调用方
   必须丢弃当前流状态并重连或显式 `reset()`，不得扫描后续字节猜测包边界。
+
+## Session 握手 API
+
+`session.hpp` 提供 `HostSession` 与 `DeviceSession`。构造时注入同一个
+`ByteIo` 接缝的一对方向端和 `MonotonicClock`；`start()` 启动本地阶段，
+`pump()` 非阻塞读取到 `WouldBlock` 并刷新待写字节。调用方交替 `pump()` 两端，
+通过公开的 `state()`、`failure()`、`negotiated_stream()` 和
+`DeviceSession::take_video_frames()` 观察结果。
+
+生产适配层负责用 CSPRNG 生成非零 `HostSessionConfig::video_stream_id` 和
+`DeviceSessionConfig::session_nonce`；随机标识只用于筛选陈旧消息，不作认证。
+
+```cpp
+deskmate::protocol::SteadyClock clock;
+deskmate::protocol::HostSession host(host_io, clock, host_config);
+deskmate::protocol::DeviceSession device(device_io, clock, device_config, &boundary);
+
+host.start();
+device.start();
+host.pump();
+device.pump();
+// Host 在 state() == Streaming 后发送首个 keyframe。
+```
+
+状态顺序：
+
+| Host | Device |
+| --- | --- |
+| `AwaitingClientHello` | `AwaitingPrepare` |
+| `AwaitingReady` | `AwaitingCommit` |
+| `AwaitingCommitted` | `AwaitingFirstIdr` |
+| `Streaming` | `Streaming` |
+
+`SessionLimits::stage_timeout_ns` 默认 2 秒。Host 等待 HELLO、READY、
+COMMITTED；Device 等待 PREPARE、COMMIT、首个新流 IDR。超时通过
+`SessionFailure` 暴露并终止 Session。测试使用 `ManualClock::advance_ns()` 推进
+时间，不调用 sleep。
+
+协商规则：
+
+- Host 按自身列表顺序选择第一个双方都支持的编码器、像素格式和分辨率。
+- 任一类别没有交集时返回 `NoCommonCapabilities` 并终止 Session。
+- `proto_rev` 与本地 `protocol_revision` 不同时返回
+  `UnsupportedProtocolRevision` 并终止 Session。
+- 同一 `config_id`、同一 profile 的重复 PREPARE 只重发 READY，不重复调用
+  `DeviceBoundary::prepare_stream`，也不提交流。
+- `DeviceBoundary::commit_stream` 返回失败时 Device 发送 `PROTOCOL_ERROR`，
+  不发 `STREAM_COMMITTED`。
+
+Host 只有在收到匹配的 `STREAM_COMMITTED` 后进入 `Streaming`；
+`send_video_frame` 在该状态前返回 `NotStreaming`，首个视频帧必须设置
+`keyframe=true`，否则返回 `IdrRequired`。Device 在 COMMIT 后只接受同时匹配
+Session Nonce 与 Stream Epoch 的视频，并在首个 keyframe 前忽略 P 帧。
 
 ## 线上格式
 
@@ -106,7 +169,7 @@ testdata/golden/        独立于 C++ 编码器生成的合法/非法线上字�
 
 ### 控制载荷草案
 
-控制消息载荷采用 10 字节前缀，便于后续 Session 层解析，但本任务不实现状态转换：
+控制消息载荷采用 10 字节前缀，后接 opcode 专属 body：
 
 | 偏移 | 字段 | 编码 |
 | ---: | --- | --- |
@@ -120,7 +183,39 @@ testdata/golden/        独立于 C++ 编码器生成的合法/非法线上字�
 `STREAM_COMMIT=0x04`、`STREAM_COMMITTED=0x05`、`PAUSE=0x06`、`PAUSE_ACK=0x07`、
 `RESUME=0x08`、`HEARTBEAT=0x09`、`REQUEST_IDR=0x0A`、`PROTOCOL_ERROR=0x0B`。
 `CLIENT_HELLO` 与 `STREAM_PREPARE` 必须携带非零 `proto_rev`；单调递增检查属于
-Session 层，不在无状态编解码器中伪造。
+Session 层，本实现的握手只接受与本地 `kProtocolRevision` 相同的修订。
+
+### Session 控制 body
+
+所有 Session body 都是显式小端，并受 4096 字节控制载荷上限约束。本实现没有修改
+32 字节包头或既有 opcode 数值；新增的是 body 契约和独立 Session API。
+
+能力 body：
+
+| 偏移 | 字段 | 编码 |
+| ---: | --- | --- |
+| 0 | `encoding_version` | `uint8`，当前为 1 |
+| 1 | `encoder_count` | `uint8`，最多 8 |
+| ... | `encoders` | `uint8`，`H264=1`、`HEVC=2` |
+| ... | `pixel_format_count` | `uint8`，最多 8 |
+| ... | `pixel_formats` | `uint8`，`NV12=1`、`P010=2`、`BGRA8=3` |
+| ... | `resolution_count` | `uint8`，最多 8 |
+| ... | `resolutions` | 每项 `uint16 width`、`uint16 height`、`uint16 refresh_hz` |
+
+`STREAM_PREPARE` 与 `STREAM_READY` 的 body 是 9 字节 profile：
+
+| 偏移 | 字段 |
+| ---: | --- |
+| 0 | `encoding_version`，当前为 1 |
+| 1 | `encoder` |
+| 2 | `pixel_format` |
+| 3 | `width`，LE `uint16` |
+| 5 | `height`，LE `uint16` |
+| 7 | `refresh_hz`，LE `uint16` |
+
+`STREAM_COMMIT` 与 `STREAM_COMMITTED` 的 body 是 4 字节非零
+`video_stream_id`；包头 `video_stream_id` 必须与 body 相同。`PROTOCOL_ERROR`
+body 是 1 字节 `SessionFailure` 数值，见 `session.hpp`。
 
 ## Golden vectors
 
@@ -143,3 +238,9 @@ name | expectation | expected-payload-hex | packet-hex
 - `ByteIo` 只有接口；测试中的 Host/Device 内存管道是契约 harness，不是生产传输层。
 - 分片不连续产生 `RequestRecovery` 事件，但选择 IDR、暂停/恢复及 Last Good Frame
   属于后续 Session/调度任务。
+- 当前只实现首次握手。暂停/恢复、心跳失联、运行中重配、Pause Grace Timeout 和
+  系统权限变化尚未实现；不同 `config_id` 的 PREPARE 在首次握手期会被拒绝。
+- `DeviceBoundary` 是最小结果桩，不证明 Surface Lease、解码器 Flush/Reconfigure
+  或旧流回退能力；这些仍由 Gate 3 验证。
+- 首个 IDR 之后不实现优先级调度、GOP 边界丢弃、恢复 IDR 重试或 Last Good Frame
+  门控。
