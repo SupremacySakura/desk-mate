@@ -4,10 +4,14 @@
 
 **Blocked by：** 01: 候选协议端到端回声
 
-**Status:** ready-for-agent
+**Status:** ready-for-human
 
-- [ ] Host/Device 按 HELLO、PREPARE、READY、COMMIT、COMMITTED、首个有效 IDR 的次序推进 Session。
-- [ ] Host 在 COMMITTED 前不发送新流 IDR；Device 只接受匹配 Session Nonce 和 Stream Epoch 的消息。
-- [ ] 编码器、像素格式和分辨率只从双方能力交集选择；空交集和 proto_rev 不匹配明确报错并结束 Session。
-- [ ] 使用确定性时钟验证双方各自的 2 秒阶段超时，无真实 sleep。
-- [ ] PREPARE 的非破坏性边界、config_id 幂等、COMMIT 失败及首帧超时均可通过最小边界结果桩验证。
+- [x] Host/Device 按 HELLO、PREPARE、READY、COMMIT、COMMITTED、首个有效 IDR 的次序推进 Session。
+- [x] Host 在 COMMITTED 前不发送新流 IDR；Device 只接受匹配 Session Nonce 和 Stream Epoch 的消息。
+- [x] 编码器、像素格式和分辨率只从双方能力交集选择；空交集和 proto_rev 不匹配明确报错并结束 Session。
+- [x] 使用确定性时钟验证双方各自的 2 秒阶段超时，无真实 sleep。
+- [x] PREPARE 的非破坏性边界、config_id 幂等、COMMIT 失败及首帧超时均可通过最小边界结果桩验证。
+
+## Comments
+
+- 实现完成。HELLO→PREPARE→READY→COMMIT→COMMITTED→首 IDR 状态机、能力交集、proto_rev 校验与 2 秒阶段超时均由 `core/tests/session_tests.cpp` 用确定性时钟覆盖。

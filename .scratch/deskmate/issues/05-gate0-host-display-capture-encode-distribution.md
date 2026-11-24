@@ -12,3 +12,15 @@
 - [ ] 将真实码流样本和元数据提供给 Gate 3，不等到端到端集成才发现互操作问题。
 - [ ] 采集显式关闭音频；记录 Developer ID 签名、公证及 Gatekeeper 启动结果。
 - [ ] 报告明确通过或失败；失败时不以主屏镜像替代。
+
+## Comments
+
+- 2026-11-24：Gate 0 探针已实现（`probes/gate0`，`make test`/`make dry-run` 通过），
+  但真机项全部未执行。`records/local-pending.json` 明确 `decision=pending`：
+  - 缺少 Screen Recording 权限；
+  - 缺少 Developer ID Application 身份，签名/公证未执行；
+  - 受限 agent 进程中 `CGGetOnlineDisplayList` 返回空集合，无法创建/验证
+    Extended Display 或做 live 采集；
+  - 未产生真实 HEVC/H.264 Annex-B 样本。
+- 因此 issue 07 的 Annex-B Host 互操作仍被本任务阻塞。
+- 需要人在已登录图形桌面的 Reference Host 上授予录屏权限并运行 live 流程。
