@@ -45,4 +45,11 @@ if strings "$BIN" | grep -Eq 'BEGIN (RSA |EC )?PRIVATE KEY|password='; then
 fi
 echo "PASS no signing material"
 
+if strings "$BIN" | grep -q 'set_configuration'; then
+  fail "accessory teardown must not reconfigure the device (it strands it in AOA)"
+fi
+strings "$BIN" | grep -q 'waiting for the tablet to allow the USB accessory' \
+  || fail "missing the consent-dialog hint in the state log"
+echo "PASS AOA teardown and diagnostics"
+
 echo "all host contract checks passed"

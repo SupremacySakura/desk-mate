@@ -30,7 +30,16 @@ constexpr unsigned kControlTimeoutMs = 3000;
 constexpr unsigned kIoTimeoutMs = 4;
 constexpr unsigned kWriteTimeoutMs = 20;
 constexpr int kMaxHandshakeAttempts = 5;
+/* In-place session rebuilds are right while the tablet has not opened the
+   accessory yet. Once it answers and then stalls mid-handshake, the device side
+   is holding a stale session, and only a link hangup makes it rebuild - so
+   after this many in-place retries the link is dropped and re-claimed. */
+constexpr int kInPlaceRetriesBeforeRelink = 2;
 constexpr std::size_t kMaxPendingVideoFrames = 8;
+/* The tablet shows a USB-accessory consent dialog the first time an accessory
+   claims the interface. The protocol default of 2 s expires before anyone can
+   tap it, so the host allows a full 20 s for the first ClientHello. */
+constexpr std::uint64_t kHandshakeStageTimeoutNs = 20'000'000'000ULL;
 
 bool is_accessory(std::uint16_t vendor_id, std::uint16_t product_id) {
   return vendor_id == kAccessoryVendorId &&
@@ -43,8 +52,15 @@ std::string libusb_text(int rc) { return libusb_error_name(rc); }
 class UsbByteIo final : public deskmate::protocol::ByteIo {
  public:
   UsbByteIo(libusb_device_handle *handle, std::uint8_t endpoint_in,
-            std::uint8_t endpoint_out)
-      : handle_(handle), endpoint_in_(endpoint_in), endpoint_out_(endpoint_out) {}
+            std::uint8_t endpoint_out, std::atomic<std::uint64_t> *rx_bytes,
+            std::atomic<std::uint64_t> *tx_bytes,
+            std::atomic<std::uint64_t> *bulk_errors)
+      : handle_(handle),
+        endpoint_in_(endpoint_in),
+        endpoint_out_(endpoint_out),
+        rx_bytes_(rx_bytes),
+        tx_bytes_(tx_bytes),
+        bulk_errors_(bulk_errors) {}
 
   deskmate::protocol::IoResult read(
       std::span<std::uint8_t> destination) override {
@@ -56,6 +72,7 @@ class UsbByteIo final : public deskmate::protocol::ByteIo {
       if (transferred == 0) {
         return {deskmate::protocol::IoStatus::WouldBlock, 0};
       }
+      rx_bytes_->fetch_add(static_cast<std::uint64_t>(transferred));
       return {deskmate::protocol::IoStatus::Ok,
               static_cast<std::size_t>(transferred)};
     }
@@ -65,6 +82,7 @@ class UsbByteIo final : public deskmate::protocol::ByteIo {
     if (rc == LIBUSB_ERROR_NO_DEVICE) {
       return {deskmate::protocol::IoStatus::Closed, 0};
     }
+    bulk_errors_->fetch_add(1);
     return {deskmate::protocol::IoStatus::Error, 0};
   }
 
@@ -79,6 +97,7 @@ class UsbByteIo final : public deskmate::protocol::ByteIo {
       if (transferred == 0) {
         return {deskmate::protocol::IoStatus::WouldBlock, 0};
       }
+      tx_bytes_->fetch_add(static_cast<std::uint64_t>(transferred));
       return {deskmate::protocol::IoStatus::Ok,
               static_cast<std::size_t>(transferred)};
     }
@@ -88,6 +107,7 @@ class UsbByteIo final : public deskmate::protocol::ByteIo {
     if (rc == LIBUSB_ERROR_NO_DEVICE) {
       return {deskmate::protocol::IoStatus::Closed, 0};
     }
+    bulk_errors_->fetch_add(1);
     return {deskmate::protocol::IoStatus::Error, 0};
   }
 
@@ -97,6 +117,9 @@ class UsbByteIo final : public deskmate::protocol::ByteIo {
   libusb_device_handle *handle_;
   std::uint8_t endpoint_in_;
   std::uint8_t endpoint_out_;
+  std::atomic<std::uint64_t> *rx_bytes_;
+  std::atomic<std::uint64_t> *tx_bytes_;
+  std::atomic<std::uint64_t> *bulk_errors_;
 };
 
 struct BulkEndpoints {
@@ -308,6 +331,9 @@ struct DMBridge {
   std::atomic<std::uint64_t> frames_rejected{0};
   std::atomic<std::uint64_t> input_events{0};
   std::atomic<std::uint64_t> reconnects{0};
+  std::atomic<std::uint64_t> rx_bytes{0};
+  std::atomic<std::uint64_t> tx_bytes{0};
+  std::atomic<std::uint64_t> bulk_errors{0};
 
   std::mutex error_mutex;
   std::string last_error;
@@ -326,6 +352,11 @@ struct DMBridge {
       last_error = message;
     }
     log("error: " + message);
+  }
+
+  void clear_error() {
+    std::lock_guard lock(error_mutex);
+    last_error.clear();
   }
 };
 
@@ -441,6 +472,37 @@ void dm_bridge_set_intent_callback(DMBridge *bridge, DMIntentCallback callback,
 
 namespace {
 
+/* Builds a fresh HostSession over an already-claimed accessory link. */
+void start_session(DMBridge *bridge) {
+  deskmate::protocol::HostSessionConfig session_config;
+  session_config.video_stream_id = random_nonzero_u32();
+  /* A fresh config id per session: reusing 1 makes a stale device session
+     answer with the previous attempt's StreamReady/StreamCommitted. */
+  session_config.initial_config_id = (random_nonzero_u32() & 0x7FFFFFFFU) | 1U;
+  session_config.limits.stage_timeout_ns = kHandshakeStageTimeoutNs;
+  if (bridge->config.prefer_hevc != 0) {
+    session_config.capabilities.encoders = {
+        deskmate::protocol::VideoEncoder::Hevc,
+        deskmate::protocol::VideoEncoder::H264};
+  } else {
+    session_config.capabilities.encoders = {
+        deskmate::protocol::VideoEncoder::H264};
+  }
+  session_config.capabilities.pixel_formats = {
+      deskmate::protocol::PixelFormat::Nv12};
+  session_config.capabilities.resolutions = {
+      deskmate::protocol::DisplayResolution{
+          static_cast<std::uint16_t>(bridge->config.width),
+          static_cast<std::uint16_t>(bridge->config.height),
+          static_cast<std::uint16_t>(bridge->config.refresh_hz)}};
+
+  auto session = std::make_unique<deskmate::protocol::HostSession>(
+      *bridge->io, *bridge->clock, session_config, bridge->boundary);
+  session->start();
+  std::lock_guard lock(bridge->session_mutex);
+  bridge->session = std::move(session);
+}
+
 bool connect_once(DMBridge *bridge) {
   if (bridge->context == nullptr) {
     bridge->set_error("libusb_init failed");
@@ -496,35 +558,27 @@ bool connect_once(DMBridge *bridge) {
   bridge->interface_claimed = true;
 
   bridge->io = std::make_unique<UsbByteIo>(bridge->handle, endpoints.endpoint_in,
-                                           endpoints.endpoint_out);
-  bridge->clock = std::make_unique<deskmate::protocol::SteadyClock>();
-
-  deskmate::protocol::HostSessionConfig session_config;
-  session_config.video_stream_id = random_nonzero_u32();
-  if (bridge->config.prefer_hevc != 0) {
-    session_config.capabilities.encoders = {
-        deskmate::protocol::VideoEncoder::Hevc,
-        deskmate::protocol::VideoEncoder::H264};
-  } else {
-    session_config.capabilities.encoders = {
-        deskmate::protocol::VideoEncoder::H264};
+                                           endpoints.endpoint_out,
+                                           &bridge->rx_bytes,
+                                           &bridge->tx_bytes,
+                                           &bridge->bulk_errors);
+  {
+    std::ostringstream line;
+    line << "claimed interface " << endpoints.interface_number << " in=0x"
+         << std::hex << static_cast<int>(endpoints.endpoint_in) << " out=0x"
+         << static_cast<int>(endpoints.endpoint_out) << std::dec;
+    bridge->log(line.str());
   }
-  session_config.capabilities.pixel_formats = {
-      deskmate::protocol::PixelFormat::Nv12};
-  session_config.capabilities.resolutions = {
-      deskmate::protocol::DisplayResolution{
-          static_cast<std::uint16_t>(bridge->config.width),
-          static_cast<std::uint16_t>(bridge->config.height),
-          static_cast<std::uint16_t>(bridge->config.refresh_hz)}};
-
-  bridge->session = std::make_unique<deskmate::protocol::HostSession>(
-      *bridge->io, *bridge->clock, session_config, bridge->boundary);
-  bridge->session->start();
+  bridge->clock = std::make_unique<deskmate::protocol::SteadyClock>();
+  start_session(bridge);
   return true;
 }
 
 void teardown_link(DMBridge *bridge) {
-  bridge->session.reset();
+  {
+    std::lock_guard lock(bridge->session_mutex);
+    bridge->session.reset();
+  }
   bridge->io.reset();
   bridge->clock.reset();
   if (bridge->handle != nullptr) {
@@ -538,26 +592,41 @@ void teardown_link(DMBridge *bridge) {
 }
 
 void worker_main(DMBridge *bridge) {
-  int failed_attempts = 0;
+  int link_failures = 0;
+  int handshake_failures = 0;
   while (!bridge->stop_requested.load()) {
-    if (failed_attempts >= kMaxHandshakeAttempts) {
-      bridge->set_error("giving up after repeated session failures");
-      break;
+    if (bridge->handle == nullptr) {
+      if (!connect_once(bridge)) {
+        if (bridge->stop_requested.load()) {
+          break;
+        }
+        ++link_failures;
+        if (link_failures >= kMaxHandshakeAttempts) {
+          bridge->set_error("giving up after repeated USB link failures");
+          break;
+        }
+        std::this_thread::sleep_for(std::chrono::seconds(1));
+        continue;
+      }
+      link_failures = 0;
+      bridge->running.store(true);
+      bridge->log("usb link up; waiting for the tablet to send ClientHello");
     }
-    if (!connect_once(bridge)) {
+
+    /* The link stays claimed for as long as the tablet keeps it. A handshake
+       timeout means the tablet has not opened its side yet (consent dialog, app
+       in the background), so the session is rebuilt in place: re-claiming the
+       interface would fail with LIBUSB_ERROR_BUSY, and dropping the link would
+       make the tablet re-authorize, which never converges. */
+    std::string failure;
+    bool stopped = false;
+    auto next_status_log = std::chrono::steady_clock::now();
+    for (;;) {
       if (bridge->stop_requested.load()) {
+        stopped = true;
         break;
       }
-      ++failed_attempts;
-      std::this_thread::sleep_for(std::chrono::seconds(1));
-      continue;
-    }
-    bridge->running.store(true);
-    bridge->log("session established");
-
-    while (!bridge->stop_requested.load()) {
       bool terminal = false;
-      std::string failure;
       {
         std::lock_guard lock(bridge->session_mutex);
         if (bridge->session == nullptr) {
@@ -576,7 +645,8 @@ void worker_main(DMBridge *bridge) {
                 frame.keyframe);
             if (status == deskmate::protocol::VideoSendStatus::Sent) {
               bridge->frames_sent.fetch_add(1);
-            } else if (status != deskmate::protocol::VideoSendStatus::NotStreaming &&
+            } else if (status !=
+                           deskmate::protocol::VideoSendStatus::NotStreaming &&
                        status != deskmate::protocol::VideoSendStatus::Paused) {
               bridge->frames_rejected.fetch_add(1);
             }
@@ -590,18 +660,104 @@ void worker_main(DMBridge *bridge) {
         }
       }
       if (terminal) {
-        bridge->set_error(failure.empty() ? "session terminated" : failure);
         break;
+      }
+
+      /* Periodic state line: state, byte counters and frame count make a single
+         run diagnosable without a second attempt. */
+      const auto now = std::chrono::steady_clock::now();
+      if (now >= next_status_log) {
+        next_status_log = now + std::chrono::seconds(5);
+        std::string state;
+        std::string negotiated;
+        {
+          std::lock_guard lock(bridge->session_mutex);
+          if (bridge->session != nullptr) {
+            state = state_name(bridge->session->state());
+            if (const auto &stream = bridge->session->negotiated_stream();
+                stream.has_value()) {
+              std::ostringstream summary;
+              summary << (stream->profile.encoder ==
+                                  deskmate::protocol::VideoEncoder::Hevc
+                              ? "hevc"
+                              : "h264")
+                      << " " << stream->profile.resolution.width << "x"
+                      << stream->profile.resolution.height << "@"
+                      << stream->profile.resolution.refresh_hz;
+              negotiated = summary.str();
+            }
+          }
+        }
+        if (state == "streaming") {
+          /* A working link earns a fresh retry budget: a session that drops
+             later must not inherit earlier handshake failures. */
+          handshake_failures = 0;
+          bridge->clear_error();
+        }
+        std::string line =
+            "state=" + state +
+            " rx=" + std::to_string(bridge->rx_bytes.load()) +
+            "B tx=" + std::to_string(bridge->tx_bytes.load()) +
+            "B frames=" + std::to_string(bridge->frames_sent.load()) +
+            " bulkErrors=" + std::to_string(bridge->bulk_errors.load());
+        if (!negotiated.empty()) {
+          line += " profile=" + negotiated;
+        }
+        if (state == "awaiting_client_hello") {
+          line += " (waiting for the tablet to allow the USB accessory, attempt " +
+                  std::to_string(handshake_failures + 1) + "/" +
+                  std::to_string(kMaxHandshakeAttempts) + ")";
+        }
+        bridge->log(line);
       }
       std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
 
     bridge->running.store(false);
-    teardown_link(bridge);
-    if (bridge->stop_requested.load()) {
+    if (stopped) {
       break;
     }
-    ++failed_attempts;
+
+    const bool handshake_retry =
+        (failure == "hello_timeout" || failure == "ready_timeout") &&
+        bridge->handle != nullptr;
+    if (handshake_retry) {
+      ++handshake_failures;
+      bridge->reconnects.fetch_add(1);
+      if (handshake_failures >= kMaxHandshakeAttempts) {
+        bridge->set_error(
+            "giving up after " + std::to_string(handshake_failures) +
+            " handshake attempts; last failure: " + failure +
+            " (keep the tablet app in the foreground across the AOA flip, "
+            "then relaunch)");
+        break;
+      }
+      /* Once the tablet has answered at least once, an in-place retry can be
+         swallowed by the stale device session. Drop the link so the tablet's
+         worker rebuilds; the next attempt re-claims and starts clean. */
+      if (bridge->rx_bytes.load() > 0 &&
+          handshake_failures >= kInPlaceRetriesBeforeRelink) {
+        bridge->set_error(failure + " (device answered but stalled; relinking)");
+        bridge->log("handshake stalled after the tablet answered; relinking");
+        teardown_link(bridge);
+        std::this_thread::sleep_for(std::chrono::seconds(1));
+        continue;
+      }
+      bridge->set_error(failure +
+                        " (retrying the session, tablet has not answered)");
+      bridge->log("handshake timed out; retrying the session on the same link");
+      start_session(bridge);
+      std::this_thread::sleep_for(std::chrono::seconds(1));
+      continue;
+    }
+
+    bridge->set_error(failure.empty() ? "session terminated" : failure);
+    teardown_link(bridge);
+    ++handshake_failures;
+    if (handshake_failures >= kMaxHandshakeAttempts) {
+      bridge->set_error("giving up after repeated session failures");
+      break;
+    }
     bridge->reconnects.fetch_add(1);
     std::this_thread::sleep_for(std::chrono::seconds(1));
   }
@@ -628,21 +784,9 @@ void dm_bridge_stop(DMBridge *bridge) {
     bridge->worker.join();
   }
   teardown_link(bridge);
-
-  /* Return the tablet to its normal HDC mode so it can be re-flashed. */
-  if (bridge->context != nullptr) {
-    libusb_device *device = find_device(bridge->context, 0, 0, true);
-    if (device != nullptr) {
-      libusb_device_handle *handle = nullptr;
-      if (libusb_open(device, &handle) == LIBUSB_SUCCESS && handle != nullptr) {
-        const int rc = libusb_set_configuration(handle, 0);
-        bridge->log("accessory unconfigure rc=" + std::to_string(rc));
-        libusb_reset_device(handle);
-        libusb_close(handle);
-      }
-      libusb_unref_device(device);
-    }
-  }
+  /* Deliberately no set_configuration(0)/reset here: both are ineffective at
+     leaving accessory mode on this tablet and can strand it in 18d1:2d00.
+     teardown_link already released the interface; recovery is a user replug. */
 }
 
 void dm_bridge_destroy(DMBridge *bridge) {
@@ -799,6 +943,9 @@ char *dm_bridge_snapshot(DMBridge *bridge) {
        << ",\"framesDroppedBacklog\":" << bridge->frames_dropped_backlog.load()
        << ",\"inputEvents\":" << bridge->input_events.load()
        << ",\"reconnects\":" << bridge->reconnects.load()
+       << ",\"rxBytes\":" << bridge->rx_bytes.load()
+       << ",\"txBytes\":" << bridge->tx_bytes.load()
+       << ",\"bulkErrors\":" << bridge->bulk_errors.load()
        << ",\"error\":\"" << json_escape(error) << "\"}";
   const std::string text = json.str();
   auto *buffer = static_cast<char *>(std::malloc(text.size() + 1));

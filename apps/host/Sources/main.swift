@@ -102,6 +102,11 @@ enum CLI {
 final class AppController: NSObject, NSApplicationDelegate {
     private let options: HostOptions
     private var statusItem: NSStatusItem?
+    private var stateItem: NSMenuItem?
+    private var profileItem: NSMenuItem?
+    private var framesItem: NSMenuItem?
+    private var inputItem: NSMenuItem?
+    private var errorItem: NSMenuItem?
     private var displaySession: DisplaySession?
     private var capture: CapturePipeline?
     private var bridge: OpaquePointer?
@@ -135,6 +140,7 @@ final class AppController: NSObject, NSApplicationDelegate {
 
         if options.dryRun {
             captureWanted = true
+            lastSnapshot = "{\"state\":\"dry-run\",\"running\":true,\"negotiated\":\"local only\",\"inputEvents\":0,\"error\":\"\"}"
             Task { await startCaptureIfNeeded() }
             startTimer()
             return
@@ -225,12 +231,37 @@ final class AppController: NSObject, NSApplicationDelegate {
         item.button?.title = "DM"
         let menu = NSMenu()
         menu.addItem(withTitle: "DeskMate", action: nil, keyEquivalent: "")
+
+        func statusLine(_ title: String) -> NSMenuItem {
+            let line = NSMenuItem(title: title, action: nil, keyEquivalent: "")
+            line.isEnabled = false
+            menu.addItem(line)
+            return line
+        }
+
+        stateItem = statusLine("State: starting")
+        profileItem = statusLine("Stream: \(options.width)x\(options.height)@\(Int(options.frameRate)) \(options.codec)")
+        framesItem = statusLine("Encoded frames: 0")
+        inputItem = statusLine("Input events: 0")
+        errorItem = statusLine("Error: none")
+        errorItem?.isHidden = true
+
+        menu.addItem(.separator())
+        let copy = NSMenuItem(title: "Copy Status", action: #selector(copyStatus), keyEquivalent: "c")
+        copy.target = self
+        menu.addItem(copy)
         menu.addItem(.separator())
         let quit = NSMenuItem(title: "Quit DeskMate", action: #selector(quit), keyEquivalent: "q")
         quit.target = self
         menu.addItem(quit)
         item.menu = menu
         statusItem = item
+    }
+
+    @objc private func copyStatus() {
+        let text = "\(stateItem?.title ?? "")\n\(profileItem?.title ?? "")\n\(framesItem?.title ?? "")\n\(inputItem?.title ?? "")\n\(errorItem?.isHidden == false ? (errorItem?.title ?? "") : "")\n\(lastSnapshot)"
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(text, forType: .string)
     }
 
     @objc private func quit() {
@@ -427,6 +458,20 @@ final class AppController: NSObject, NSApplicationDelegate {
 
     private func updateTitle() {
         guard let button = statusItem?.button else { return }
+        let snapshot = parseSnapshot(lastSnapshot)
+        let state = snapshot?["state"] as? String ?? (options.dryRun ? "dry-run" : "starting")
+        let encoded = capture?.encodedFrameCount ?? 0
+        let inputs = snapshot?["inputEvents"] as? Int ?? 0
+        let negotiated = snapshot?["negotiated"] as? String ?? "none"
+
+        stateItem?.title = "State: \(state)"
+        profileItem?.title = "Stream: \(negotiated == "none" ? "\(options.width)x\(options.height)@\(Int(options.frameRate)) \(options.codec)" : negotiated)"
+        framesItem?.title = "Encoded frames: \(encoded)"
+        inputItem?.title = "Input events: \(inputs)"
+        let message = fatalError ?? (snapshot?["error"] as? String ?? "")
+        errorItem?.title = "Error: \(message)"
+        errorItem?.isHidden = message.isEmpty
+
         if let fatalError {
             button.title = "DM !"
             button.toolTip = fatalError
@@ -434,6 +479,11 @@ final class AppController: NSObject, NSApplicationDelegate {
         }
         button.title = captureWanted ? "DM ●" : "DM ○"
         button.toolTip = lastSnapshot
+    }
+
+    private func parseSnapshot(_ text: String) -> [String: Any]? {
+        guard let data = text.data(using: .utf8) else { return nil }
+        return (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
     }
 
     private func fail(_ message: String) {

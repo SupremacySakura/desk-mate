@@ -43,6 +43,7 @@ help:
 		'make app           Build build/DeskMate.app' \
 		'make test          Build and run host contract checks' \
 		'make list-displays Print the online display inventory' \
+		'make device-foreground HDC=... Push and start the AOA foreground helper' \
 		'make clean         Remove build output'
 
 $(BUILD_DIR):
@@ -107,6 +108,16 @@ test: app
 
 list-displays: app
 	@"$(BIN)" --list-displays
+
+# Pushes the "keep the ability in the foreground across the AOA flip" helper and
+# starts it detached on the tablet. Must be run while the tablet is still HDC.
+device-foreground:
+	@test -n "$(HDC)" || { echo 'usage: make device-foreground HDC=/path/to/hdc' >&2; exit 2; }
+	@test -n "$(BUNDLE)" || { echo 'usage: make device-foreground HDC=... BUNDLE=com.example.app' >&2; exit 2; }
+	@"$(HDC)" file send "$(ROOT)/tools/device-foreground.sh" /data/local/tmp/deskmate_fg.sh
+	@"$(HDC)" shell "chmod 755 /data/local/tmp/deskmate_fg.sh"
+	@"$(HDC)" shell "DESKMATE_BUNDLE=$(BUNDLE) nohup sh /data/local/tmp/deskmate_fg.sh >/dev/null 2>&1 &"
+	@echo "foreground helper running on the tablet for bundle $(BUNDLE)"
 
 clean:
 	@rm -rf "$(BUILD_DIR)"

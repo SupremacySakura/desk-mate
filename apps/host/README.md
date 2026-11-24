@@ -34,7 +34,12 @@ make test     # 打包/参数/链接/脱敏契约检查
 | `--dry-run` | 关 | 不建立 USB Session |
 
 应用是菜单栏常驻（`LSUIElement`），标题 `DM ●` 表示采集运行中，`DM !` 表示有错误，
-悬停可看状态 JSON。
+悬停可看状态 JSON。下拉菜单显示 `State` / `Stream`（协商出的编码与分辨率）/
+`Encoded frames` / `Input events` / `Error`，并提供 `Copy Status` 一键复制。
+
+桥接日志每 5 秒输出一行
+`state=… rx=…B tx=…B frames=… bulkErrors=… profile=…`，因此一次运行就能判断
+平板是否真的发出了 `ClientHello`（`rx` 是否从 0 增长）。
 
 ## 显示来源
 
@@ -57,8 +62,31 @@ BetterDisplay 创建的 `id 41`（`1920x1280 pt / 3840x2560 px @ 120Hz`）。
 5. 平板回传的 `Input` 消息经 `take_input_events()` 取出，用 `CGEvent` 注入到该
    显示器的 bounds。
 
-握手失败会重建 Session 重试，最多 5 次。退出应用时会把平板 `set_configuration(0)`
-并 reset，让它回到正常 HDC 模式，不需要手动拔插。
+握手阶段给 20 秒（首次接 AOA 时平板会弹「允许访问 USB 配件」，2 秒的协议默认值
+必然不够）。超时只重建 `HostSession`，**不释放已 claim 的 USB 链路**：重新 claim
+会返回 `LIBUSB_ERROR_BUSY`，断开链路又会逼平板重新授权，两种情况都无法收敛。
+
+退出时只做 `libusb_release_interface` + `libusb_close`。**不做** `set_configuration(0)`
+或 `libusb_reset_device`——实测两者都不能把平板送回 HDC 模式，还会把它留在
+`18d1:2d00`；恢复方式是拔插 USB。
+
+### 平板的 AOA 前台问题（必读）
+
+平板切到 accessory 模式时，ArkTS 的 `setInterval` 会被挂起。设备端 `AccessoryLink`
+正是靠定时器轮询 `getAccessoryList()`，因此切换后轮询停止、`openAccessory()` 不再
+执行，Host 只会看到 `rx=0 tx=0` 和 `hello_timeout`。
+
+`probes/gate1` 的解法是在 AOA 之后用设备本地 `aa start` 把应用重新拉到前台。产品端
+把这个动作做成了脚本，**必须在切换前启动**：
+
+```sh
+make device-foreground \
+  HDC=/Applications/DevEco-Studio.app/Contents/sdk/default/openharmony/toolchains/hdc \
+  BUNDLE=com.deskmate.gate3
+```
+
+脚本在平板后台每 5 秒 `aa start` 一次，共 12 轮，覆盖整个切换窗口。日志在
+`/data/local/tmp/deskmate_fg.log`。
 
 ## 权限
 
