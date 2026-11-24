@@ -1,0 +1,16 @@
+{
+  "string": [
+    {
+      "name": "module_label",
+      "value": "DeskMate Gate 3 Probe"
+    },
+    {
+      "name": "module_desc",
+      "value": "AVCodec Surface recovery probe"
+    },
+    {
+      "name": "ability_desc",
+      "value": "Runs the Gate 3 AVCodec and Surface probe"
+    }
+  ]
+}

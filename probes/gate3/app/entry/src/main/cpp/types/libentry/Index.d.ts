@@ -1,0 +1,9 @@
+export const loadStream: (data: Uint8Array | ArrayBuffer) => boolean;
+export const surfaceCreated: (surfaceId: string) => boolean;
+export const surfaceDestroyed: (surfaceId: string) => boolean;
+export const runSuite: () => boolean;
+export const snapshotJson: () => string;
+export const beginFreeze: () => boolean;
+export const recordLastGoodFrame: (stable: boolean) => boolean;
+export const resumeAfterFreeze: () => boolean;
+export const setDeviceInfo: (json: string) => boolean;

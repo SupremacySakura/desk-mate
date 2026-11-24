@@ -198,6 +198,7 @@ void HostSendScheduler::begin_stopping() noexcept {
   video_.clear();
   active_.reset();
   active_offset_ = 0;
+  idr_request_.reset();
 }
 
 bool HostSendScheduler::idle() const noexcept {
