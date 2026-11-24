@@ -1,0 +1,6 @@
+{
+  "name": "libdeskmate_device.so",
+  "version": "1.0.0",
+  "description": "NAPI declarations for the DeskMate device session",
+  "types": "./Index.d.ts"
+}

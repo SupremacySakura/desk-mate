@@ -1,0 +1,16 @@
+{
+  "string": [
+    {
+      "name": "module_desc",
+      "value": "DeskMate wired extended display"
+    },
+    {
+      "name": "entry_desc",
+      "value": "Displays the Mac extended desktop over USB"
+    },
+    {
+      "name": "app_label",
+      "value": "DeskMate"
+    }
+  ]
+}

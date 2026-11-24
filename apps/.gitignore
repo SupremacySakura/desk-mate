@@ -1,0 +1,6 @@
+build/
+.hvigor/
+*.hap
+*.o
+module-cache/
+.cxx/
