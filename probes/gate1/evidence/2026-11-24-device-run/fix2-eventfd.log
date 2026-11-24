@@ -1,0 +1,56 @@
+[aoa] GET_PROTOCOL(51), SEND_STRING(52), START(53)
+[aoa] START accepted; device re-enumerated
+[open] waiting for AOA accessory enumeration...
+[open] accessory 18d1:2d00 bus=1 address=7 speed=480 Mbps interface=0 alt=0 endpoints=2 ep_in=0x81(max=512,attr=0x2) ep_out=0x1(max=512,attr=0x2)
+[open] claimed interface 0, bulk IN=0x81 OUT=0x1
+[handshake] waiting 12000 ms after claim before first HELLO; open Accessory and start the Device worker now
+[handshake] initial delay elapsed; starting HELLO
+[handshake] HELLO OUT timed out; retrying
+[handshake] HELLO OUT timed out; retrying
+[handshake] HELLO OUT timed out; retrying
+[handshake] HELLO OUT timed out; retrying
+[handshake] HELLO OUT timed out; retrying
+[handshake] HELLO OUT timed out; retrying
+[handshake] HELLO OUT timed out; retrying
+[handshake] HELLO OUT timed out; retrying
+[handshake] HELLO OUT timed out; retrying
+[handshake] HELLO OUT timed out; retrying
+[handshake] HELLO OUT timed out; retrying
+[handshake] HELLO OUT timed out; retrying
+[handshake] HELLO OUT timed out; retrying
+[handshake] HELLO OUT timed out; retrying
+[handshake] HELLO OUT timed out; retrying
+[error] handshake timed out waiting for HELLO_ACK after 60000 ms (authorize/open on Device and start the native worker)
+
+=== Probe summary ===
+handshake_ok=false
+echo_ok=false
+out_bytes=0
+in_bytes=0
+data_frames_sent=0
+data_echoes_received=0
+echo_mismatches=0
+unmatched_echoes=0
+pending_echoes_at_stop=0
+zlp_out_scheduled=0
+zlp_out_completed=0
+zlp_in_completed=0
+heartbeats_sent=0
+heartbeat_acks=0
+heartbeat_last_rtt_us=0
+heartbeat_max_rtt_us=0
+heartbeat_loss_events=0
+cancellation_requested=false
+cancellation_ok=false
+cancel_wait_ms=0
+cancel_issue_gap_us=0
+in_callback_after_cancel_us=0
+out_callback_after_cancel_us=0
+active_on_release=0
+cleanup_safe=true
+device_stats_seen=false
+error=handshake timed out waiting for HELLO_ACK after 60000 ms (authorize/open on Device and start the native worker)
+
+Gate 1 conclusion: NOT EVALUATED
+A transport run is not a Gate 1 pass. Reference Environment and
+direct-link topology must be documented and the full matrix repeated.

@@ -1,0 +1,249 @@
+[aoa] GET_PROTOCOL(51), SEND_STRING(52), START(53)
+[aoa] START accepted; device re-enumerated
+[open] waiting for AOA accessory enumeration...
+[open] accessory 18d1:2d00 bus=1 address=7 speed=480 Mbps interface=0 alt=0 endpoints=2 ep_in=0x81(max=512,attr=0x2) ep_out=0x1(max=512,attr=0x2)
+[open] claimed interface 0, bulk IN=0x81 OUT=0x1
+[handshake] waiting 14000 ms after claim before first HELLO; open Accessory and start the Device worker now
+[handshake] initial delay elapsed; starting HELLO
+[handshake] HELLO sent; waiting up to 90000 ms for Device authorization/native start
+[handshake] HELLO_ACK seq=1 protocol=1
+[zlp] scheduled zero-length bulk OUT
+[zlp] scheduled zero-length bulk OUT
+[zlp] scheduled zero-length bulk OUT
+[zlp] scheduled zero-length bulk OUT
+[zlp] scheduled zero-length bulk OUT
+[zlp] scheduled zero-length bulk OUT
+[zlp] scheduled zero-length bulk OUT
+[zlp] scheduled zero-length bulk OUT
+[run] t=1.00025s out=2356911 in=2356907 data_frames=1038 echoes=1037 mismatches=0 hb=1/1 hb_rtt_us=602 zlp_out=8 zlp_in=0 device_stats=no
+[zlp] scheduled zero-length bulk OUT
+[zlp] scheduled zero-length bulk OUT
+[zlp] scheduled zero-length bulk OUT
+[zlp] scheduled zero-length bulk OUT
+[zlp] scheduled zero-length bulk OUT
+[zlp] scheduled zero-length bulk OUT
+[zlp] scheduled zero-length bulk OUT
+[zlp] scheduled zero-length bulk OUT
+[run] t=2.00024s out=4708355 in=4708479 data_frames=2070 echoes=2069 mismatches=0 hb=2/2 hb_rtt_us=2556 zlp_out=16 zlp_in=0 device_stats=yes
+[zlp] scheduled zero-length bulk OUT
+[zlp] scheduled zero-length bulk OUT
+[zlp] scheduled zero-length bulk OUT
+[zlp] scheduled zero-length bulk OUT
+[zlp] scheduled zero-length bulk OUT
+[zlp] scheduled zero-length bulk OUT
+[zlp] scheduled zero-length bulk OUT
+[zlp] scheduled zero-length bulk OUT
+[zlp] scheduled zero-length bulk OUT
+[run] t=3.00133s out=7341427 in=7341679 data_frames=3223 echoes=3222 mismatches=0 hb=3/3 hb_rtt_us=446 zlp_out=25 zlp_in=0 device_stats=yes
+[zlp] scheduled zero-length bulk OUT
+[zlp] scheduled zero-length bulk OUT
+[zlp] scheduled zero-length bulk OUT
+[zlp] scheduled zero-length bulk OUT
+[zlp] scheduled zero-length bulk OUT
+[zlp] scheduled zero-length bulk OUT
+[zlp] scheduled zero-length bulk OUT
+[run] t=4.00038s out=9501477 in=9493649 data_frames=4171 echoes=4169 mismatches=0 hb=4/4 hb_rtt_us=1620 zlp_out=32 zlp_in=0 device_stats=yes
+[zlp] scheduled zero-length bulk OUT
+[zlp] scheduled zero-length bulk OUT
+[zlp] scheduled zero-length bulk OUT
+[zlp] scheduled zero-length bulk OUT
+[zlp] scheduled zero-length bulk OUT
+[zlp] scheduled zero-length bulk OUT
+[zlp] scheduled zero-length bulk OUT
+[zlp] scheduled zero-length bulk OUT
+[run] t=5.00003s out=11717562 in=11718070 data_frames=5147 echoes=5146 mismatches=0 hb=5/5 hb_rtt_us=551 zlp_out=40 zlp_in=0 device_stats=yes
+[zlp] scheduled zero-length bulk OUT
+[zlp] scheduled zero-length bulk OUT
+[zlp] scheduled zero-length bulk OUT
+[zlp] scheduled zero-length bulk OUT
+[zlp] scheduled zero-length bulk OUT
+[zlp] scheduled zero-length bulk OUT
+[zlp] scheduled zero-length bulk OUT
+[run] t=6.00006s out=13931256 in=13931892 data_frames=6118 echoes=6117 mismatches=0 hb=6/6 hb_rtt_us=451 zlp_out=47 zlp_in=0 device_stats=yes
+[zlp] scheduled zero-length bulk OUT
+[zlp] scheduled zero-length bulk OUT
+[zlp] scheduled zero-length bulk OUT
+[zlp] scheduled zero-length bulk OUT
+[zlp] scheduled zero-length bulk OUT
+[zlp] scheduled zero-length bulk OUT
+[zlp] scheduled zero-length bulk OUT
+[zlp] scheduled zero-length bulk OUT
+[run] t=7.0001s out=16145990 in=16146483 data_frames=7090 echoes=7088 mismatches=0 hb=7/7 hb_rtt_us=547 zlp_out=55 zlp_in=0 device_stats=yes
+[zlp] scheduled zero-length bulk OUT
+[zlp] scheduled zero-length bulk OUT
+[zlp] scheduled zero-length bulk OUT
+[zlp] scheduled zero-length bulk OUT
+[zlp] scheduled zero-length bulk OUT
+[zlp] scheduled zero-length bulk OUT
+[zlp] scheduled zero-length bulk OUT
+[run] t=8.00031s out=18365876 in=18366768 data_frames=8064 echoes=8063 mismatches=0 hb=8/8 hb_rtt_us=482 zlp_out=62 zlp_in=0 device_stats=yes
+[zlp] scheduled zero-length bulk OUT
+[zlp] scheduled zero-length bulk OUT
+[zlp] scheduled zero-length bulk OUT
+[zlp] scheduled zero-length bulk OUT
+[zlp] scheduled zero-length bulk OUT
+[zlp] scheduled zero-length bulk OUT
+[zlp] scheduled zero-length bulk OUT
+[zlp] scheduled zero-length bulk OUT
+[run] t=9.00026s out=20602489 in=20603509 data_frames=9043 echoes=9042 mismatches=0 hb=9/9 hb_rtt_us=2914 zlp_out=70 zlp_in=0 device_stats=yes
+[zlp] scheduled zero-length bulk OUT
+[zlp] scheduled zero-length bulk OUT
+[zlp] scheduled zero-length bulk OUT
+[zlp] scheduled zero-length bulk OUT
+[zlp] scheduled zero-length bulk OUT
+[zlp] scheduled zero-length bulk OUT
+[zlp] scheduled zero-length bulk OUT
+[zlp] scheduled zero-length bulk OUT
+[run] t=10.0003s out=22953933 in=22946873 data_frames=10075 echoes=10073 mismatches=0 hb=10/10 hb_rtt_us=263 zlp_out=78 zlp_in=0 device_stats=yes
+[zlp] scheduled zero-length bulk OUT
+[zlp] scheduled zero-length bulk OUT
+[zlp] scheduled zero-length bulk OUT
+[zlp] scheduled zero-length bulk OUT
+[zlp] scheduled zero-length bulk OUT
+[zlp] scheduled zero-length bulk OUT
+[zlp] scheduled zero-length bulk OUT
+[zlp] scheduled zero-length bulk OUT
+[run] t=11.0003s out=25182338 in=25175406 data_frames=11053 echoes=11051 mismatches=0 hb=11/11 hb_rtt_us=374 zlp_out=86 zlp_in=0 device_stats=yes
+[zlp] scheduled zero-length bulk OUT
+[zlp] scheduled zero-length bulk OUT
+[zlp] scheduled zero-length bulk OUT
+[zlp] scheduled zero-length bulk OUT
+[zlp] scheduled zero-length bulk OUT
+[zlp] scheduled zero-length bulk OUT
+[zlp] scheduled zero-length bulk OUT
+[run] t=12.0005s out=27397089 in=27398476 data_frames=12026 echoes=12024 mismatches=0 hb=12/12 hb_rtt_us=584 zlp_out=93 zlp_in=0 device_stats=yes
+[zlp] scheduled zero-length bulk OUT
+[zlp] scheduled zero-length bulk OUT
+[zlp] scheduled zero-length bulk OUT
+[zlp] scheduled zero-length bulk OUT
+[zlp] scheduled zero-length bulk OUT
+[zlp] scheduled zero-length bulk OUT
+[zlp] scheduled zero-length bulk OUT
+[zlp] scheduled zero-length bulk OUT
+[run] t=13.0008s out=29644611 in=29642031 data_frames=13014 echoes=13012 mismatches=0 hb=13/13 hb_rtt_us=2847 zlp_out=101 zlp_in=0 device_stats=yes
+[zlp] scheduled zero-length bulk OUT
+[zlp] scheduled zero-length bulk OUT
+[zlp] scheduled zero-length bulk OUT
+[zlp] scheduled zero-length bulk OUT
+[zlp] scheduled zero-length bulk OUT
+[zlp] scheduled zero-length bulk OUT
+[zlp] scheduled zero-length bulk OUT
+[zlp] scheduled zero-length bulk OUT
+[run] t=14.0008s out=31976921 in=31978581 data_frames=14035 echoes=14034 mismatches=0 hb=14/14 hb_rtt_us=398 zlp_out=109 zlp_in=0 device_stats=yes
+[zlp] scheduled zero-length bulk OUT
+[zlp] scheduled zero-length bulk OUT
+[zlp] scheduled zero-length bulk OUT
+[zlp] scheduled zero-length bulk OUT
+[zlp] scheduled zero-length bulk OUT
+[zlp] scheduled zero-length bulk OUT
+[zlp] scheduled zero-length bulk OUT
+[zlp] scheduled zero-length bulk OUT
+[run] t=15.0002s out=34191672 in=34193443 data_frames=15008 echoes=15006 mismatches=0 hb=15/15 hb_rtt_us=2890 zlp_out=117 zlp_in=0 device_stats=yes
+[zlp] scheduled zero-length bulk OUT
+[zlp] scheduled zero-length bulk OUT
+[zlp] scheduled zero-length bulk OUT
+[zlp] scheduled zero-length bulk OUT
+[zlp] scheduled zero-length bulk OUT
+[zlp] scheduled zero-length bulk OUT
+[zlp] scheduled zero-length bulk OUT
+[zlp] scheduled zero-length bulk OUT
+[run] t=16.0007s out=36543099 in=36545015 data_frames=16039 echoes=16038 mismatches=0 hb=16/16 hb_rtt_us=477 zlp_out=125 zlp_in=0 device_stats=yes
+[zlp] scheduled zero-length bulk OUT
+[zlp] scheduled zero-length bulk OUT
+[zlp] scheduled zero-length bulk OUT
+[zlp] scheduled zero-length bulk OUT
+[zlp] scheduled zero-length bulk OUT
+[zlp] scheduled zero-length bulk OUT
+[zlp] scheduled zero-length bulk OUT
+[run] t=17.0003s out=38744162 in=38737998 data_frames=17005 echoes=17003 mismatches=0 hb=17/17 hb_rtt_us=353 zlp_out=132 zlp_in=0 device_stats=yes
+[zlp] scheduled zero-length bulk OUT
+[zlp] scheduled zero-length bulk OUT
+[zlp] scheduled zero-length bulk OUT
+[zlp] scheduled zero-length bulk OUT
+[run] t=18.0256s out=39714835 in=39708799 data_frames=17431 echoes=17429 mismatches=0 hb=18/18 hb_rtt_us=544 zlp_out=136 zlp_in=0 device_stats=yes
+[run] t=19.0431s out=39714835 in=39708799 data_frames=17431 echoes=17429 mismatches=0 hb=18/18 hb_rtt_us=544 zlp_out=136 zlp_in=0 device_stats=yes
+[run] t=20.013s out=39714835 in=39708799 data_frames=17431 echoes=17429 mismatches=0 hb=18/18 hb_rtt_us=544 zlp_out=136 zlp_in=0 device_stats=yes
+[heartbeat] WARNING: no valid inbound frame for >= 3000 ms
+[run] t=21.0306s out=39714835 in=39708799 data_frames=17431 echoes=17429 mismatches=0 hb=18/18 hb_rtt_us=544 zlp_out=136 zlp_in=0 device_stats=yes
+[run] t=22.0476s out=39714835 in=39708799 data_frames=17431 echoes=17429 mismatches=0 hb=18/18 hb_rtt_us=544 zlp_out=136 zlp_in=0 device_stats=yes
+[run] t=23.0155s out=39714835 in=39708799 data_frames=17431 echoes=17429 mismatches=0 hb=18/18 hb_rtt_us=544 zlp_out=136 zlp_in=0 device_stats=yes
+[run] t=24.0321s out=39714835 in=39708799 data_frames=17431 echoes=17429 mismatches=0 hb=18/18 hb_rtt_us=544 zlp_out=136 zlp_in=0 device_stats=yes
+[run] t=25.0505s out=39714835 in=39708799 data_frames=17431 echoes=17429 mismatches=0 hb=18/18 hb_rtt_us=544 zlp_out=136 zlp_in=0 device_stats=yes
+[run] t=26.0187s out=39714835 in=39708799 data_frames=17431 echoes=17429 mismatches=0 hb=18/18 hb_rtt_us=544 zlp_out=136 zlp_in=0 device_stats=yes
+[run] t=27.0382s out=39714835 in=39708799 data_frames=17431 echoes=17429 mismatches=0 hb=18/18 hb_rtt_us=544 zlp_out=136 zlp_in=0 device_stats=yes
+[run] t=28.0055s out=39714835 in=39708799 data_frames=17431 echoes=17429 mismatches=0 hb=18/18 hb_rtt_us=544 zlp_out=136 zlp_in=0 device_stats=yes
+[run] t=29.024s out=39714835 in=39708799 data_frames=17431 echoes=17429 mismatches=0 hb=18/18 hb_rtt_us=544 zlp_out=136 zlp_in=0 device_stats=yes
+[run] t=30.0425s out=39714835 in=39708799 data_frames=17431 echoes=17429 mismatches=0 hb=18/18 hb_rtt_us=544 zlp_out=136 zlp_in=0 device_stats=yes
+[run] t=31.0098s out=39714835 in=39708799 data_frames=17431 echoes=17429 mismatches=0 hb=18/18 hb_rtt_us=544 zlp_out=136 zlp_in=0 device_stats=yes
+[run] t=32.0271s out=39714835 in=39708799 data_frames=17431 echoes=17429 mismatches=0 hb=18/18 hb_rtt_us=544 zlp_out=136 zlp_in=0 device_stats=yes
+[run] t=33.0445s out=39714835 in=39708799 data_frames=17431 echoes=17429 mismatches=0 hb=18/18 hb_rtt_us=544 zlp_out=136 zlp_in=0 device_stats=yes
+[run] t=34.0122s out=39714835 in=39708799 data_frames=17431 echoes=17429 mismatches=0 hb=18/18 hb_rtt_us=544 zlp_out=136 zlp_in=0 device_stats=yes
+[run] t=35.0302s out=39714835 in=39708799 data_frames=17431 echoes=17429 mismatches=0 hb=18/18 hb_rtt_us=544 zlp_out=136 zlp_in=0 device_stats=yes
+[run] t=36.0492s out=39714835 in=39708799 data_frames=17431 echoes=17429 mismatches=0 hb=18/18 hb_rtt_us=544 zlp_out=136 zlp_in=0 device_stats=yes
+[run] t=37.0165s out=39714835 in=39708799 data_frames=17431 echoes=17429 mismatches=0 hb=18/18 hb_rtt_us=544 zlp_out=136 zlp_in=0 device_stats=yes
+[run] t=38.0335s out=39714835 in=39708799 data_frames=17431 echoes=17429 mismatches=0 hb=18/18 hb_rtt_us=544 zlp_out=136 zlp_in=0 device_stats=yes
+[run] t=39.0021s out=39714835 in=39708799 data_frames=17431 echoes=17429 mismatches=0 hb=18/18 hb_rtt_us=544 zlp_out=136 zlp_in=0 device_stats=yes
+[run] t=40.0218s out=39714835 in=39708799 data_frames=17431 echoes=17429 mismatches=0 hb=18/18 hb_rtt_us=544 zlp_out=136 zlp_in=0 device_stats=yes
+[run] t=41.0403s out=39714835 in=39708799 data_frames=17431 echoes=17429 mismatches=0 hb=18/18 hb_rtt_us=544 zlp_out=136 zlp_in=0 device_stats=yes
+[run] t=42.0096s out=39714835 in=39708799 data_frames=17431 echoes=17429 mismatches=0 hb=18/18 hb_rtt_us=544 zlp_out=136 zlp_in=0 device_stats=yes
+[run] t=43.0283s out=39714835 in=39708799 data_frames=17431 echoes=17429 mismatches=0 hb=18/18 hb_rtt_us=544 zlp_out=136 zlp_in=0 device_stats=yes
+[run] t=44.0459s out=39714835 in=39708799 data_frames=17431 echoes=17429 mismatches=0 hb=18/18 hb_rtt_us=544 zlp_out=136 zlp_in=0 device_stats=yes
+[run] t=45.0147s out=39714835 in=39708799 data_frames=17431 echoes=17429 mismatches=0 hb=18/18 hb_rtt_us=544 zlp_out=136 zlp_in=0 device_stats=yes
+[run] t=46.034s out=39714835 in=39708799 data_frames=17431 echoes=17429 mismatches=0 hb=18/18 hb_rtt_us=544 zlp_out=136 zlp_in=0 device_stats=yes
+[run] t=47.0018s out=39714835 in=39708799 data_frames=17431 echoes=17429 mismatches=0 hb=18/18 hb_rtt_us=544 zlp_out=136 zlp_in=0 device_stats=yes
+[run] t=48.0192s out=39714835 in=39708799 data_frames=17431 echoes=17429 mismatches=0 hb=18/18 hb_rtt_us=544 zlp_out=136 zlp_in=0 device_stats=yes
+[run] t=49.0388s out=39714835 in=39708799 data_frames=17431 echoes=17429 mismatches=0 hb=18/18 hb_rtt_us=544 zlp_out=136 zlp_in=0 device_stats=yes
+[run] t=50.0081s out=39714835 in=39708799 data_frames=17431 echoes=17429 mismatches=0 hb=18/18 hb_rtt_us=544 zlp_out=136 zlp_in=0 device_stats=yes
+[run] t=51.0255s out=39714835 in=39708799 data_frames=17431 echoes=17429 mismatches=0 hb=18/18 hb_rtt_us=544 zlp_out=136 zlp_in=0 device_stats=yes
+[run] t=52.0457s out=39714835 in=39708799 data_frames=17431 echoes=17429 mismatches=0 hb=18/18 hb_rtt_us=544 zlp_out=136 zlp_in=0 device_stats=yes
+[run] t=53.014s out=39714835 in=39708799 data_frames=17431 echoes=17429 mismatches=0 hb=18/18 hb_rtt_us=544 zlp_out=136 zlp_in=0 device_stats=yes
+[run] t=54.0315s out=39714835 in=39708799 data_frames=17431 echoes=17429 mismatches=0 hb=18/18 hb_rtt_us=544 zlp_out=136 zlp_in=0 device_stats=yes
+[run] t=55.047s out=39714835 in=39708799 data_frames=17431 echoes=17429 mismatches=0 hb=18/18 hb_rtt_us=544 zlp_out=136 zlp_in=0 device_stats=yes
+[run] t=56.0147s out=39714835 in=39708799 data_frames=17431 echoes=17429 mismatches=0 hb=18/18 hb_rtt_us=544 zlp_out=136 zlp_in=0 device_stats=yes
+[run] t=57.032s out=39714835 in=39708799 data_frames=17431 echoes=17429 mismatches=0 hb=18/18 hb_rtt_us=544 zlp_out=136 zlp_in=0 device_stats=yes
+[run] t=58.0508s out=39714835 in=39708799 data_frames=17431 echoes=17429 mismatches=0 hb=18/18 hb_rtt_us=544 zlp_out=136 zlp_in=0 device_stats=yes
+[run] t=59.0193s out=39714835 in=39708799 data_frames=17431 echoes=17429 mismatches=0 hb=18/18 hb_rtt_us=544 zlp_out=136 zlp_in=0 device_stats=yes
+[run] t=60.037s out=39714835 in=39708799 data_frames=17431 echoes=17429 mismatches=0 hb=18/18 hb_rtt_us=544 zlp_out=136 zlp_in=0 device_stats=yes
+[cancel] issued IN rc=LIBUSB_SUCCESS / LIBUSB_TRANSFER_COMPLETED, OUT rc=LIBUSB_SUCCESS / LIBUSB_TRANSFER_COMPLETED; active=2
+[cleanup] active_transfers=0 after 0 ms; safe to release interface
+[result] handshake=ok echo=ok echoes=17429
+[result] cancel_wait_ms=0 in_status=CANCELLED out_status=CANCELLED active_on_release=0
+
+=== Probe summary ===
+handshake_ok=true
+echo_ok=true
+out_bytes=39714835
+in_bytes=39708799
+data_frames_sent=17431
+data_echoes_received=17429
+echo_mismatches=0
+unmatched_echoes=0
+pending_echoes_at_stop=2
+zlp_out_scheduled=136
+zlp_out_completed=136
+zlp_in_completed=0
+heartbeats_sent=18
+heartbeat_acks=18
+heartbeat_last_rtt_us=544
+heartbeat_max_rtt_us=2914
+heartbeat_loss_events=1
+cancellation_requested=true
+cancellation_ok=true
+cancel_wait_ms=0
+cancel_issue_gap_us=159
+in_callback_after_cancel_us=351
+out_callback_after_cancel_us=354
+active_on_release=0
+cleanup_safe=true
+device_stats_seen=true
+device.zero_reads=133
+device.poll_wakeups=17196
+device.bytes_read=38790670
+device.bytes_written=38792698
+device.zero_writes=2128
+device.parse_errors=0
+note=no valid inbound frame for at least 3000 ms
+
+Gate 1 conclusion: NOT EVALUATED
+A transport run is not a Gate 1 pass. Reference Environment and
+direct-link topology must be documented and the full matrix repeated.

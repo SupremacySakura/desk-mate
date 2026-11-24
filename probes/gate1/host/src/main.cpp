@@ -297,8 +297,19 @@ bool write_json(
            << "    \"bus\": " << static_cast<int>(accessory.bus) << ",\n"
            << "    \"address\": " << static_cast<int>(accessory.address) << ",\n"
            << "    \"interface\": " << accessory.interface_number << ",\n"
+           << "    \"alternate_setting\": " << accessory.alternate_setting << ",\n"
+           << "    \"interface_endpoints\": " << accessory.interface_endpoints << ",\n"
            << "    \"endpoint_in\": " << static_cast<int>(accessory.endpoint_in) << ",\n"
            << "    \"endpoint_out\": " << static_cast<int>(accessory.endpoint_out) << ",\n"
+           << "    \"endpoint_in_max_packet\": "
+           << accessory.endpoint_in_max_packet << ",\n"
+           << "    \"endpoint_out_max_packet\": "
+           << accessory.endpoint_out_max_packet << ",\n"
+           << "    \"endpoint_in_attributes\": "
+           << static_cast<int>(accessory.endpoint_in_attributes) << ",\n"
+           << "    \"endpoint_out_attributes\": "
+           << static_cast<int>(accessory.endpoint_out_attributes) << ",\n"
+           << "    \"descriptors\": \"" << accessory.descriptor_dump << "\",\n"
            << "    \"speed\": \"" << gate1::speed_name(accessory.speed) << "\"\n"
            << "  },\n"
            << "  \"options\": {\n"
@@ -424,8 +435,16 @@ int open_accessory(libusb_context* context, int timeout_ms, gate1::OpenedAccesso
               << " address=" << static_cast<int>(accessory.address)
               << " speed=" << gate1::speed_name(accessory.speed)
               << " interface=" << accessory.interface_number
+              << " alt=" << accessory.alternate_setting
+              << " endpoints=" << accessory.interface_endpoints
               << " ep_in=0x" << std::hex << static_cast<int>(accessory.endpoint_in)
+              << "(max=" << std::dec << accessory.endpoint_in_max_packet
+              << ",attr=0x" << std::hex
+              << static_cast<int>(accessory.endpoint_in_attributes) << ")"
               << " ep_out=0x" << std::hex << static_cast<int>(accessory.endpoint_out)
+              << "(max=" << std::dec << accessory.endpoint_out_max_packet
+              << ",attr=0x" << std::hex
+              << static_cast<int>(accessory.endpoint_out_attributes) << ")"
               << std::dec << "\n";
     return EXIT_SUCCESS;
 }

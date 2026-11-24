@@ -159,6 +159,32 @@
   `zero_reads`/`zero_writes`。同时保存总线分析结果才可声称“线上 ZLP 已证实”；
   仅有 `write(fd, ..., 0) == 0` 时写成“zero-length write attempt observed”。
 
+## 5.1 实测平台约束（2026-11-24，MatePad Pro / OpenHarmony 7.0.0.111）
+
+以下行为在真机上实测确认，后续任何 Gate 1 运行都必须按此设计，否则会出现
+"传输正常但 stop 永远 join 不回来"的假失败：
+
+1. **`accessoryFd` 的 `read()` 是"按消息"语义**。当读缓冲小于 Host 单次 Bulk OUT
+   时，多余字节被直接丢弃，不会留到下次 `read()`。缓冲必须足够大（本轮自适应
+   到 16 KB）。
+2. **64 KB 读请求返回 `EINVAL`**，而 `poll()` 仍然报 `POLLIN`。读缓冲需要按
+   `EINVAL` 自适应下调；不要假设 `poll` 可读就代表 `read` 能成功。
+3. **`poll(accessoryFd)` 不遵守 timeout**。51 秒运行中 `poll_timeouts=0`，无流量
+   期间计数器完全冻结。不要依赖 `poll` 的毫秒超时做周期性任务。
+4. **定向 `SIGUSR1` 不能唤醒阻塞在 `accessoryFd` 上的 worker**。实测 `read()` 返回
+   `errno=5 (EIO)` 而不是 `EINTR`，worker 会走 `read-error` 退出路径，
+   `signal_wakeups=0`。该唤醒分支在本平台判定为 `FAILED`，不得改写成 eventfd 结果。
+5. **只有官方 `closeAccessory` 能可靠唤醒 worker**，表现为 `POLLHUP`
+   （`last_poll_revents=0x20`）。
+6. **写方向必须非阻塞**。Host 停止排空 Bulk IN 后，设备 OUT 端点被 NAK，阻塞
+   `write()` 会永久挂住 worker 且 eventfd 无法打断。探针使用 `O_NONBLOCK` +
+   输出缓冲 + `POLLOUT` + 128 KB 高水位背压。
+7. **AOA 重枚举会把 Ability 切到后台**，`aa start` 往往需要多轮重试。自动脚本
+   必须等到设备统计出现真实流量（`frames_read > 0`）后再执行停止，不能用固定
+   sleep，否则 stop 会落在握手完成之前。
+8. **`hdc file recv` 在设备 Offline 时仍返回退出码 0**。取证据前必须先删除本地
+   目标文件，并校验重新拉取的文件非空，否则会把旧文件误当成本轮证据。
+
 ## 6. 后台与心跳
 
 1. `eventfd` 或 `signal` 模式持续运行时，记录一次 Device `Native stats`。

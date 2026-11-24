@@ -1,0 +1,3 @@
+hdc=/Applications/DevEco-Studio.app/Contents/sdk/default/openharmony/toolchains/hdc
+command=list targets -v
+<redacted-serial>		USB	Connected	localhost	hdc

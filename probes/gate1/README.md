@@ -130,6 +130,32 @@ Device 的 read/poll 错误会在 hilog 中记录数值 `errno`、fd、mode 和 
 
 通过 `hdc file recv` 取回这些文件后再写入证据目录；脚本本身不伪造证据。
 
+## 真机实测状态（2026-11-24）
+
+已在 HUAWEI MatePad Pro `MRDI-W00` / OpenHarmony 7.0.0.111 / API 26 上完成一轮
+真机测试。**结论为 `NOT EVALUATED`**：链路经 USB2.1 Hub 协商 480 Mbps，不是
+Reference Link，按证据规则不得判定 Gate 1 通过。
+
+已实测通过的功能：
+
+- AOA 51/52/53 授权与重枚举，claim interface 0，端点 0x81/0x01。
+- 持续双向 Bulk 传输，两端 `bytes_read`/`bytes_written` 与 Host
+  `out_bytes`/`in_bytes` 逐字节相等。
+- `poll/eventfd` 唤醒：`wake_reason=eventfd`，`stop_to_wake_us=1410`。
+- 官方 `closeAccessory` 唤醒：`wake_reason=owner-close`（`POLLHUP`）。
+- 并行取消 IN/OUT，`active_on_release=0`，`cleanup_safe=true`。
+
+已实测失败：
+
+- 定向 `SIGUSR1` 唤醒：`read()` 返回 `errno=5 (EIO)`，worker 以 `read-error`
+  退出，`signal_wakeups=0`。本平台不支持该唤醒路径。
+
+未执行：受控拔线重连、受控后台冻结、心跳丢失注入、总线分析仪 ZLP 验证。
+
+完整数据与逐轮排查见 `evidence/2026-11-24-device-run/REPORT.md`。真机上确认的
+平台约束（`accessoryFd` 按消息读取、`poll` 不遵守 timeout、写方向必须非阻塞等）
+见 `RUNBOOK.md` 第 5.1 节。
+
 ## 证据规则
 
 - 未经 Hub/扩展坞直连，且未记录实际协商速率的链路，只能标记为

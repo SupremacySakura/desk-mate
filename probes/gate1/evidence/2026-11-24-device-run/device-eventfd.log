@@ -1,0 +1,18 @@
+1795506215 start branch=eventfd bundle=com.deskmate.gate1probe
+1795506215 aa start ok rc=0
+1795506218 click authorize text=1. 授权并打开 center=172,391
+1795506218 click authorize rc=0
+1795506223 click authorize text=1. 授权并打开 center=172,391
+1795506223 click authorize rc=0
+1795506226 accessory already open
+1795506227 click start_branch text=启动 eventfd center=167,581
+1795506227 click start_branch rc=0
+1795506228 branch started: eventfd
+1795506243 click refresh_stats_before_stop text=刷新统计 center=136,1128
+1795506243 click refresh_stats_before_stop rc=0
+1795506246 click stop_branch text=停止并 join center=435,581
+1795506247 click stop_branch rc=0
+1795506251 stats captured
+1795506252 click close_idle text=关闭空闲句柄 center=463,391
+1795506253 click close_idle rc=0
+1795506256 done

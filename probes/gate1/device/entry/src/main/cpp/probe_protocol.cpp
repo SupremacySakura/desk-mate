@@ -98,20 +98,36 @@ bool FrameDecoder::push(
 
     while (buffer_.size() >= kFrameHeaderSize) {
         if (std::memcmp(buffer_.data(), kMagic, sizeof(kMagic)) != 0) {
-            error = "bad frame magic";
-            buffer_.clear();
-            return false;
+            const auto magic = std::search(
+                buffer_.begin() + 1,
+                buffer_.end(),
+                std::begin(kMagic),
+                std::end(kMagic));
+            if (magic == buffer_.end()) {
+                resync_discarded_bytes_ += buffer_.size();
+                buffer_.clear();
+                error = "bad frame magic";
+                return false;
+            }
+            const std::size_t discarded = static_cast<std::size_t>(
+                magic - buffer_.begin());
+            resync_discarded_bytes_ += discarded;
+            buffer_.erase(buffer_.begin(), magic);
+            error = "resynchronized frame stream";
+            continue;
         }
         if (buffer_[4] != kProtocolVersion) {
-            error = "unsupported frame version";
-            buffer_.clear();
-            return false;
+            buffer_.erase(buffer_.begin());
+            ++resync_discarded_bytes_;
+            error = "resynchronized frame stream";
+            continue;
         }
         const std::uint32_t payload_size = read_u32_le(buffer_.data() + 12);
         if (payload_size > kMaxFramePayload) {
-            error = "frame payload exceeds limit";
-            buffer_.clear();
-            return false;
+            buffer_.erase(buffer_.begin());
+            ++resync_discarded_bytes_;
+            error = "resynchronized frame stream";
+            continue;
         }
         const std::size_t total = kFrameHeaderSize + payload_size;
         if (buffer_.size() < total) {
@@ -135,11 +151,17 @@ bool FrameDecoder::push(
 void FrameDecoder::reset()
 {
     buffer_.clear();
+    resync_discarded_bytes_ = 0;
 }
 
 std::size_t FrameDecoder::buffered_bytes() const
 {
     return buffer_.size();
+}
+
+std::size_t FrameDecoder::resync_discarded_bytes() const
+{
+    return resync_discarded_bytes_;
 }
 
 } // namespace gate1

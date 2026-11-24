@@ -488,44 +488,28 @@ private:
             return true;
         }
 
-        std::size_t target = out_capacity_;
-        if ((result_.data_frames_sent / 8U) % 3U == 0U) {
-            target = std::max<std::size_t>(257, out_capacity_ / 3U);
+        static constexpr std::array<std::uint32_t, 6> kPayloadSizes = {
+            1, 7, 255, 1024, 4096, 8192};
+        const std::uint32_t max_payload = out_capacity_ > kFrameHeaderSize
+            ? static_cast<std::uint32_t>(out_capacity_ - kFrameHeaderSize)
+            : 1U;
+        const std::uint32_t chosen =
+            kPayloadSizes[result_.data_frames_sent % kPayloadSizes.size()];
+        const std::uint32_t payload_size = std::min(chosen, max_payload);
+        const std::uint32_t seq = next_seq();
+        const std::vector<std::uint8_t> payload =
+            make_data_payload(seq, payload_size);
+        const std::vector<std::uint8_t> encoded =
+            encode_frame(FrameType::kData, 0, seq, payload);
+        if (encoded.empty()) {
+            fail("data frame encoding failed");
+            return false;
         }
-        target = std::min(target, out_capacity_);
-
-        while (pending_bytes_.size() - pending_offset_ < target) {
-            static constexpr std::array<std::uint32_t, 7> kPayloadSizes = {
-                1, 7, 255, 1024, 4096, 8192, 16384};
-            const std::uint32_t payload_size =
-                kPayloadSizes[result_.data_frames_sent % kPayloadSizes.size()];
-            const std::uint32_t seq = next_seq();
-            const std::vector<std::uint8_t> payload =
-                make_data_payload(seq, payload_size);
-            const std::vector<std::uint8_t> encoded =
-                encode_frame(FrameType::kData, 0, seq, payload);
-            expected_echoes_[seq] = fnv1a64(payload.data(), payload.size());
-            pending_bytes_.insert(pending_bytes_.end(), encoded.begin(), encoded.end());
-            ++result_.data_frames_sent;
-            ++frames_since_zlp_;
-        }
-
-        out_buffer_.resize(target);
-        std::copy_n(
-            pending_bytes_.data() + static_cast<std::ptrdiff_t>(pending_offset_),
-            target,
-            out_buffer_.data());
-        pending_offset_ += target;
-        if (pending_offset_ == pending_bytes_.size()) {
-            pending_bytes_.clear();
-            pending_offset_ = 0;
-        } else if (pending_offset_ > 65536) {
-            pending_bytes_.erase(
-                pending_bytes_.begin(),
-                pending_bytes_.begin() + static_cast<std::ptrdiff_t>(pending_offset_));
-            pending_offset_ = 0;
-        }
-        out_transfer_length_ = target;
+        expected_echoes_[seq] = fnv1a64(payload.data(), payload.size());
+        out_buffer_.assign(encoded.begin(), encoded.end());
+        out_transfer_length_ = encoded.size();
+        ++result_.data_frames_sent;
+        ++frames_since_zlp_;
         out_kind_ = OutKind::kData;
         return true;
     }
@@ -924,8 +908,6 @@ private:
     std::size_t out_capacity_ = 0;
     std::size_t out_transfer_length_ = 0;
     OutKind out_kind_ = OutKind::kNone;
-    std::vector<std::uint8_t> pending_bytes_;
-    std::size_t pending_offset_ = 0;
     std::unordered_map<std::uint32_t, std::uint64_t> expected_echoes_;
     std::unordered_map<std::uint32_t, Clock::time_point> heartbeat_sent_at_;
     Clock::time_point last_heartbeat_sent_{};

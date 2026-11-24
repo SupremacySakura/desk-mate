@@ -53,9 +53,11 @@ public:
         std::string& error);
     void reset();
     std::size_t buffered_bytes() const;
+    std::size_t resync_discarded_bytes() const;
 
 private:
     std::vector<std::uint8_t> buffer_;
+    std::size_t resync_discarded_bytes_ = 0;
 };
 
 } // namespace gate1

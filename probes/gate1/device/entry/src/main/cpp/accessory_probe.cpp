@@ -13,6 +13,7 @@
 #include <cinttypes>
 #include <cstring>
 #include <exception>
+#include <fcntl.h>
 #include <poll.h>
 #include <pthread.h>
 #include <signal.h>
@@ -31,8 +32,14 @@ std::int64_t steady_now_ns()
         .count();
 }
 
+std::atomic<bool> g_signal_seen{false};
+
 void sigusr1_handler(int)
 {
+    // Only async-signal-safe work here. The worker observes the flag on every
+    // poll/read return, so a signal that lands between two iterations is not
+    // lost the way a pure EINTR-only check would lose it.
+    g_signal_seen.store(true);
 }
 
 bool install_signal_handler()
@@ -63,6 +70,8 @@ const char* errno_text(int value)
 {
     return std::strerror(value);
 }
+
+constexpr std::size_t kOutputHighWatermark = 128U * 1024U;
 
 } // namespace
 
@@ -122,6 +131,7 @@ std::string AccessoryProbe::start(int accessory_fd, const std::string& mode)
             false,
             std::string("sigaction(SIGUSR1) failed: ") + errno_text(errno));
     }
+    g_signal_seen.store(false);
 
     accessory_fd_ = accessory_fd;
     mode_ = requested;
@@ -132,6 +142,30 @@ std::string AccessoryProbe::start(int accessory_fd, const std::string& mode)
     worker_exit_ns_.store(0);
     last_read_errno_.store(0);
     last_poll_revents_.store(0);
+    last_read_size_.store(16384);
+    zero_reads_.store(0);
+    poll_wakeups_.store(0);
+    bytes_read_.store(0);
+    frames_read_.store(0);
+    bytes_written_.store(0);
+    frames_written_.store(0);
+    write_errors_.store(0);
+    eventfd_wakeups_.store(0);
+    signal_wakeups_.store(0);
+    owner_close_wakeups_.store(0);
+    poll_timeouts_.store(0);
+    read_errors_.store(0);
+    zero_writes_.store(0);
+    parse_errors_.store(0);
+    would_block_writes_.store(0);
+    backpressure_skips_.store(0);
+    pending_output_bytes_.store(0);
+    pending_out_.clear();
+    pending_offset_ = 0;
+    pending_frames_ = 0;
+    saved_accessory_flags_ = -1;
+    decoder_.reset();
+    set_phase("starting");
     {
         std::lock_guard<std::mutex> status_lock(status_mutex_);
         exit_reason_ = "running";
@@ -142,9 +176,19 @@ std::string AccessoryProbe::start(int accessory_fd, const std::string& mode)
         worker_done_ = false;
     }
 
+    if (!make_accessory_nonblocking()) {
+        OH_LOG_WARN(
+            LOG_APP,
+            "fcntl(O_NONBLOCK) failed on accessoryFd=%{public}d: %{public}s; "
+            "worker may block in write() while the Host stops draining Bulk IN",
+            accessory_fd,
+            errno_text(errno));
+    }
+
     try {
         worker_ = std::thread(&AccessoryProbe::worker_main, this);
     } catch (const std::exception& error) {
+        restore_accessory_flags();
         if (event_fd_ >= 0) {
             close(event_fd_);
             event_fd_ = -1;
@@ -160,6 +204,40 @@ std::string AccessoryProbe::start(int accessory_fd, const std::string& mode)
         accessory_fd,
         mode_name(requested));
     return status_json(true, "worker started");
+}
+
+bool AccessoryProbe::make_accessory_nonblocking()
+{
+    const int flags = fcntl(accessory_fd_, F_GETFL, 0);
+    if (flags < 0) {
+        return false;
+    }
+    saved_accessory_flags_ = flags;
+    if ((flags & O_NONBLOCK) != 0) {
+        saved_accessory_flags_ = -1;
+        return true;
+    }
+    if (fcntl(accessory_fd_, F_SETFL, flags | O_NONBLOCK) < 0) {
+        saved_accessory_flags_ = -1;
+        return false;
+    }
+    return true;
+}
+
+void AccessoryProbe::restore_accessory_flags()
+{
+    if (saved_accessory_flags_ < 0 || accessory_fd_ <= 0) {
+        saved_accessory_flags_ = -1;
+        return;
+    }
+    if (fcntl(accessory_fd_, F_SETFL, saved_accessory_flags_) < 0) {
+        OH_LOG_WARN(
+            LOG_APP,
+            "restore fcntl flags failed on accessoryFd=%{public}d: %{public}s",
+            accessory_fd_,
+            errno_text(errno));
+    }
+    saved_accessory_flags_ = -1;
 }
 
 bool AccessoryProbe::wait_for_worker_join(std::chrono::milliseconds timeout)
@@ -279,13 +357,22 @@ void AccessoryProbe::worker_main()
         pthread_sigmask(SIG_UNBLOCK, &set, nullptr);
     }
 
-    std::vector<std::uint8_t> buffer(65536);
+    std::vector<std::uint8_t> buffer(16384);
+    std::size_t read_size = buffer.size();
     const char* exit_reason = "stop-observed";
 
     while (true) {
+        if (stop_requested_.load() && mode_ == WakeMode::kSignal &&
+            g_signal_seen.load()) {
+            record_wake("signal");
+            exit_reason = "signal";
+            break;
+        }
+
         std::array<pollfd, 2> fds {};
         fds[0].fd = accessory_fd_;
-        fds[0].events = POLLIN;
+        const bool want_write = pending_offset_ < pending_out_.size();
+        fds[0].events = static_cast<short>(POLLIN | (want_write ? POLLOUT : 0));
         nfds_t count = 1;
         if (event_fd_ >= 0) {
             fds[1].fd = event_fd_;
@@ -293,11 +380,13 @@ void AccessoryProbe::worker_main()
             count = 2;
         }
 
+        set_phase(want_write ? "poll-rw" : "poll-r");
         const int poll_result = poll(fds.data(), count, 250);
         if (poll_result < 0) {
             const int poll_errno = errno;
             if (errno == EINTR) {
-                if (stop_requested_.load() && mode_ == WakeMode::kSignal) {
+                if (stop_requested_.load() && mode_ == WakeMode::kSignal &&
+                    g_signal_seen.load()) {
                     record_wake("signal");
                     exit_reason = "signal";
                     break;
@@ -325,6 +414,12 @@ void AccessoryProbe::worker_main()
         }
         if (poll_result == 0) {
             poll_timeouts_.fetch_add(1);
+            if (stop_requested_.load() && mode_ == WakeMode::kSignal &&
+                g_signal_seen.load()) {
+                record_wake("signal");
+                exit_reason = "signal";
+                break;
+            }
             continue;
         }
         poll_wakeups_.fetch_add(1);
@@ -364,51 +459,78 @@ void AccessoryProbe::worker_main()
         }
 
         if ((fds[0].revents & POLLIN) != 0) {
-            const ssize_t bytes = read(accessory_fd_, buffer.data(), buffer.size());
+            set_phase("read");
+            const ssize_t bytes = read(accessory_fd_, buffer.data(), read_size);
             if (bytes > 0) {
                 bytes_read_.fetch_add(static_cast<std::uint64_t>(bytes));
                 if (!reject_new_work_.load()) {
                     process_input(buffer.data(), static_cast<std::size_t>(bytes));
                 }
-                continue;
             }
-            if (bytes == 0) {
+            else if (bytes == 0) {
                 zero_reads_.fetch_add(1);
-                continue;
             }
-            const int read_errno = errno;
-            last_read_errno_.store(read_errno);
-            last_poll_revents_.store(fds[0].revents);
-            if (read_errno == EINTR) {
-                if (stop_requested_.load() && mode_ == WakeMode::kSignal) {
+            else {
+                const int read_errno = errno;
+                last_read_errno_.store(read_errno);
+                last_poll_revents_.store(fds[0].revents);
+                // A targeted SIGUSR1 can surface as EIO/EPIPE rather than
+                // EINTR depending on where the syscall was interrupted, so the
+                // flag decides, not the errno value.
+                if (stop_requested_.load() && mode_ == WakeMode::kSignal &&
+                    g_signal_seen.load()) {
                     record_wake("signal");
                     exit_reason = "signal";
                     break;
                 }
-                continue;
+                if (read_errno == EINVAL && read_size > 1U) {
+                    read_size /= 2U;
+                    last_read_size_.store(read_size);
+                    OH_LOG_WARN(
+                        LOG_APP,
+                        "read EINVAL; retrying with %{public}zu byte buffer fd=%{public}d",
+                        read_size,
+                        accessory_fd_);
+                    continue;
+                }
+                if (read_errno == EINTR) {
+                    if (stop_requested_.load() && mode_ == WakeMode::kSignal &&
+                        g_signal_seen.load()) {
+                        record_wake("signal");
+                        exit_reason = "signal";
+                        break;
+                    }
+                    continue;
+                }
+                if (read_errno == EAGAIN || read_errno == EWOULDBLOCK) {
+                    continue;
+                }
+                if (stop_requested_.load() && mode_ == WakeMode::kOwnerClose) {
+                    record_wake("owner-close");
+                    exit_reason = "owner-close";
+                } else {
+                    read_errors_.fetch_add(1);
+                    OH_LOG_ERROR(
+                        LOG_APP,
+                        "read failed: %{public}s",
+                        probe_error_context(
+                            read_errno,
+                            accessory_fd_,
+                            fds[0].revents,
+                            mode_name(mode_)).c_str());
+                    exit_reason = "read-error";
+                }
+                break;
             }
-            if (read_errno == EAGAIN || read_errno == EWOULDBLOCK) {
-                continue;
-            }
-            if (stop_requested_.load() && mode_ == WakeMode::kOwnerClose) {
-                record_wake("owner-close");
-                exit_reason = "owner-close";
-            } else {
-                read_errors_.fetch_add(1);
-                OH_LOG_ERROR(
-                    LOG_APP,
-                    "read failed: %{public}s",
-                    probe_error_context(
-                        read_errno,
-                        accessory_fd_,
-                        fds[0].revents,
-                        mode_name(mode_)).c_str());
-                exit_reason = "read-error";
-            }
+        }
+
+        if ((fds[0].revents & POLLOUT) != 0 && !flush_pending()) {
+            exit_reason = "write-error";
             break;
         }
     }
 
+    restore_accessory_flags();
     record_exit(exit_reason);
 }
 
@@ -419,13 +541,11 @@ void AccessoryProbe::process_input(const std::uint8_t* data, std::size_t size)
     if (!decoder_.push(data, size, frames, error)) {
         parse_errors_.fetch_add(1);
         OH_LOG_ERROR(LOG_APP, "frame parse failed: %{public}s", error.c_str());
-        decoder_.reset();
         return;
     }
 
     std::vector<std::uint8_t> output;
     std::uint64_t response_frames = 0;
-    bool split_write = false;
     for (const Frame& frame : frames) {
         frames_read_.fetch_add(1);
         build_frame_response(frame, output);
@@ -436,24 +556,13 @@ void AccessoryProbe::process_input(const std::uint8_t* data, std::size_t size)
             frame.type == FrameType::kData) {
             ++response_frames;
         }
-        if (frame.type == FrameType::kData && frame.seq % 5U == 0U) {
-            split_write = true;
-        }
     }
     if (output.empty()) {
         return;
     }
 
-    bool ok = true;
-    if (split_write && output.size() > 7U) {
-        ok = write_all(output.data(), 7U) &&
-             write_all(output.data() + 7U, output.size() - 7U);
-    } else {
-        ok = write_all(output.data(), output.size());
-    }
-    if (ok) {
-        frames_written_.fetch_add(response_frames);
-    }
+    pending_frames_ += response_frames;
+    enqueue_output(output);
 }
 
 void AccessoryProbe::build_frame_response(
@@ -530,23 +639,71 @@ void AccessoryProbe::append_stats_response(
     output.insert(output.end(), response.begin(), response.end());
 }
 
-bool AccessoryProbe::write_all(const std::uint8_t* data, std::size_t size)
+void AccessoryProbe::enqueue_output(const std::vector<std::uint8_t>& bytes)
 {
-    std::size_t offset = 0;
-    while (offset < size) {
-        const ssize_t written = write(accessory_fd_, data + offset, size - offset);
+    if (bytes.empty()) {
+        return;
+    }
+    if (pending_offset_ > 0 && pending_offset_ == pending_out_.size()) {
+        pending_out_.clear();
+        pending_offset_ = 0;
+    }
+    if (pending_offset_ > 0 && pending_offset_ > 64U * 1024U) {
+        pending_out_.erase(
+            pending_out_.begin(),
+            pending_out_.begin() + static_cast<std::ptrdiff_t>(pending_offset_));
+        pending_offset_ = 0;
+    }
+
+    if (pending_out_.size() - pending_offset_ >= kOutputHighWatermark) {
+        backpressure_skips_.fetch_add(1);
+        pending_frames_ = 0;
+        return;
+    }
+    pending_out_.insert(pending_out_.end(), bytes.begin(), bytes.end());
+    pending_output_bytes_.store(pending_out_.size() - pending_offset_);
+    flush_pending();
+}
+
+bool AccessoryProbe::flush_pending()
+{
+    while (pending_offset_ < pending_out_.size()) {
+        set_phase("write");
+        const ssize_t written = write(
+            accessory_fd_,
+            pending_out_.data() + pending_offset_,
+            pending_out_.size() - pending_offset_);
         if (written > 0) {
-            offset += static_cast<std::size_t>(written);
+            pending_offset_ += static_cast<std::size_t>(written);
             bytes_written_.fetch_add(static_cast<std::uint64_t>(written));
             continue;
         }
-        if (written < 0 && errno == EINTR) {
+        if (written == 0) {
+            zero_writes_.fetch_add(1);
+            break;
+        }
+        if (errno == EINTR) {
+            if (stop_requested_.load()) {
+                break;
+            }
             continue;
+        }
+        if (errno == EAGAIN || errno == EWOULDBLOCK) {
+            would_block_writes_.fetch_add(1);
+            break;
         }
         write_errors_.fetch_add(1);
         OH_LOG_ERROR(LOG_APP, "write failed: %{public}s", errno_text(errno));
         return false;
     }
+
+    if (pending_offset_ == pending_out_.size()) {
+        frames_written_.fetch_add(pending_frames_);
+        pending_frames_ = 0;
+        pending_out_.clear();
+        pending_offset_ = 0;
+    }
+    pending_output_bytes_.store(pending_out_.size() - pending_offset_);
     return true;
 }
 
@@ -584,6 +741,12 @@ void AccessoryProbe::record_wake(const char* reason)
     OH_LOG_INFO(LOG_APP, "poll wake observed: %{public}s", reason);
 }
 
+void AccessoryProbe::set_phase(const char* phase)
+{
+    std::lock_guard<std::mutex> lock(phase_mutex_);
+    phase_ = phase == nullptr ? "unknown" : phase;
+}
+
 void AccessoryProbe::record_exit(const char* reason)
 {
     worker_exit_ns_.store(steady_now_ns());
@@ -614,15 +777,21 @@ std::string AccessoryProbe::status_json(bool ok, const std::string& message)
         probe_reports_running(running_.load(), worker_exited);
     std::string exit_reason;
     std::string wake_reason;
+    std::string phase;
     {
         std::lock_guard<std::mutex> lock(status_mutex_);
         exit_reason = exit_reason_;
         wake_reason = wake_reason_;
     }
+    {
+        std::lock_guard<std::mutex> lock(phase_mutex_);
+        phase = phase_;
+    }
     std::ostringstream json;
     json << "{\"ok\":" << (ok ? "true" : "false")
          << ",\"message\":\"" << message << "\""
          << ",\"mode\":\"" << mode_name(mode_) << "\""
+         << ",\"phase\":\"" << phase << "\""
          << ",\"running\":" << (reported_running ? "true" : "false")
          << ",\"stop_to_wake_us\":"
          << (stop_ns > 0 && wake_ns >= stop_ns ? (wake_ns - stop_ns) / 1000 : -1)
@@ -630,6 +799,7 @@ std::string AccessoryProbe::status_json(bool ok, const std::string& message)
          << (stop_ns > 0 && exit_ns >= stop_ns ? (exit_ns - stop_ns) / 1000000 : -1)
          << ",\"last_read_errno\":" << last_read_errno_.load()
          << ",\"last_poll_revents\":" << last_poll_revents_.load()
+         << ",\"last_read_size\":" << last_read_size_.load()
          << ",\"wake_reason\":\"" << wake_reason << "\""
          << ",\"exit_reason\":\"" << exit_reason << "\""
          << ",\"zero_reads\":" << zero_reads_.load()
@@ -640,6 +810,9 @@ std::string AccessoryProbe::status_json(bool ok, const std::string& message)
          << ",\"eventfd_wakeups\":" << eventfd_wakeups_.load()
          << ",\"signal_wakeups\":" << signal_wakeups_.load()
          << ",\"owner_close_wakeups\":" << owner_close_wakeups_.load()
+         << ",\"would_block_writes\":" << would_block_writes_.load()
+         << ",\"backpressure_skips\":" << backpressure_skips_.load()
+         << ",\"pending_output_bytes\":" << pending_output_bytes_.load()
          << "}";
     return json.str();
 }
@@ -648,10 +821,15 @@ std::string AccessoryProbe::stats_json()
 {
     std::string exit_reason;
     std::string wake_reason;
+    std::string phase;
     {
         std::lock_guard<std::mutex> lock(status_mutex_);
         exit_reason = exit_reason_;
         wake_reason = wake_reason_;
+    }
+    {
+        std::lock_guard<std::mutex> lock(phase_mutex_);
+        phase = phase_;
     }
     const std::int64_t stop_ns = stop_requested_ns_.load();
     const std::int64_t wake_ns = wake_observed_ns_.load();
@@ -668,6 +846,7 @@ std::string AccessoryProbe::stats_json()
     json << "{\"running\":" << (reported_running ? "true" : "false")
          << ",\"worker_exited\":" << (worker_exited ? "true" : "false")
          << ",\"mode\":\"" << mode_name(mode_) << "\""
+         << ",\"phase\":\"" << phase << "\""
          << ",\"wake_reason\":\"" << wake_reason << "\""
          << ",\"exit_reason\":\"" << exit_reason << "\""
          << ",\"stop_to_wake_us\":"
@@ -676,6 +855,7 @@ std::string AccessoryProbe::stats_json()
          << (stop_ns > 0 && exit_ns >= stop_ns ? (exit_ns - stop_ns) / 1000000 : -1)
          << ",\"last_read_errno\":" << last_read_errno_.load()
          << ",\"last_poll_revents\":" << last_poll_revents_.load()
+         << ",\"last_read_size\":" << last_read_size_.load()
          << ",\"zero_reads\":" << zero_reads_.load()
          << ",\"poll_wakeups\":" << poll_wakeups_.load()
          << ",\"bytes_read\":" << bytes_read_.load()
@@ -692,6 +872,9 @@ std::string AccessoryProbe::stats_json()
          << ",\"read_errors\":" << read_errors_.load()
          << ",\"zero_writes\":" << zero_writes_.load()
          << ",\"parse_errors\":" << parse_errors_.load()
+         << ",\"would_block_writes\":" << would_block_writes_.load()
+         << ",\"backpressure_skips\":" << backpressure_skips_.load()
+         << ",\"pending_output_bytes\":" << pending_output_bytes_.load()
          << "}";
     return json.str();
 }

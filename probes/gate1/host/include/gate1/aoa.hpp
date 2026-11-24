@@ -36,13 +36,20 @@ struct DeviceSummary {
 struct OpenedAccessory {
     libusb_device_handle* handle = nullptr;
     int interface_number = -1;
+    int alternate_setting = -1;
+    int interface_endpoints = 0;
     std::uint8_t endpoint_in = 0;
     std::uint8_t endpoint_out = 0;
+    std::uint16_t endpoint_in_max_packet = 0;
+    std::uint16_t endpoint_out_max_packet = 0;
+    std::uint8_t endpoint_in_attributes = 0;
+    std::uint8_t endpoint_out_attributes = 0;
     std::uint16_t vendor_id = 0;
     std::uint16_t product_id = 0;
     std::uint8_t bus = 0;
     std::uint8_t address = 0;
     int speed = 0;
+    std::string descriptor_dump;
 };
 
 std::vector<DeviceSummary> list_devices(libusb_context* context, std::string& error);
