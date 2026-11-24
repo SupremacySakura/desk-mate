@@ -19,10 +19,20 @@ Reverse Input 项目。当前仓库处于 **Design / Pending Hardware Verificati
 - 可注入的单调时钟与内存测试时钟；双方各握手阶段的 2 秒超时无需真实 sleep。
 - PREPARE 幂等、非破坏性边界、COMMIT 失败、`DISPLAY_ERROR` 和首帧超时的确定性
   契约测试。
+- Host 暂停立即停止采集/编码与输入意图，Device 返回 `PAUSE_ACK`；恢复通过新的
+  `config_id` 重新执行 `PREPARE/READY/COMMIT/COMMITTED`。
+- 1 秒心跳与 3 秒无有效消息失联检测，全部由可注入时钟驱动，不依赖真实 sleep。
+- `STREAMING` 中的运行配置切换在成功提交前保留旧流；失败或超时回退，重复
+  `config_id` 幂等。
+- 0x05 四时间戳交换估算 Device 相对 Host 的时钟偏移、RTT、漂移与误差上界。
+- 锁屏、睡眠、录屏权限撤销、辅助功能权限撤销和 `DISPLAY_ERROR` 各自公开独立的
+  降级状态；Pause Grace Timeout 限制为 30–60 秒。
+- Surface Lease 代际与引用计数、FD 单所有权，以及
+  `STOPPING → 拒绝新工作 → 取消 I/O → 排空回调 → 释放` 的可观察契约。
 - 合法与非法 golden vectors。
 
-当前实现不包含暂停/恢复、运行中重配、心跳、帧级优先调度或 GOP 恢复策略。这些
-属于后续任务，不能由本目录的实现推断为已完成。
+当前实现不包含帧级优先调度或 GOP 恢复策略。它们属于后续任务，不能由本目录的
+实现推断为已完成。
 
 ## 构建与测试
 
@@ -74,7 +84,7 @@ testdata/golden/        独立于 C++ 编码器生成的合法/非法线上字�
 - `StreamError`：无法继续可靠定界的致命错误。解码器进入 `failed()` 状态；调用方
   必须丢弃当前流状态并重连或显式 `reset()`，不得扫描后续字节猜测包边界。
 
-## Session 握手 API
+## Session API
 
 `session.hpp` 提供 `HostSession` 与 `DeviceSession`。构造时注入同一个
 `ByteIo` 接缝的一对方向端和 `MonotonicClock`；`start()` 启动本地阶段，
@@ -106,10 +116,26 @@ device.pump();
 | `AwaitingCommitted` | `AwaitingFirstIdr` |
 | `Streaming` | `Streaming` |
 
+建立 Session 后，Host 通过 `pause()`、`resume()`、`reconfigure()`、
+`request_clock_sync()` 和 `handle_host_event()` 驱动暂停、运行配置切换、校时和
+macOS 系统事件。`request_stop()` 只进入 `Stopping`；所有已提交回调排空后由
+`complete_stop()` 进入 `Stopped`，或使用同步便捷方法 `stop()`。`VideoState` 与
+`InputState` 分别表达锁屏、睡眠、录屏权限、辅助功能权限和显示错误的降级结果。
+
 `SessionLimits::stage_timeout_ns` 默认 2 秒。Host 等待 HELLO、READY、
 COMMITTED；Device 等待 PREPARE、COMMIT、首个新流 IDR。超时通过
 `SessionFailure` 暴露并终止 Session。测试使用 `ManualClock::advance_ns()` 推进
 时间，不调用 sleep。
+
+Host 的 `pause()` 先关闭采集/编码与输入意图，再发送 `PAUSE`，不等待 ACK。
+`resume()` 要求新的 `config_id` 和非零新 `video_stream_id`；Host 发送 `RESUME`
+并重新走完整配置切换。`STREAMING` 中 `reconfigure()` 只在收到匹配的
+`STREAM_COMMITTED` 后切换 Host 的协商结果；Device 保留旧流，直到匹配的新流首个
+keyframe 到达。失败或超时通过 `ReconfigurationStatus` 暴露并保留旧流。
+
+Pause Grace Timeout 通过 `SessionLimits::pause_grace_timeout_ns` 配置，允许
+30–60 秒，默认 30 秒。超时只销毁一次 Extended Display，并报告
+`PauseGraceExpired`。
 
 协商规则：
 
@@ -217,6 +243,22 @@ Session 层，本实现的握手只接受与本地 `kProtocolRevision` 相同的
 `video_stream_id`；包头 `video_stream_id` 必须与 body 相同。`PROTOCOL_ERROR`
 body 是 1 字节 `SessionFailure` 数值，见 `session.hpp`。
 
+0x05 校时 body 固定为 28 字节：
+
+| 偏移 | 字段 | 编码 |
+| ---: | --- | --- |
+| 0 | `encoding_version` | `uint8`，当前为 1 |
+| 1 | `kind` | `uint8`，`REQUEST=1`、`RESPONSE=2` |
+| 2 | reserved | 2 字节，必须为 0 |
+| 4 | `t0` | Host 发送时刻，LE `uint64` ns |
+| 12 | `t1` | Device 收到时刻，LE `uint64` ns |
+| 20 | `t2` | Device 回复时刻，LE `uint64` ns |
+
+Host 在收到响应时记录本地 `t3`。`ClockSyncEstimator` 以
+`offset = ((t1 - t0) + (t2 - t3)) / 2` 估算 Device 相对 Host 的时钟偏移，
+`RTT = (t3 - t0) - (t2 - t1)`，误差上界为 `RTT / 2`；连续样本同时报告
+`drift_ppb`。这些是软件时钟契约，不代表 Gate 4A 的光学延迟结论。
+
 ## Golden vectors
 
 `testdata/golden/manifest.txt` 每行格式为：
@@ -236,11 +278,13 @@ name | expectation | expected-payload-hex | packet-hex
   设计需要调整，必须先修订 proposed 协议与 `proto_rev`。
 - 本仓库不证明 AOA、`accessoryFd`、AVCodec、虚拟显示器或任何性能指标。
 - `ByteIo` 只有接口；测试中的 Host/Device 内存管道是契约 harness，不是生产传输层。
-- 分片不连续产生 `RequestRecovery` 事件，但选择 IDR、暂停/恢复及 Last Good Frame
-  属于后续 Session/调度任务。
-- 当前只实现首次握手。暂停/恢复、心跳失联、运行中重配、Pause Grace Timeout 和
-  系统权限变化尚未实现；不同 `config_id` 的 PREPARE 在首次握手期会被拒绝。
-- `DeviceBoundary` 是最小结果桩，不证明 Surface Lease、解码器 Flush/Reconfigure
-  或旧流回退能力；这些仍由 Gate 3 验证。
+- 分片不连续产生 `RequestRecovery` 事件，但选择 IDR、优先级调度和 Last Good
+  Frame 属于后续调度任务。
+- Pause/resume、心跳、重配与系统事件只验证 Session 状态机和资源契约，不证明真实
+  `accessoryFd` 可被唤醒、后台心跳可维持或 AVCodec 的 Flush/Reconfigure 行为。
+- `SurfaceOwner`/`SurfaceLease` 与 `AccessoryFdOwner` 是可注入的资源边界桩；
+  HarmonyOS NativeWindow 引用和真实 USB 句柄生命周期仍由 Gate 1/3 验证。
+- Device 是否能在 Gate 3 条件下保留旧流、恢复旧配置或无损切换 Surface 尚未实证；
+  本实现的回退仅是控制面契约。
 - 首个 IDR 之后不实现优先级调度、GOP 边界丢弃、恢复 IDR 重试或 Last Good Frame
   门控。
