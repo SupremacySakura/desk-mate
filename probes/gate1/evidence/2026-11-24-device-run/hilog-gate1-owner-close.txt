@@ -3,7 +3,7 @@
 11-24 16:39:43.134 41495 41495 I A03201/com.deskmate.gate1probe/Gate1Device: closeAccessory after joined signal
 11-24 16:39:54.576 41495 41495 E A03201/com.deskmate.gate1probe/Gate1Device: openAccessory failed: code=undefined message=no AOA accessory in getAccessoryList()
 11-24 16:40:01.310 41495 41495 I A03201/com.deskmate.gate1probe/Gate1Device: requestAccessoryRight=true
-11-24 16:40:01.312 41495 41495 I A03201/com.deskmate.gate1probe/Gate1Device: openAccessory ok: manufacturer=DeskMate; product=DeskMate Gate 1 Probe; description=AOA wired duplex probe; version=1.0; serial=com.deskmate.gate1probe0000000036fc2ced; fd=44
+11-24 16:40:01.312 41495 41495 I A03201/com.deskmate.gate1probe/Gate1Device: openAccessory ok: manufacturer=DeskMate; product=DeskMate Gate 1 Probe; description=AOA wired duplex probe; version=1.0; serial=<redacted-serial>; fd=44
 11-24 16:40:04.587 41495 41495 I A03201/com.deskmate.gate1probe/Gate1Probe: start accessoryFd=44 mode=owner-close
 11-24 16:40:04.588 41495 41495 I A03201/com.deskmate.gate1probe/Gate1Device: start owner-close: {"ok":true,"message":"worker started","mode":"owner-close","phase":"starting","running":true,"stop_to_wake_us":-1,"stop_to_worker_exit_ms":-1,"last_read_errno":0,"last_poll_revents":0,"last_read_size":16384,"wake_reason":"","exit_reason":"running","zero_reads":0,"zero_writes":0,"read_errors":0,"write_errors":0,"parse_errors":0,"eventfd_wakeups":0,"signal_wakeups":0,"owner_close_wakeups":0,"would_block_writes":0,"backpressure_skips":0,"pending_output_bytes":0}
 11-24 16:40:40.687 41495 41495 I A03201/com.deskmate.gate1probe/Gate1Probe: owner-close stop requested; closeAccessory may wake poll

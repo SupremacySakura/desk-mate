@@ -191,7 +191,7 @@
     |       "kUSBCurrentConfiguration" = 1
     |       "idProduct" = 20480
     |       "bcdDevice" = 548
-    |       "UsbDeviceSignature" = <d112005035394759443235373136323034353133000000ff5001>
+    |       "UsbDeviceSignature" = <d112005000000000000000000000000000000000000000ff5001>
     |       "sessionID" = 3221732633886
     |       "USB Address" = 7
     |       "UsbExclusiveOwner" = "pid 67816, hdc"
@@ -243,14 +243,14 @@
       | 
       +-o USB 10/100/1G/2.5G LAN@01210000  <class IOUSBHostDevice, id 0x1000085d6, registered, matched, active, busy 0 (135 ms), retain 88>
       |   {
-      |     "kUSBSerialNumberString" = "4013000001"
+      |     "kUSBSerialNumberString" = "<redacted-serial>"
       |     "bDeviceClass" = 0
       |     "UsbLinkSpeed" = 5000000000
       |     "bDeviceSubClass" = 0
       |     "iSerialNumber" = 6
       |     "IOServiceDEXTEntitlements" = (("com.apple.developer.driverkit.transport.usb"))
       |     "iProduct" = 2
-      |     "USB Serial Number" = "4013000001"
+      |     "USB Serial Number" = "<redacted-serial>"
       |     "USB Vendor Name" = "Realtek"
       |     "USBSpeed" = 4
       |     "IOPowerManagement" = {"PowerOverrideOn"=Yes,"DevicePowerState"=2,"CurrentPowerState"=2,"CapabilityFlags"=32768,"MaxPowerState"=2,"DriverPowerState"=0}

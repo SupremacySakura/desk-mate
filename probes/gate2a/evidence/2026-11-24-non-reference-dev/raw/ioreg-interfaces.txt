@@ -619,7 +619,7 @@
   |   "idVendor" = 3034
   |   "IOServiceDEXTEntitlements" = (("com.apple.developer.driverkit.transport.usb"))
   |   "bNumEndpoints" = 1
-  |   "USB Serial Number" = "4013000001"
+  |   "USB Serial Number" = "<redacted-serial>"
   | }
   | 
   +-o AppleUSBNCMControl  <class AppleUSBNCMControl, id 0x1000085f1, registered, matched, active, busy 0 (7 ms), retain 8>
@@ -745,7 +745,7 @@
       "IOServiceDEXTEntitlements" = (("com.apple.developer.driverkit.transport.usb"))
       "idVendor" = 3034
       "bNumEndpoints" = 2
-      "USB Serial Number" = "4013000001"
+      "USB Serial Number" = "<redacted-serial>"
     }
     
 

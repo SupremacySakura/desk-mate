@@ -3,7 +3,7 @@
 ## Device and link
 
 - HUAWEI MatePad Pro, model `MRDI-W00`, display version
-  `MRDIL-W00 7.0.0.111(SP8C00E111R6P3)`.
+  `MRDIL-W00 7.0.0.111(<redacted-serial>)`.
 - OpenHarmony `7.0.0.111`, API 26, `arm64-v8a`, 2800x1840 at 60 Hz.
 - Serial is redacted.
 - USB path: Bridgesil `USB2.1 Hub`, USB 2.0 High-Speed. This is **not** an

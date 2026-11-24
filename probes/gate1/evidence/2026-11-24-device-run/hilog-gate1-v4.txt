@@ -2,7 +2,7 @@
 11-24 14:18:13.237 19142 19142 I A03201/com.deskmate.gate1probe/Gate1Device: onForeground
 11-24 14:18:13.321 19142 19142 I A03201/com.deskmate.gate1probe/Gate1Device: loadContent succeeded
 11-24 14:18:38.528 19142 19142 I A03201/com.deskmate.gate1probe/Gate1Device: requestAccessoryRight=true
-11-24 14:18:38.529 19142 19142 I A03201/com.deskmate.gate1probe/Gate1Device: openAccessory ok: manufacturer=D; product=D; description=A; version=1; serial=com.deskmate.gate1probe0000000037f93eaf; fd=45
+11-24 14:18:38.529 19142 19142 I A03201/com.deskmate.gate1probe/Gate1Device: openAccessory ok: manufacturer=D; product=D; description=A; version=1; serial=<redacted-serial>; fd=45
 11-24 14:18:41.575 19142 19142 I A03201/com.deskmate.gate1probe/Gate1Device: start eventfd: {"ok":true,"message":"worker started","mode":"eventfd","running":true,"stop_to_wake_us":-1,"stop_to_worker_exit_ms":-1,"wake_reason":"","exit_reason":"running","zero_reads":0,"zero_writes":0,"read_errors":0,"write_errors":0,"parse_errors":0,"eventfd_wakeups":0,"signal_wakeups":0,"owner_close_wakeups":0}
 11-24 14:20:06.589 19142 19142 I A03201/com.deskmate.gate1probe/Gate1Device: stop eventfd: {"ok":true,"message":"worker joined; ArkTS may closeAccessory","mode":"eventfd","running":false,"stop_to_wake_us":-1,"stop_to_worker_exit_ms":-1,"wake_reason":"","exit_reason":"read-error","zero_reads":0,"zero_writes":0,"read_errors":1,"write_errors":0,"parse_errors":0,"eventfd_wakeups":0,"signal_wakeups":0,"owner_close_wakeups":0}
 11-24 14:20:06.590 19142 19142 I A03201/com.deskmate.gate1probe/Gate1Device: closeAccessory after joined eventfd

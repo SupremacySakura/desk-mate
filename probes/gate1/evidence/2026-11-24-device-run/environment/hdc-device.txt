@@ -5,7 +5,7 @@ udid of current device is :
 command=shell param get const.ohos.apiversion
 26 
 command=shell param get const.product.software.version
-MRDIL-W00 7.0.0.111(SP8C00E111R6P3) 
+MRDIL-W00 7.0.0.111(<redacted-serial>) 
 command=shell param get const.product.model
 MRDI-W00 
 command=shell param get const.product.name

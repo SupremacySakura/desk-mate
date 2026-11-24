@@ -95,7 +95,7 @@ def valid_pending_report():
                 "model": "MRDI-W00",
                 "product_name": "HUAWEI MatePad Pro",
                 "serial": "<redacted-serial>",
-                "software_version": "MRDIL-W00 7.0.0.111(SP8C00E111R6P3)",
+                "software_version": "MRDIL-W00 7.0.0.111(<redacted-serial>)",
                 "os_version": "7.0.0",
                 "api_version": "26",
             },
@@ -334,7 +334,7 @@ def archive_passed_evidence(report, directory):
                 "model": "MRDI-W00",
                 "product_name": "HUAWEI MatePad Pro",
                 "serial": "<redacted-serial>",
-                "software_version": "MRDIL-W00 7.0.0.111(SP8C00E111R6P3)",
+                "software_version": "MRDIL-W00 7.0.0.111(<redacted-serial>)",
                 "os_version": "7.0.0",
                 "api_version": "26",
                 "interface_names": ["lo", "en7"],
@@ -681,7 +681,7 @@ def ioreg_realtek_fixture():
       |
       +-o USB 10/100/1G/2.5G LAN@01210000  <class IOUSBHostDevice, id 0x4, retain 88>
         | {
-        |   "USB Serial Number" = "4013000001"
+        |   "USB Serial Number" = "unrelated-nic-serial"
         |   "USB Vendor Name" = "Realtek"
         |   "USB Product Name" = "USB 10/100/1G/2.5G LAN"
         |   "UsbLinkSpeed" = 5000000000
@@ -1031,7 +1031,7 @@ round-trip min/avg/max/stddev = 1.000/2.750/5.000/1.479 ms
             self.assertEqual(interface["driver_family"], "ncm")
             self.assertEqual(interface["driver_bundle_id"], "com.apple.driver.usb.cdc.ncm")
             self.assertTrue(interface["native_bundled_driver"])
-            self.assertEqual(interface["usb_serial"], "4013000001")
+            self.assertEqual(interface["usb_serial"], "unrelated-nic-serial")
             self.assertEqual(interface["usb_vendor"], "Realtek")
             self.assertFalse(interface["associated_to_target_device"])
             self.assertIsNone(inventory["associated_interface"])
@@ -1595,7 +1595,7 @@ round-trip min/avg/max/stddev = 1.000/2.750/5.000/1.479 ms
                         "model": "MRDI-W00",
                         "product_name": "HUAWEI MatePad Pro",
                         "serial": "<redacted-serial>",
-                        "software_version": "MRDIL-W00 7.0.0.111(SP8C00E111R6P3)",
+                        "software_version": "MRDIL-W00 7.0.0.111(<redacted-serial>)",
                         "os_version": "7.0.0",
                         "api_version": "26",
                         "interface_names": ["lo", "wlan0", "chba0"],

@@ -6,7 +6,7 @@
 
 **Status:** needs-info
 
-- [x] 记录 MatePad/HarmonyOS Build、Mac、线缆、直连拓扑及实际协商 USB 2.0/3.x 速率。
+- [ ] 记录 Reference Link 直连拓扑及实际协商速率（本轮为 USB2.1 Hub / 480 Mbps，非直连，线缆标识未采集）。
 - [x] 最小双端探针完成 AOA 请求、重枚举、配件授权和持续双向吞吐测试。
 - [x] 验证拆包、粘包、ZLP 和异常断流在 accessoryFd 读写中的实际表现。
 - [x] 依次验证 poll/eventfd、无 SA_RESTART 的定向信号、官方 closeAccessory 的唤醒行为；C++ 不直接关闭 accessoryFd。

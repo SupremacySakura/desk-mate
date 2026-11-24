@@ -14,7 +14,7 @@ Gate 1 通过。以下区分"已实测的功能事实"与"未满足的基准条�
 | Host | MacBook Air `Mac16,12`，Apple M4，16 GB | `environment/host.txt` |
 | macOS | 27.3（build `26C5047e`） | `environment/host.txt` |
 | Device | HUAWEI MatePad Pro `MRDI-W00` | `environment/hdc-device.txt` |
-| 系统 | OpenHarmony 7.0.0.111（`MRDIL-W00 7.0.0.111(SP8C00E111R6P3)`） | `environment/hdc-device.txt` |
+| 系统 | OpenHarmony 7.0.0.111（`MRDIL-W00 7.0.0.111(<redacted-serial>)`） | `environment/hdc-device.txt` |
 | API | 26 | `environment/hdc-device.txt` |
 | 面板 | 2800×1840 | 任务简报 |
 | 链路 | **经 USB2.1 Hub，480 Mbps（USB 2.0 High-Speed）** | `environment/usb-tree.txt`、host JSON `device.speed` |
@@ -192,10 +192,15 @@ Host 同时取消 Bulk IN/OUT，事件循环持续到 `active_transfers == 0` �
 | `device-owner-close-result.json` | owner-close 分支设备侧停止后统计（权威） |
 | `device-owner-close-prestop.json` | owner-close 分支传输中统计快照 |
 | `hilog-gate1-owner-close.txt` | owner-close 分支设备日志 |
-| `branch-signal.json/.log` | signal 分支 Host 侧结果（失败轮） |
+| `branch-signal.json/.log` | 另一轮 signal 握手超时记录（**不是**唤醒轮证据） |
 | `eventfd-host-v2..v12.*` | 逐轮排查记录（编码、读缓冲、ZLP、重同步、帧对齐） |
 | `read-only-v1.log` | IN 方向隔离实验 |
 
-**注意**：`device-signal.log` 与 `hilog-gate1-signal.txt` 来自不同轮次，不作为
-同轮配对证据；signal 分支结论仅依据 Host 侧 JSON 与同轮 hilog 中的
-`read failed: errno=5` 记录。
+**注意（signal 分支证据链）**：本目录**没有** signal 分支的 Host 侧成功轮
+JSON，也没有单独的 `device-signal.log` / `hilog-gate1-signal.txt`。仓库内的
+`branch-signal.json/.log` 是另一轮失败记录（握手 150 s 超时、0 字节），**不能**
+当作 signal 唤醒的证据。signal 分支唯一可核对的设备侧记录在
+`hilog-gate1-owner-close.txt` 第 2 行：同一应用进程（PID 41495）在 owner-close
+轮开始前，`stop signal` 返回 `last_read_errno=5`、`exit_reason=read-error`、
+`signal_wakeups=0`。因此该分支结论按「实测失败、缺少同轮 Host 配对工件」记录，
+不声称有完整证据链。

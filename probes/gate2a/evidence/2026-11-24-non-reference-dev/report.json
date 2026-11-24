@@ -2,11 +2,11 @@
   "artifacts": [
     {
       "path": "raw/commands.json",
-      "sha256": "ae19ff9c25c04ee476a3a4823658fa7122b23cc7c42be7ca07fd888c341edaa9"
+      "sha256": "84ebea66382bd819a68c426ad4bf7237f8ce0afa9a8537c1a608ae453eb15fed"
     },
     {
       "path": "raw/device.json",
-      "sha256": "2a45a9c239efea709d01637995b69e978d7a4eb2923b99a4bb3873bc13c8d289"
+      "sha256": "dc7076b1a9459ac27041013fb082a38c1c705c5fb24c681d1678716dbcee0f2a"
     },
     {
       "path": "raw/hdc-api_version.txt",
@@ -30,11 +30,11 @@
     },
     {
       "path": "raw/hdc-software_version.txt",
-      "sha256": "4975d47cae4102cb6284d81c2f621fbfc8b50648c120bab42bde1e39eb7c60f1"
+      "sha256": "f5f3998e58d3c5af2714b6ab79a9b377e107f1cb41b1380c43814deede75dc84"
     },
     {
       "path": "raw/hdc-targets.txt",
-      "sha256": "f87eb26e78e5e596f540dc26289cf24152c54df5d6fe920b9dd87973a044f3af"
+      "sha256": "d7cdf9809114dfb9a8a0eeeb6b14945f25cfe33c000204fb9cf81b5cdcf7a2d0"
     },
     {
       "path": "raw/host.json",
@@ -50,7 +50,7 @@
     },
     {
       "path": "raw/ioreg-interfaces.txt",
-      "sha256": "b46b26fbaa982d9d372b18b11a451605cf44167587c8f35ffe9e8fa8488ea82f"
+      "sha256": "32c899f00d156e050043c3773a0df8ba8b50599b4e71bd99cc23a599fdfba4ad"
     },
     {
       "path": "raw/ioreg-ncm.txt",
@@ -58,7 +58,7 @@
     },
     {
       "path": "raw/ioreg-usb.txt",
-      "sha256": "ee684ce113d77a33fbfb65e6d4c80cba38bffbea11d531e027054cd4a5479ff5"
+      "sha256": "b35e3bb96d749f422d2bebbc8c8b1c7f8da84bbf4daec5e317ac68c5aa35c2b1"
     },
     {
       "path": "raw/networksetup-hardware-ports.txt",
@@ -135,7 +135,7 @@
         "usb_id_product": 33110,
         "usb_id_vendor": 3034,
         "usb_product": "USB 10_100_1G_2_5G LAN",
-        "usb_serial": "4013000001",
+        "usb_serial": "<redacted-serial>",
         "usb_topology": {
           "ancestors": [
             {
@@ -207,7 +207,7 @@
             "name": "USB 10/100/1G/2.5G LAN",
             "owner": null,
             "product": "USB 10_100_1G_2_5G LAN",
-            "serial": "4013000001",
+            "serial": "<redacted-serial>",
             "vendor": "Realtek"
           }
         },
@@ -449,7 +449,7 @@
       "os_version": "7.0.0",
       "product_name": "HUAWEI MatePad Pro",
       "serial": "<redacted-serial>",
-      "software_version": "MRDIL-W00 7.0.0.111(SP8C00E111R6P3)"
+      "software_version": "MRDIL-W00 7.0.0.111(<redacted-serial>)"
     },
     "host": {
       "architecture": "arm64",

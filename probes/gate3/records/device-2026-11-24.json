@@ -8,7 +8,7 @@
     "product_name_live": "HUAWEI MatePad Pro",
     "serial": "<redacted-serial>",
     "osFullName": "OpenHarmony-7.0.0.111",
-    "software_version_live": "MRDIL-W00 7.0.0.111(SP8C00E111R6P3)",
+    "software_version_live": "MRDIL-W00 7.0.0.111(<redacted-serial>)",
     "sdkApiVersion": 26,
     "resolution": "2800x1840",
     "resolution_source": "hdc hidumper RenderService screen[0] render resolution and activeMode",
@@ -209,7 +209,7 @@
   },
   "evidence": {
     "directory": "probes/gate3/evidence/2026-11-24-device-run",
-    "suite_evidence_sha256": "4556123a4496b975bd9778dccd3c8b7ea87a062d87b5cb49847bb4fe2e8d1771",
+    "suite_evidence_sha256": "226e13fcb46e81cd69e328590b19ddb46704f371464a75672a7fcec020f58352",
     "files": [
       "REPORT.md",
       "hdc-identity.log",

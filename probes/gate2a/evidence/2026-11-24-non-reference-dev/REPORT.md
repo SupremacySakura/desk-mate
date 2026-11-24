@@ -27,7 +27,7 @@ USB 仅协商 `480 Mbps`，且 HDC 路径包含 USB Hub。因此本次记录不�
 | macOS | `27.3`，build `26C5047e`，`arm64` | `sw_vers` / `uname` |
 | Device | `MRDI-W00`，`HUAWEI MatePad Pro` | `hdc` 只读参数 |
 | Device 序列号 | `<redacted-serial>` | `hdc` / USB serial |
-| Device 系统 | `MRDIL-W00 7.0.0.111(SP8C00E111R6P3)` | `const.product.software.version` |
+| Device 系统 | `MRDIL-W00 7.0.0.111(<redacted-serial>)` | `const.product.software.version` |
 | OpenHarmony / API | `7.0.0` / `26` | `hdc` 只读参数 |
 | USB 连接 | `USB` / `Connected` | `hdc list targets -v` |
 
@@ -63,7 +63,7 @@ Host 上另有 `en5`：
 - 厂商/型号：Realtek `USB 10/100/1G/2.5G LAN`；
 - 驱动：`AppleUSBNCMControl` / `com.apple.driver.usb.cdc.ncm`；
 - macOS 网络服务：`USB 10/100/1G/2.5G LAN`；
-- USB 序列号：`4013000001`；
+- USB 序列号：`<redacted-serial>`；
 - 协商速率：`5000 Mbps`。
 
 该接口虽然是原生免驱 NCM，但不属于目标 Device，已按序列号排除。

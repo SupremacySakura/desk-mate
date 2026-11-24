@@ -2,7 +2,7 @@
 --- param
 const.product.model=MRDI-W00 
 const.product.name=HUAWEI MatePad Pro 
-const.product.software.version=MRDIL-W00 7.0.0.111(SP8C00E111R6P3) 
+const.product.software.version=MRDIL-W00 7.0.0.111(<redacted-serial>) 
 const.ohos.fullname=OpenHarmony-7.0.0.111 
 const.ohos.apiversion=26 
 --- screen
