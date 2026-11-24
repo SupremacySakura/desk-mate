@@ -1,0 +1,9 @@
+{
+  "displays" : [
+
+  ],
+  "liveActionsExecuted" : false,
+  "mainDisplayID" : 0,
+  "note" : "CoreGraphics returned no online display or a null main display. This process likely lacks WindowServer access; run the inventory from the Reference Host's logged-in desktop session.",
+  "status" : "unavailable"
+}

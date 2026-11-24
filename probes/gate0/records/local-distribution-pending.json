@@ -1,0 +1,31 @@
+{
+  "schemaVersion": 1,
+  "probe": "deskmate-gate0-distribution",
+  "generatedAt": "2026-11-24T04:08:38Z",
+  "mode": "dry-run",
+  "status": "pending",
+  "liveActionsExecuted": false,
+  "app": "/private/tmp/deskmate-wt/05-gate0/probes/gate0/build/Gate0Probe.app",
+  "appExists": true,
+  "executableExists": true,
+  "bundleID": "dev.deskmate.gate0-probe",
+  "checks": {
+    "developerIDIdentityFound": false,
+    "notarytoolAvailable": true,
+    "gatekeeperAssessmentEnabled": true,
+    "signing": "not-executed",
+    "notarization": "not-executed",
+    "stapler": "not-executed",
+    "gatekeeper": "not-executed"
+  },
+  "missing": [
+    "Developer ID Application identity",
+    "notarytool keychain profile"
+  ],
+  "notExecuted": [
+    "Developer ID signing",
+    "Apple notarization",
+    "Stapler ticket attachment",
+    "Gatekeeper launch assessment"
+  ]
+}
