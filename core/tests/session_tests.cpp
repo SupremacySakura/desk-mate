@@ -41,24 +41,38 @@ int failures = 0;
   } while (false)
 
 using deskmate::protocol::CapabilitySet;
+using deskmate::protocol::ClockEstimate;
+using deskmate::protocol::ClockMessage;
+using deskmate::protocol::ClockMessageKind;
+using deskmate::protocol::ClockSample;
+using deskmate::protocol::ClockSyncEstimator;
 using deskmate::protocol::ControlMessage;
 using deskmate::protocol::ControlOpcode;
 using deskmate::protocol::DeviceSession;
 using deskmate::protocol::DeviceSessionConfig;
 using deskmate::protocol::DisplayResolution;
 using deskmate::protocol::BoundaryResult;
+using deskmate::protocol::AccessoryFdOwner;
 using deskmate::protocol::DeviceBoundary;
 using deskmate::protocol::Header;
 using deskmate::protocol::HostSession;
 using deskmate::protocol::HostSessionConfig;
+using deskmate::protocol::HostEvent;
+using deskmate::protocol::HostInputState;
+using deskmate::protocol::HostVideoState;
+using deskmate::protocol::SurfaceLease;
+using deskmate::protocol::SurfaceOwner;
+using deskmate::protocol::SurfaceReferenceOps;
 using deskmate::protocol::IoResult;
 using deskmate::protocol::IoStatus;
 using deskmate::protocol::ManualClock;
 using deskmate::protocol::NegotiatedStream;
 using deskmate::protocol::PixelFormat;
+using deskmate::protocol::ReconfigurationPhase;
 using deskmate::protocol::StreamProfile;
 using deskmate::protocol::SessionFailure;
 using deskmate::protocol::SessionState;
+using deskmate::protocol::SessionCommandStatus;
 using deskmate::protocol::VideoEncoder;
 using deskmate::protocol::VideoSendStatus;
 
@@ -100,7 +114,13 @@ class BytePipe {
 
 class DirectedIo final : public deskmate::protocol::ByteIo {
  public:
-  DirectedIo(BytePipe& inbound, BytePipe& outbound) : inbound_(inbound), outbound_(outbound) {}
+  DirectedIo(BytePipe& inbound, BytePipe& outbound,
+             std::vector<std::string>* events = nullptr,
+             std::string label = {})
+      : inbound_(inbound),
+        outbound_(outbound),
+        events_(events),
+        label_(std::move(label)) {}
 
   IoResult read(std::span<std::uint8_t> destination) override {
     return inbound_.read(destination);
@@ -108,10 +128,17 @@ class DirectedIo final : public deskmate::protocol::ByteIo {
   IoResult write(std::span<const std::uint8_t> source) override {
     return outbound_.write(source);
   }
+  void cancel() override {
+    if (events_ != nullptr) {
+      events_->push_back(label_ + ".io.cancel");
+    }
+  }
 
  private:
   BytePipe& inbound_;
   BytePipe& outbound_;
+  std::vector<std::string>* events_;
+  std::string label_;
 };
 
 std::vector<ControlMessage> decode_controls(const BytePipe& pipe) {
@@ -395,11 +422,14 @@ void test_host_cannot_send_new_stream_video_before_committed() {
 
 struct SessionPair {
   SessionPair(HostSessionConfig host_config, DeviceSessionConfig device_config,
-              deskmate::protocol::DeviceBoundary* boundary = nullptr)
-      : host_io(device_to_host, host_to_device),
-        device_io(host_to_device, device_to_host),
-        host(host_io, clock, host_config),
-        device(device_io, clock, device_config, boundary) {}
+              deskmate::protocol::DeviceBoundary* boundary = nullptr,
+              deskmate::protocol::HostBoundary* host_boundary = nullptr,
+              SurfaceOwner* surface = nullptr,
+              std::vector<std::string>* events = nullptr)
+      : host_io(device_to_host, host_to_device, events, "host"),
+        device_io(host_to_device, device_to_host, events, "device"),
+        host(host_io, clock, host_config, host_boundary),
+        device(device_io, clock, device_config, boundary, surface) {}
 
   void start() {
     host.start();
@@ -480,16 +510,94 @@ class RecordingBoundary final : public DeviceBoundary {
     return commit_result;
   }
 
+  void discard_prepared_stream(std::uint32_t config_id) override {
+    ++discard_calls;
+    discarded_config_id = config_id;
+    record("discard");
+  }
+
+  void rollback_stream(std::uint32_t config_id,
+                       std::uint32_t video_stream_id) override {
+    ++rollback_calls;
+    rolled_back_config_id = config_id;
+    rolled_back_stream_id = video_stream_id;
+    record("rollback");
+  }
+
+  void release_stream(std::uint32_t config_id,
+                      std::uint32_t video_stream_id) override {
+    ++release_calls;
+    released_config_id = config_id;
+    released_stream_id = video_stream_id;
+    record("release");
+  }
+
+  void drain_callbacks() override {
+    ++drain_calls;
+    record("drain");
+  }
+
+  void record(std::string event) {
+    if (events != nullptr) {
+      events->push_back("device." + std::move(event));
+    }
+  }
+
   BoundaryResult prepare_result{BoundaryResult::Ok};
   BoundaryResult commit_result{BoundaryResult::Ok};
   int prepare_calls{};
   int commit_calls{};
+  int discard_calls{};
+  int rollback_calls{};
+  int release_calls{};
+  int drain_calls{};
   bool stream_active{};
   std::optional<StreamProfile> prepared_profile;
   std::optional<std::uint32_t> prepared_config_id;
   std::optional<StreamProfile> committed_profile;
   std::optional<std::uint32_t> committed_config_id;
   std::optional<std::uint32_t> committed_stream_id;
+  std::optional<std::uint32_t> discarded_config_id;
+  std::optional<std::uint32_t> rolled_back_config_id;
+  std::optional<std::uint32_t> rolled_back_stream_id;
+  std::optional<std::uint32_t> released_config_id;
+  std::optional<std::uint32_t> released_stream_id;
+  std::vector<std::string>* events{};
+};
+
+class RecordingHostBoundary final : public deskmate::protocol::HostBoundary {
+ public:
+  void set_capture_encoding_intent(bool enabled) override {
+    capture_encoding_intent = enabled;
+    record(enabled ? "capture_on" : "capture_off");
+  }
+
+  void set_input_injection_intent(bool enabled) override {
+    input_injection_intent = enabled;
+    record(enabled ? "input_on" : "input_off");
+  }
+
+  void destroy_extended_display() override {
+    ++display_destroy_calls;
+    record("destroy");
+  }
+
+  void drain_callbacks() override {
+    ++drain_calls;
+    record("drain");
+  }
+
+  void record(std::string event) {
+    if (events != nullptr) {
+      events->push_back("host." + std::move(event));
+    }
+  }
+
+  bool capture_encoding_intent{};
+  bool input_injection_intent{};
+  int display_destroy_calls{};
+  int drain_calls{};
+  std::vector<std::string>* events{};
 };
 
 void append_packet(BytePipe& pipe, std::uint32_t session_nonce,
@@ -820,6 +928,851 @@ void test_session_payload_helpers_round_trip_and_reject_bad_encodings() {
   CHECK(!deskmate::protocol::decode_stream_profile(zero_resolution));
 }
 
+void test_pause_acks_immediately_stops_host_intent_and_resume_renegotiates() {
+  RecordingBoundary boundary;
+  RecordingHostBoundary host_boundary;
+  SessionPair pair(default_host_config(), default_device_config(), &boundary,
+                   &host_boundary);
+  drive_to_committed(pair);
+  CHECK(host_boundary.capture_encoding_intent);
+  CHECK(host_boundary.input_injection_intent);
+
+  CHECK_EQ(pair.host.send_video_frame(std::vector<std::uint8_t>{0x10}, 1, true),
+           VideoSendStatus::Sent);
+  pair.host.pump();
+  pair.device.pump();
+  CHECK_EQ(static_cast<int>(pair.device.state()),
+           static_cast<int>(SessionState::Streaming));
+  CHECK_EQ(pair.device.take_video_frames().size(), 1U);
+
+  CHECK_EQ(pair.host.pause(), SessionCommandStatus::Ok);
+  CHECK_EQ(static_cast<int>(pair.host.state()), static_cast<int>(SessionState::Paused));
+  CHECK(!host_boundary.capture_encoding_intent);
+  CHECK(!host_boundary.input_injection_intent);
+  CHECK(!host_boundary.capture_encoding_intent);
+  CHECK_EQ(pair.host.send_video_frame(std::vector<std::uint8_t>{0x11}, 2, false),
+           VideoSendStatus::Paused);
+
+  pair.host.pump();
+  pair.device.pump();
+  CHECK_EQ(static_cast<int>(pair.device.state()), static_cast<int>(SessionState::Paused));
+  const auto device_controls = decode_controls(pair.device_to_host);
+  CHECK(!device_controls.empty());
+  CHECK_EQ(static_cast<int>(device_controls.back().opcode),
+           static_cast<int>(ControlOpcode::PauseAck));
+  pair.host.pump();
+  CHECK(pair.host.pause_acknowledged());
+
+  const StreamProfile resumed_profile{
+      VideoEncoder::H264, PixelFormat::Nv12, DisplayResolution{1920, 1200, 60}};
+  CHECK_EQ(pair.host.resume(resumed_profile, 2, 0x99999999),
+           SessionCommandStatus::Ok);
+  CHECK_EQ(static_cast<int>(pair.host.state()),
+           static_cast<int>(SessionState::Reconfiguring));
+  pair.host.pump();
+  pair.device.pump();
+  pair.host.pump();
+  pair.device.pump();
+  pair.host.pump();
+
+  CHECK_EQ(static_cast<int>(pair.host.state()),
+           static_cast<int>(SessionState::Streaming));
+  CHECK_EQ(static_cast<int>(pair.device.state()),
+           static_cast<int>(SessionState::AwaitingFirstIdr));
+  CHECK(host_boundary.capture_encoding_intent);
+  CHECK(host_boundary.input_injection_intent);
+  CHECK(pair.host.negotiated_stream().has_value());
+  CHECK_EQ(pair.host.negotiated_stream()->config_id, 2U);
+  CHECK_EQ(pair.host.negotiated_stream()->video_stream_id, 0x99999999U);
+
+  const auto host_controls = decode_controls(pair.host_to_device);
+  CHECK(std::any_of(host_controls.begin(), host_controls.end(),
+                    [](const ControlMessage& control) {
+                      return control.opcode == ControlOpcode::Resume;
+                    }));
+  CHECK(std::any_of(host_controls.begin(), host_controls.end(),
+                    [](const ControlMessage& control) {
+                      return control.opcode == ControlOpcode::StreamPrepare &&
+                             control.config_id == 2;
+                    }));
+  CHECK_EQ(pair.host.send_video_frame(std::vector<std::uint8_t>{0x12}, 3, true),
+           VideoSendStatus::Sent);
+  pair.host.pump();
+  pair.device.pump();
+  CHECK_EQ(static_cast<int>(pair.device.state()),
+           static_cast<int>(SessionState::Streaming));
+  CHECK_EQ(pair.device.take_video_frames().size(), 1U);
+}
+
+void test_heartbeat_emits_each_second_and_three_second_silence_fails() {
+  {
+    SessionPair pair(default_host_config(), default_device_config());
+    drive_to_committed(pair);
+    pair.clock.advance_ns(deskmate::protocol::kHeartbeatIntervalNs);
+    pair.host.pump();
+    const auto controls = decode_controls(pair.host_to_device);
+    CHECK(std::count_if(controls.begin(), controls.end(),
+                        [](const ControlMessage& control) {
+                          return control.opcode == ControlOpcode::Heartbeat;
+                        }) == 1);
+  }
+  {
+    SessionPair pair(default_host_config(), default_device_config());
+    drive_to_committed(pair);
+    pair.clock.advance_ns(deskmate::protocol::kPeerSilenceTimeoutNs);
+    pair.host.pump();
+    CHECK_EQ(static_cast<int>(pair.host.state()),
+             static_cast<int>(SessionState::Failed));
+    CHECK_EQ(static_cast<int>(*pair.host.failure()),
+             static_cast<int>(SessionFailure::HeartbeatTimeout));
+  }
+}
+
+void drive_to_streaming_with_first_idr(SessionPair& pair) {
+  drive_to_committed(pair);
+  CHECK_EQ(pair.host.send_video_frame(std::vector<std::uint8_t>{0x01}, 1, true),
+           VideoSendStatus::Sent);
+  pair.host.pump();
+  pair.device.pump();
+  CHECK_EQ(static_cast<int>(pair.device.state()),
+           static_cast<int>(SessionState::Streaming));
+  CHECK_EQ(pair.device.take_video_frames().size(), 1U);
+}
+
+void test_streaming_reconfiguration_keeps_old_until_committed_and_is_idempotent() {
+  RecordingBoundary boundary;
+  SessionPair pair(default_host_config(), default_device_config(), &boundary);
+  drive_to_streaming_with_first_idr(pair);
+  CHECK(pair.host.negotiated_stream().has_value());
+  const NegotiatedStream old_stream = *pair.host.negotiated_stream();
+
+  const StreamProfile replacement{
+      VideoEncoder::H264, PixelFormat::Nv12, DisplayResolution{1920, 1200, 60}};
+  CHECK_EQ(pair.host.reconfigure(replacement, 2, 0xABCDEF01),
+           SessionCommandStatus::Ok);
+  CHECK_EQ(static_cast<int>(pair.host.state()),
+           static_cast<int>(SessionState::Reconfiguring));
+  CHECK(pair.host.negotiated_stream().has_value());
+  CHECK(*pair.host.negotiated_stream() == old_stream);
+  CHECK_EQ(pair.host.reconfigure(replacement, 2, 0xABCDEF01),
+           SessionCommandStatus::Duplicate);
+  CHECK_EQ(boundary.prepare_calls, 1);
+
+  CHECK_EQ(pair.host.send_video_frame(std::vector<std::uint8_t>{0x02}, 2, false),
+           VideoSendStatus::Sent);
+  pair.host.pump();
+  pair.device.pump();
+  CHECK_EQ(boundary.prepare_calls, 2);
+  CHECK_EQ(static_cast<int>(pair.device.state()),
+           static_cast<int>(SessionState::Reconfiguring));
+  CHECK(pair.device.negotiated_stream().has_value());
+  CHECK(*pair.device.negotiated_stream() == old_stream);
+
+  pair.host.pump();
+  pair.device.pump();
+  pair.host.pump();
+  CHECK_EQ(static_cast<int>(pair.host.state()),
+           static_cast<int>(SessionState::Streaming));
+  CHECK_EQ(pair.host.negotiated_stream()->video_stream_id, 0xABCDEF01U);
+  CHECK_EQ(pair.host.negotiated_stream()->config_id, 2U);
+  CHECK_EQ(static_cast<int>(pair.device.state()),
+           static_cast<int>(SessionState::AwaitingFirstIdr));
+  CHECK(pair.device.negotiated_stream().has_value());
+  CHECK(*pair.device.negotiated_stream() == old_stream);
+
+  CHECK_EQ(pair.host.send_video_frame(std::vector<std::uint8_t>{0x03}, 3, true),
+           VideoSendStatus::Sent);
+  pair.host.pump();
+  pair.device.pump();
+  CHECK_EQ(static_cast<int>(pair.device.state()),
+           static_cast<int>(SessionState::Streaming));
+  CHECK_EQ(pair.device.negotiated_stream()->config_id, 2U);
+  CHECK_EQ(pair.device.negotiated_stream()->video_stream_id, 0xABCDEF01U);
+
+  CHECK_EQ(pair.host.reconfigure(replacement, 2, 0xABCDEF01),
+           SessionCommandStatus::Duplicate);
+  CHECK_EQ(boundary.prepare_calls, 2);
+  CHECK_EQ(boundary.commit_calls, 2);
+  CHECK_EQ(boundary.discard_calls, 0);
+  CHECK_EQ(boundary.rollback_calls, 0);
+}
+
+void test_reconfiguration_failure_keeps_old_stream() {
+  RecordingBoundary boundary;
+  SessionPair pair(default_host_config(), default_device_config(), &boundary);
+  drive_to_streaming_with_first_idr(pair);
+  const NegotiatedStream old_stream = *pair.host.negotiated_stream();
+  boundary.prepare_result = BoundaryResult::Failed;
+
+  const StreamProfile replacement{
+      VideoEncoder::H264, PixelFormat::Nv12, DisplayResolution{1920, 1200, 60}};
+  CHECK_EQ(pair.host.reconfigure(replacement, 2, 0x12345678),
+           SessionCommandStatus::Ok);
+  pair.host.pump();
+  pair.device.pump();
+
+  CHECK_EQ(static_cast<int>(pair.device.state()),
+           static_cast<int>(SessionState::Streaming));
+  CHECK(pair.device.negotiated_stream().has_value());
+  CHECK(*pair.device.negotiated_stream() == old_stream);
+  CHECK_EQ(boundary.prepare_calls, 2);
+  CHECK_EQ(boundary.discard_calls, 0);
+
+  pair.host.pump();
+  CHECK_EQ(static_cast<int>(pair.host.state()),
+           static_cast<int>(SessionState::Streaming));
+  CHECK(pair.host.reconfiguration().has_value());
+  CHECK_EQ(static_cast<int>(pair.host.reconfiguration()->phase),
+           static_cast<int>(ReconfigurationPhase::Failed));
+  CHECK(pair.host.negotiated_stream().has_value());
+  CHECK(*pair.host.negotiated_stream() == old_stream);
+
+  CHECK_EQ(pair.host.send_video_frame(std::vector<std::uint8_t>{0x04}, 4, false),
+           VideoSendStatus::Sent);
+  pair.host.pump();
+  pair.device.pump();
+  const auto frames = pair.device.take_video_frames();
+  CHECK_EQ(frames.size(), 1U);
+  CHECK_EQ(frames[0].header.video_stream_id, old_stream.video_stream_id);
+}
+
+void test_each_running_reconfiguration_stage_timeout_or_failure_preserves_old_stream() {
+  const StreamProfile replacement{
+      VideoEncoder::H264, PixelFormat::Nv12, DisplayResolution{1920, 1200, 60}};
+  {
+    SessionPair pair(default_host_config(), default_device_config());
+    drive_to_streaming_with_first_idr(pair);
+    CHECK_EQ(pair.host.reconfigure(replacement, 2, 0x20000001),
+             SessionCommandStatus::Ok);
+    pair.clock.advance_ns(deskmate::protocol::kHandshakeStageTimeoutNs);
+    pair.host.pump();
+    CHECK_EQ(static_cast<int>(pair.host.state()),
+             static_cast<int>(SessionState::Streaming));
+    CHECK_EQ(pair.host.negotiated_stream()->config_id, 1U);
+    CHECK_EQ(static_cast<int>(pair.host.reconfiguration()->phase),
+             static_cast<int>(ReconfigurationPhase::Failed));
+    CHECK_EQ(static_cast<int>(*pair.host.reconfiguration()->failure),
+             static_cast<int>(SessionFailure::ReadyTimeout));
+  }
+  {
+    SessionPair pair(default_host_config(), default_device_config());
+    drive_to_streaming_with_first_idr(pair);
+    CHECK_EQ(pair.host.reconfigure(replacement, 2, 0x20000002),
+             SessionCommandStatus::Ok);
+    pair.host.pump();
+    pair.device.pump();
+    pair.host.pump();
+    pair.clock.advance_ns(deskmate::protocol::kHandshakeStageTimeoutNs);
+    pair.host.pump();
+    CHECK_EQ(static_cast<int>(pair.host.state()),
+             static_cast<int>(SessionState::Streaming));
+    CHECK_EQ(pair.host.negotiated_stream()->config_id, 1U);
+    CHECK_EQ(static_cast<int>(*pair.host.reconfiguration()->failure),
+             static_cast<int>(SessionFailure::CommittedTimeout));
+  }
+  {
+    RecordingBoundary boundary;
+    SessionPair pair(default_host_config(), default_device_config(), &boundary);
+    drive_to_streaming_with_first_idr(pair);
+    boundary.commit_result = BoundaryResult::Failed;
+    CHECK_EQ(pair.host.reconfigure(replacement, 2, 0x20000003),
+             SessionCommandStatus::Ok);
+    pair.host.pump();
+    pair.device.pump();
+    pair.host.pump();
+    pair.device.pump();
+    pair.host.pump();
+    CHECK_EQ(static_cast<int>(pair.device.state()),
+             static_cast<int>(SessionState::Streaming));
+    CHECK_EQ(pair.device.negotiated_stream()->config_id, 1U);
+    CHECK_EQ(boundary.discard_calls, 1);
+    CHECK_EQ(static_cast<int>(pair.host.state()),
+             static_cast<int>(SessionState::Streaming));
+    CHECK_EQ(pair.host.negotiated_stream()->config_id, 1U);
+  }
+  {
+    SessionPair pair(default_host_config(), default_device_config());
+    drive_to_streaming_with_first_idr(pair);
+    CHECK_EQ(pair.host.reconfigure(replacement, 2, 0x20000004),
+             SessionCommandStatus::Ok);
+    pair.host.pump();
+    pair.device.pump();
+    pair.clock.advance_ns(deskmate::protocol::kHandshakeStageTimeoutNs);
+    pair.device.pump();
+    CHECK_EQ(static_cast<int>(pair.device.state()),
+             static_cast<int>(SessionState::Streaming));
+    CHECK_EQ(pair.device.negotiated_stream()->config_id, 1U);
+  }
+}
+
+void test_four_timestamp_clock_estimator_reports_offset_rtt_drift_and_bound() {
+  ClockSyncEstimator estimator;
+  CHECK(estimator.observe(
+      ClockSample{1'000, 2'100, 2'600, 1'700}));
+  CHECK(estimator.estimate().has_value());
+  ClockEstimate estimate = *estimator.estimate();
+  CHECK_EQ(estimate.offset_ns, 1'000);
+  CHECK_EQ(estimate.rtt_ns, 200U);
+  CHECK_EQ(estimate.error_bound_ns, 100U);
+  CHECK_EQ(estimate.drift_ppb, 0);
+  CHECK_EQ(estimate.sample_count, 1U);
+
+  CHECK(estimator.observe(ClockSample{
+      1'000'001'000, 1'000'003'100, 1'000'003'600, 1'000'001'700}));
+  estimate = *estimator.estimate();
+  CHECK_EQ(estimate.offset_ns, 2'000);
+  CHECK_EQ(estimate.rtt_ns, 200U);
+  CHECK_EQ(estimate.error_bound_ns, 100U);
+  CHECK_EQ(estimate.drift_ppb, 1'000);
+  CHECK_EQ(estimate.sample_count, 2U);
+
+  CHECK(!estimator.observe(ClockSample{100, 200, 150, 300}));
+  const auto encoded = deskmate::protocol::encode_clock_message(
+      ClockMessage{ClockMessageKind::Response, 1, 2, 3});
+  CHECK(encoded);
+  CHECK_EQ(encoded.value().size(), 28U);
+  const auto decoded =
+      deskmate::protocol::decode_clock_message(encoded.value());
+  CHECK(decoded);
+  CHECK(decoded.value().kind == ClockMessageKind::Response);
+  CHECK_EQ(decoded.value().t0_ns, 1U);
+  CHECK_EQ(decoded.value().t1_ns, 2U);
+  CHECK_EQ(decoded.value().t2_ns, 3U);
+}
+
+void test_clock_exchange_over_session_messages_produces_estimate() {
+  SessionPair pair(default_host_config(), default_device_config());
+  drive_to_streaming_with_first_idr(pair);
+  const std::size_t before = pair.host_to_device.bytes().size();
+
+  CHECK_EQ(pair.host.request_clock_sync(), SessionCommandStatus::Ok);
+  pair.host.pump();
+  pair.device.pump();
+  pair.host.pump();
+
+  CHECK(pair.host.clock_estimate().has_value());
+  CHECK_EQ(pair.host.clock_estimate()->offset_ns, 0);
+  CHECK_EQ(pair.host.clock_estimate()->rtt_ns, 0U);
+  CHECK_EQ(pair.host.clock_estimate()->sample_count, 1U);
+
+  std::size_t offset = before;
+  std::size_t clock_packets = 0;
+  while (offset + deskmate::protocol::kWireHeaderSize <=
+         pair.host_to_device.bytes().size()) {
+    const auto header = deskmate::protocol::decode_header(
+        std::span<const std::uint8_t>(pair.host_to_device.bytes()).subspan(offset));
+    CHECK(header);
+    offset += deskmate::protocol::kWireHeaderSize + header.value().payload_len;
+    if (header.value().type ==
+        static_cast<std::uint8_t>(deskmate::protocol::MessageType::Clock)) {
+      ++clock_packets;
+    }
+  }
+  CHECK_EQ(clock_packets, 1U);
+
+  offset = 0;
+  std::size_t device_clock_packets = 0;
+  while (offset + deskmate::protocol::kWireHeaderSize <=
+         pair.device_to_host.bytes().size()) {
+    const auto header = deskmate::protocol::decode_header(
+        std::span<const std::uint8_t>(pair.device_to_host.bytes()).subspan(offset));
+    CHECK(header);
+    offset += deskmate::protocol::kWireHeaderSize + header.value().payload_len;
+    if (header.value().type ==
+        static_cast<std::uint8_t>(deskmate::protocol::MessageType::Clock)) {
+      ++device_clock_packets;
+    }
+  }
+  CHECK_EQ(device_clock_packets, 1U);
+}
+
+void test_lock_and_unlock_publish_distinct_states_and_require_resume() {
+  RecordingHostBoundary host_boundary;
+  SessionPair pair(default_host_config(), default_device_config(), nullptr,
+                   &host_boundary);
+  drive_to_streaming_with_first_idr(pair);
+
+  CHECK_EQ(pair.host.handle_host_event(HostEvent::ScreenLocked),
+           SessionCommandStatus::Ok);
+  CHECK_EQ(static_cast<int>(pair.host.state()),
+           static_cast<int>(SessionState::Paused));
+  CHECK_EQ(static_cast<int>(pair.host.video_state()),
+           static_cast<int>(HostVideoState::ScreenLocked));
+  CHECK_EQ(static_cast<int>(pair.host.input_state()),
+           static_cast<int>(HostInputState::ScreenLocked));
+  CHECK(!host_boundary.capture_encoding_intent);
+  CHECK(!host_boundary.input_injection_intent);
+  CHECK(pair.host.extended_display_present());
+
+  pair.host.pump();
+  pair.device.pump();
+  pair.host.pump();
+  CHECK(pair.host.pause_acknowledged());
+
+  CHECK_EQ(pair.host.handle_host_event(HostEvent::ScreenUnlocked),
+           SessionCommandStatus::Ok);
+  CHECK_EQ(static_cast<int>(pair.host.state()),
+           static_cast<int>(SessionState::Paused));
+  CHECK_EQ(static_cast<int>(pair.host.video_state()),
+           static_cast<int>(HostVideoState::AwaitingResume));
+  CHECK_EQ(static_cast<int>(pair.host.input_state()),
+           static_cast<int>(HostInputState::AwaitingResume));
+  CHECK_EQ(pair.host.send_video_frame(std::vector<std::uint8_t>{0x20}, 20, false),
+           VideoSendStatus::Paused);
+
+  const StreamProfile profile{
+      VideoEncoder::H264, PixelFormat::Nv12, DisplayResolution{1920, 1200, 60}};
+  CHECK_EQ(pair.host.resume(profile, 2, 0x11112222),
+           SessionCommandStatus::Ok);
+  pair.host.pump();
+  pair.device.pump();
+  pair.host.pump();
+  pair.device.pump();
+  pair.host.pump();
+  CHECK_EQ(static_cast<int>(pair.host.state()),
+           static_cast<int>(SessionState::Streaming));
+  CHECK_EQ(static_cast<int>(pair.host.video_state()),
+           static_cast<int>(HostVideoState::Active));
+  CHECK_EQ(static_cast<int>(pair.host.input_state()),
+           static_cast<int>(HostInputState::Active));
+}
+
+void test_screen_recording_and_accessibility_revocations_degrade_independently() {
+  RecordingHostBoundary host_boundary;
+  SessionPair pair(default_host_config(), default_device_config(), nullptr,
+                   &host_boundary);
+  drive_to_streaming_with_first_idr(pair);
+
+  CHECK_EQ(pair.host.handle_host_event(
+               HostEvent::AccessibilityPermissionRevoked),
+           SessionCommandStatus::Ok);
+  CHECK_EQ(static_cast<int>(pair.host.video_state()),
+           static_cast<int>(HostVideoState::Active));
+  CHECK_EQ(static_cast<int>(pair.host.input_state()),
+           static_cast<int>(HostInputState::AccessibilityPermissionRevoked));
+  CHECK(host_boundary.capture_encoding_intent);
+  CHECK(!host_boundary.input_injection_intent);
+  CHECK_EQ(static_cast<int>(pair.host.state()),
+           static_cast<int>(SessionState::Streaming));
+  CHECK_EQ(pair.host.send_video_frame(std::vector<std::uint8_t>{0x21}, 21, false),
+           VideoSendStatus::Sent);
+
+  CHECK_EQ(pair.host.handle_host_event(
+               HostEvent::ScreenRecordingPermissionRevoked),
+           SessionCommandStatus::Ok);
+  CHECK_EQ(static_cast<int>(pair.host.video_state()),
+           static_cast<int>(HostVideoState::RecordingPermissionRevoked));
+  CHECK_EQ(static_cast<int>(pair.host.input_state()),
+           static_cast<int>(HostInputState::AccessibilityPermissionRevoked));
+  CHECK(!host_boundary.capture_encoding_intent);
+  CHECK_EQ(pair.host.send_video_frame(std::vector<std::uint8_t>{0x22}, 22, false),
+           VideoSendStatus::VideoUnavailable);
+  CHECK_EQ(static_cast<int>(pair.host.state()),
+           static_cast<int>(SessionState::Streaming));
+}
+
+void test_display_error_is_a_control_preserving_degraded_state() {
+  RecordingHostBoundary host_boundary;
+  SessionPair pair(default_host_config(), default_device_config(), nullptr,
+                   &host_boundary);
+  drive_to_streaming_with_first_idr(pair);
+
+  CHECK_EQ(pair.host.handle_host_event(HostEvent::DisplayError),
+           SessionCommandStatus::Ok);
+  CHECK_EQ(static_cast<int>(pair.host.video_state()),
+           static_cast<int>(HostVideoState::DisplayError));
+  CHECK_EQ(static_cast<int>(pair.host.input_state()),
+           static_cast<int>(HostInputState::DisplayError));
+  CHECK(!host_boundary.capture_encoding_intent);
+  CHECK(!host_boundary.input_injection_intent);
+  CHECK(!pair.host.extended_display_present());
+  CHECK_EQ(host_boundary.display_destroy_calls, 1);
+  CHECK_EQ(static_cast<int>(pair.host.state()),
+           static_cast<int>(SessionState::Paused));
+  CHECK(!pair.host.is_terminal());
+  CHECK_EQ(pair.host.send_video_frame(std::vector<std::uint8_t>{0x23}, 23, false),
+           VideoSendStatus::VideoUnavailable);
+
+  CHECK_EQ(pair.host.handle_host_event(HostEvent::DisplayError),
+           SessionCommandStatus::Duplicate);
+  CHECK_EQ(host_boundary.display_destroy_calls, 1);
+}
+
+void test_pause_grace_timeout_destroys_display_once() {
+  RecordingHostBoundary host_boundary;
+  SessionPair pair(default_host_config(), default_device_config(), nullptr,
+                   &host_boundary);
+  drive_to_streaming_with_first_idr(pair);
+  CHECK_EQ(pair.host.pause(), SessionCommandStatus::Ok);
+  pair.host.pump();
+  pair.device.pump();
+  pair.host.pump();
+  CHECK_EQ(host_boundary.display_destroy_calls, 0);
+
+  for (std::uint64_t second = 0; second < 30; ++second) {
+    pair.clock.advance_ns(deskmate::protocol::kHeartbeatIntervalNs);
+    pair.device.pump();
+    pair.host.pump();
+    if (pair.host.is_terminal()) {
+      break;
+    }
+  }
+  CHECK_EQ(static_cast<int>(pair.host.state()),
+           static_cast<int>(SessionState::Failed));
+  CHECK_EQ(static_cast<int>(*pair.host.failure()),
+           static_cast<int>(SessionFailure::PauseGraceExpired));
+  CHECK_EQ(host_boundary.display_destroy_calls, 1);
+  CHECK(!pair.host.extended_display_present());
+  pair.host.pump();
+  CHECK_EQ(host_boundary.display_destroy_calls, 1);
+}
+
+void test_pause_grace_timeout_must_be_between_thirty_and_sixty_seconds() {
+  {
+    SessionPair pair(default_host_config(), default_device_config());
+    pair.host.start();
+    CHECK(!pair.host.is_terminal());
+  }
+  {
+    HostSessionConfig config = default_host_config();
+    config.limits.pause_grace_timeout_ns =
+        deskmate::protocol::kMinPauseGraceTimeoutNs - 1;
+    SessionPair pair(config, default_device_config());
+    pair.host.start();
+    CHECK_EQ(static_cast<int>(pair.host.state()),
+             static_cast<int>(SessionState::Failed));
+    CHECK_EQ(static_cast<int>(*pair.host.failure()),
+             static_cast<int>(SessionFailure::InvalidConfiguration));
+  }
+  {
+    HostSessionConfig config = default_host_config();
+    config.limits.pause_grace_timeout_ns =
+        deskmate::protocol::kMaxPauseGraceTimeoutNs;
+    SessionPair pair(config, default_device_config());
+    pair.host.start();
+    CHECK(!pair.host.is_terminal());
+  }
+}
+
+class RecordingSurfaceOps final : public SurfaceReferenceOps {
+ public:
+  void add_reference() override { ++add_calls; }
+  void remove_reference() override { ++remove_calls; }
+  int add_calls{};
+  int remove_calls{};
+};
+
+class RecordingFdCloser final : public deskmate::protocol::AccessoryFdCloser {
+ public:
+  void close_fd(int descriptor) noexcept override {
+    ++close_calls;
+    last_fd = descriptor;
+  }
+  int close_calls{};
+  int last_fd{-1};
+};
+
+void test_surface_lease_tracks_generation_references_and_destruction() {
+  RecordingSurfaceOps ops;
+  SurfaceOwner owner(&ops);
+  const std::uint64_t generation = owner.attach();
+  CHECK(generation != 0);
+  CHECK(owner.available());
+  CHECK_EQ(owner.generation(), generation);
+
+  auto lease = owner.acquire();
+  CHECK(lease.has_value());
+  CHECK_EQ(lease->generation(), generation);
+  CHECK(lease->can_render());
+  CHECK_EQ(owner.reference_count(), 1U);
+  CHECK_EQ(ops.add_calls, 1);
+
+  owner.invalidate();
+  CHECK(!owner.available());
+  CHECK(!lease->can_render());
+  CHECK(!owner.acquire().has_value());
+  CHECK_EQ(owner.reference_count(), 1U);
+
+  lease->release();
+  lease->release();
+  CHECK_EQ(owner.reference_count(), 0U);
+  CHECK_EQ(ops.remove_calls, 1);
+
+  const std::uint64_t next_generation = owner.attach();
+  CHECK(next_generation > generation);
+  auto next_lease = owner.acquire();
+  CHECK(next_lease.has_value());
+  CHECK(next_lease->can_render());
+  CHECK_EQ(owner.reference_count(), 1U);
+  next_lease->release();
+  CHECK_EQ(ops.add_calls, 2);
+  CHECK_EQ(ops.remove_calls, 2);
+}
+
+void test_accessory_fd_has_exactly_one_owner_and_closes_once() {
+  RecordingFdCloser closer;
+  {
+    AccessoryFdOwner owner(9, closer);
+    CHECK(owner.valid());
+    CHECK_EQ(owner.borrow_fd(), 9);
+    AccessoryFdOwner moved(std::move(owner));
+    CHECK(!owner.valid());
+    CHECK(moved.valid());
+    moved.close();
+    moved.close();
+    CHECK(!moved.valid());
+  }
+  CHECK_EQ(closer.close_calls, 1);
+  CHECK_EQ(closer.last_fd, 9);
+}
+
+void test_device_stops_output_after_surface_destroy_and_uses_new_generation() {
+  RecordingSurfaceOps ops;
+  SurfaceOwner surface(&ops);
+  RecordingBoundary boundary;
+  SessionPair pair(default_host_config(), default_device_config(), &boundary,
+                   nullptr, &surface);
+  const std::uint64_t first_generation = pair.device.attach_surface();
+  CHECK(first_generation != 0);
+  drive_to_streaming_with_first_idr(pair);
+  CHECK(pair.device.surface_available());
+
+  CHECK_EQ(pair.host.send_video_frame(std::vector<std::uint8_t>{0x31}, 31, false),
+           VideoSendStatus::Sent);
+  pair.host.pump();
+  pair.device.pump();
+  auto frames = pair.device.take_video_frames();
+  CHECK_EQ(frames.size(), 1U);
+  CHECK_EQ(frames[0].surface_generation, first_generation);
+
+  pair.device.invalidate_surface();
+  CHECK(!surface.available());
+  CHECK(!pair.device.surface_available());
+  CHECK(pair.device.take_video_frames().empty());
+  CHECK_EQ(pair.host.send_video_frame(std::vector<std::uint8_t>{0x32}, 32, false),
+           VideoSendStatus::Sent);
+  pair.host.pump();
+  pair.device.pump();
+  CHECK(pair.device.take_video_frames().empty());
+  CHECK_EQ(static_cast<int>(pair.device.state()),
+           static_cast<int>(SessionState::Streaming));
+
+  const std::uint64_t second_generation = pair.device.attach_surface();
+  CHECK(second_generation > first_generation);
+  CHECK_EQ(pair.host.send_video_frame(std::vector<std::uint8_t>{0x33}, 33, false),
+           VideoSendStatus::Sent);
+  pair.host.pump();
+  pair.device.pump();
+  frames = pair.device.take_video_frames();
+  CHECK_EQ(frames.size(), 1U);
+  CHECK_EQ(frames[0].surface_generation, second_generation);
+}
+
+void test_stopping_rejects_work_then_cancels_drains_and_releases_in_order() {
+  std::vector<std::string> events;
+  RecordingBoundary boundary;
+  RecordingHostBoundary host_boundary;
+  boundary.events = &events;
+  host_boundary.events = &events;
+  SessionPair pair(default_host_config(), default_device_config(), &boundary,
+                   &host_boundary, nullptr, &events);
+  drive_to_streaming_with_first_idr(pair);
+  events.clear();
+
+  pair.host.request_stop();
+  CHECK_EQ(static_cast<int>(pair.host.state()),
+           static_cast<int>(SessionState::Stopping));
+  CHECK_EQ(pair.host.send_video_frame(std::vector<std::uint8_t>{0x40}, 40, false),
+           VideoSendStatus::Stopping);
+  CHECK_EQ(pair.host.pause(), SessionCommandStatus::InvalidState);
+  CHECK_EQ(events,
+           std::vector<std::string>({"host.capture_off", "host.input_off",
+                                     "host.io.cancel"}));
+
+  pair.host.complete_stop();
+  CHECK_EQ(static_cast<int>(pair.host.state()),
+           static_cast<int>(SessionState::Stopped));
+  CHECK(pair.host.is_terminal());
+  CHECK_EQ(events,
+           std::vector<std::string>({"host.capture_off", "host.input_off",
+                                     "host.io.cancel", "host.drain",
+                                     "host.destroy"}));
+  pair.host.complete_stop();
+  CHECK_EQ(host_boundary.drain_calls, 1);
+  CHECK_EQ(host_boundary.display_destroy_calls, 1);
+
+  pair.device.request_stop();
+  CHECK_EQ(static_cast<int>(pair.device.state()),
+           static_cast<int>(SessionState::Stopping));
+  pair.device.complete_stop();
+  CHECK_EQ(static_cast<int>(pair.device.state()),
+           static_cast<int>(SessionState::Stopped));
+  CHECK_EQ(boundary.drain_calls, 1);
+  CHECK_EQ(boundary.release_calls, 1);
+  CHECK_EQ(boundary.released_config_id, 1U);
+  CHECK_EQ(boundary.released_stream_id, 0x77777777U);
+  pair.device.complete_stop();
+  CHECK_EQ(boundary.release_calls, 1);
+}
+
+void test_sleep_uses_stop_order_and_never_closes_borrowed_fd() {
+  std::vector<std::string> events;
+  RecordingBoundary boundary;
+  RecordingHostBoundary host_boundary;
+  RecordingFdCloser closer;
+  boundary.events = &events;
+  host_boundary.events = &events;
+  SessionPair pair(default_host_config(), default_device_config(), &boundary,
+                   &host_boundary, nullptr, &events);
+  drive_to_streaming_with_first_idr(pair);
+  AccessoryFdOwner fd_owner(11, closer);
+  events.clear();
+
+  CHECK_EQ(pair.host.handle_host_event(HostEvent::WillSleep),
+           SessionCommandStatus::Ok);
+  CHECK_EQ(static_cast<int>(pair.host.state()),
+           static_cast<int>(SessionState::Stopped));
+  CHECK_EQ(static_cast<int>(*pair.host.failure()),
+           static_cast<int>(SessionFailure::SystemSleep));
+  CHECK_EQ(static_cast<int>(pair.host.video_state()),
+           static_cast<int>(HostVideoState::Sleeping));
+  CHECK_EQ(static_cast<int>(pair.host.input_state()),
+           static_cast<int>(HostInputState::Sleeping));
+  CHECK_EQ(host_boundary.display_destroy_calls, 1);
+  CHECK_EQ(host_boundary.drain_calls, 1);
+  CHECK_EQ(closer.close_calls, 0);
+
+  fd_owner.close();
+  CHECK_EQ(closer.close_calls, 1);
+}
+
+void test_heartbeat_timeout_releases_established_session_resources() {
+  RecordingSurfaceOps ops;
+  SurfaceOwner surface(&ops);
+  RecordingBoundary boundary;
+  RecordingHostBoundary host_boundary;
+  SessionPair pair(default_host_config(), default_device_config(), &boundary,
+                   &host_boundary, &surface);
+  CHECK(pair.device.attach_surface() != 0);
+  drive_to_streaming_with_first_idr(pair);
+
+  pair.clock.advance_ns(deskmate::protocol::kPeerSilenceTimeoutNs);
+  pair.host.pump();
+  CHECK_EQ(static_cast<int>(pair.host.state()),
+           static_cast<int>(SessionState::Failed));
+  CHECK_EQ(static_cast<int>(*pair.host.failure()),
+           static_cast<int>(SessionFailure::HeartbeatTimeout));
+  CHECK(!host_boundary.capture_encoding_intent);
+  CHECK(!host_boundary.input_injection_intent);
+  CHECK_EQ(host_boundary.display_destroy_calls, 1);
+  CHECK_EQ(host_boundary.drain_calls, 1);
+
+  pair.device.pump();
+  CHECK_EQ(static_cast<int>(pair.device.state()),
+           static_cast<int>(SessionState::Failed));
+  CHECK_EQ(static_cast<int>(*pair.device.failure()),
+           static_cast<int>(SessionFailure::HeartbeatTimeout));
+  CHECK_EQ(boundary.drain_calls, 1);
+  CHECK_EQ(boundary.release_calls, 1);
+  CHECK(!pair.device.surface_available());
+  CHECK_EQ(surface.reference_count(), 0U);
+}
+
+void test_device_replays_config_status_without_repeating_callbacks() {
+  RecordingBoundary boundary;
+  SessionPair pair(default_host_config(), default_device_config(), &boundary);
+  drive_to_streaming_with_first_idr(pair);
+  CHECK_EQ(boundary.prepare_calls, 1);
+  CHECK_EQ(boundary.commit_calls, 1);
+  const StreamProfile profile{
+      VideoEncoder::H264, PixelFormat::Nv12, DisplayResolution{1920, 1200, 60}};
+
+  ControlMessage duplicate_prepare;
+  duplicate_prepare.opcode = ControlOpcode::StreamPrepare;
+  duplicate_prepare.proto_rev = deskmate::protocol::kProtocolRevision;
+  duplicate_prepare.config_id = 1;
+  const auto profile_body =
+      deskmate::protocol::encode_stream_profile(profile);
+  CHECK(profile_body);
+  duplicate_prepare.body = profile_body.value();
+  append_control(pair.host_to_device, 0x88888888, 0, 200, duplicate_prepare);
+  pair.device.pump();
+  CHECK_EQ(boundary.prepare_calls, 1);
+  CHECK_EQ(static_cast<int>(pair.device.state()),
+           static_cast<int>(SessionState::Streaming));
+
+  ControlMessage duplicate_commit;
+  duplicate_commit.opcode = ControlOpcode::StreamCommit;
+  duplicate_commit.config_id = 1;
+  duplicate_commit.body = {0x77, 0x77, 0x77, 0x77};
+  append_control(pair.host_to_device, 0x88888888, 0x77777777, 201,
+                 duplicate_commit);
+  pair.device.pump();
+  CHECK_EQ(boundary.commit_calls, 1);
+  CHECK_EQ(static_cast<int>(pair.device.state()),
+           static_cast<int>(SessionState::Streaming));
+
+  boundary.prepare_result = BoundaryResult::Failed;
+  ControlMessage failed_prepare = duplicate_prepare;
+  failed_prepare.config_id = 2;
+  append_control(pair.host_to_device, 0x88888888, 0, 202, failed_prepare);
+  pair.device.pump();
+  CHECK_EQ(boundary.prepare_calls, 2);
+  CHECK_EQ(boundary.discard_calls, 0);
+  CHECK_EQ(static_cast<int>(pair.device.state()),
+           static_cast<int>(SessionState::Streaming));
+
+  append_control(pair.host_to_device, 0x88888888, 0, 203, failed_prepare);
+  pair.device.pump();
+  CHECK_EQ(boundary.prepare_calls, 2);
+  CHECK_EQ(boundary.discard_calls, 0);
+  CHECK_EQ(boundary.rollback_calls, 0);
+  CHECK_EQ(static_cast<int>(pair.device.state()),
+           static_cast<int>(SessionState::Streaming));
+}
+
+void test_resume_failure_returns_to_paused_and_preserves_grace_and_old_stream() {
+  RecordingBoundary boundary;
+  RecordingHostBoundary host_boundary;
+  SessionPair pair(default_host_config(), default_device_config(), &boundary,
+                   &host_boundary);
+  drive_to_streaming_with_first_idr(pair);
+  const NegotiatedStream old_stream = *pair.host.negotiated_stream();
+  CHECK_EQ(pair.host.pause(), SessionCommandStatus::Ok);
+  pair.host.pump();
+  pair.device.pump();
+  pair.host.pump();
+  CHECK(pair.host.pause_acknowledged());
+
+  boundary.prepare_result = BoundaryResult::Failed;
+  const StreamProfile profile{
+      VideoEncoder::H264, PixelFormat::Nv12, DisplayResolution{1920, 1200, 60}};
+  CHECK_EQ(pair.host.resume(profile, 2, 0x33334444),
+           SessionCommandStatus::Ok);
+  pair.host.pump();
+  pair.device.pump();
+  pair.host.pump();
+
+  CHECK_EQ(static_cast<int>(pair.host.state()),
+           static_cast<int>(SessionState::Paused));
+  CHECK_EQ(static_cast<int>(pair.device.state()),
+           static_cast<int>(SessionState::Paused));
+  CHECK(pair.host.negotiated_stream().has_value());
+  CHECK(*pair.host.negotiated_stream() == old_stream);
+  CHECK(pair.device.negotiated_stream().has_value());
+  CHECK(*pair.device.negotiated_stream() == old_stream);
+  CHECK(!host_boundary.capture_encoding_intent);
+  CHECK_EQ(static_cast<int>(pair.host.reconfiguration()->phase),
+           static_cast<int>(ReconfigurationPhase::Failed));
+
+  pair.clock.advance_ns(deskmate::protocol::kMinPauseGraceTimeoutNs);
+  pair.host.pump();
+  CHECK_EQ(static_cast<int>(pair.host.state()),
+           static_cast<int>(SessionState::Failed));
+  CHECK_EQ(static_cast<int>(*pair.host.failure()),
+           static_cast<int>(SessionFailure::PauseGraceExpired));
+}
+
 void test_each_handshake_stage_times_out_after_two_seconds() {
   {
     SessionPair pair(default_host_config(), default_device_config());
@@ -938,6 +1891,46 @@ int main() {
        test_display_error_during_commit_is_explicit},
       {"session payload helpers round trip and reject bad encodings",
        test_session_payload_helpers_round_trip_and_reject_bad_encodings},
+      {"pause acks immediately stops host intent and resume renegotiates",
+       test_pause_acks_immediately_stops_host_intent_and_resume_renegotiates},
+      {"heartbeat emits each second and three second silence fails",
+       test_heartbeat_emits_each_second_and_three_second_silence_fails},
+      {"streaming reconfiguration keeps old until committed and is idempotent",
+       test_streaming_reconfiguration_keeps_old_until_committed_and_is_idempotent},
+      {"reconfiguration failure keeps old stream",
+       test_reconfiguration_failure_keeps_old_stream},
+      {"each running reconfiguration stage timeout or failure preserves old stream",
+       test_each_running_reconfiguration_stage_timeout_or_failure_preserves_old_stream},
+      {"four timestamp clock estimator reports offset rtt drift and bound",
+       test_four_timestamp_clock_estimator_reports_offset_rtt_drift_and_bound},
+      {"clock exchange over session messages produces estimate",
+       test_clock_exchange_over_session_messages_produces_estimate},
+      {"lock and unlock publish distinct states and require resume",
+       test_lock_and_unlock_publish_distinct_states_and_require_resume},
+      {"screen recording and accessibility revocations degrade independently",
+       test_screen_recording_and_accessibility_revocations_degrade_independently},
+      {"display error is a control preserving degraded state",
+       test_display_error_is_a_control_preserving_degraded_state},
+      {"pause grace timeout destroys display once",
+       test_pause_grace_timeout_destroys_display_once},
+      {"pause grace timeout must be between thirty and sixty seconds",
+       test_pause_grace_timeout_must_be_between_thirty_and_sixty_seconds},
+      {"surface lease tracks generation references and destruction",
+       test_surface_lease_tracks_generation_references_and_destruction},
+      {"accessory fd has exactly one owner and closes once",
+       test_accessory_fd_has_exactly_one_owner_and_closes_once},
+      {"device stops output after surface destroy and uses new generation",
+       test_device_stops_output_after_surface_destroy_and_uses_new_generation},
+      {"stopping rejects work then cancels drains and releases in order",
+       test_stopping_rejects_work_then_cancels_drains_and_releases_in_order},
+      {"sleep uses stop order and never closes borrowed fd",
+       test_sleep_uses_stop_order_and_never_closes_borrowed_fd},
+      {"heartbeat timeout releases established session resources",
+       test_heartbeat_timeout_releases_established_session_resources},
+      {"device replays config status without repeating callbacks",
+       test_device_replays_config_status_without_repeating_callbacks},
+      {"resume failure returns to paused and preserves grace and old stream",
+       test_resume_failure_returns_to_paused_and_preserves_grace_and_old_stream},
   };
   for (const auto& test : tests) {
     const int before = failures;
