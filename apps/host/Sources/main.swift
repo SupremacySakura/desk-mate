@@ -2,13 +2,15 @@ import AppKit
 import CoreMedia
 import CoreGraphics
 import Foundation
+import SwiftUI
 
 struct HostOptions {
-    var displayID: UInt32 = 41
+    var displayID: UInt32?
     var createDisplay = false
     var width = 2800
     var height = 1840
     var frameRate = 60.0
+    var frameRateExplicit = false
     var codec = "hevc"
     var listDisplays = false
     var dryRun = false
@@ -60,6 +62,7 @@ enum CLI {
                     throw CLIError.invalid("--fps requires a positive number")
                 }
                 options.frameRate = parsed
+                options.frameRateExplicit = true
             case "--codec":
                 let parsed = try value()
                 guard parsed == "hevc" || parsed == "h264" else {
@@ -86,7 +89,7 @@ enum CLI {
 
     Usage: DeskMate [options]
 
-      --display-id N   borrow an existing Extended Display (default 41)
+      --display-id N   borrow this Extended Display (default: saved or sole available display)
       --create         create a CGVirtualDisplay instead of borrowing one
       --width N        capture width in pixels (default 2800)
       --height N       capture height in pixels (default 1840)
@@ -108,18 +111,19 @@ final class AppController: NSObject, NSApplicationDelegate {
     private var inputItem: NSMenuItem?
     private var errorItem: NSMenuItem?
     private var window: NSWindow?
-    private var windowStateLabel: NSTextField?
-    private var windowProfileLabel: NSTextField?
-    private var windowFramesLabel: NSTextField?
-    private var windowInputLabel: NSTextField?
-    private var windowDisplayLabel: NSTextField?
-    private var windowErrorLabel: NSTextField?
-    private var captureCheckbox: NSButton?
-    private var inputCheckbox: NSButton?
+    private let windowModel = HostWindowModel()
+    private var selectedSource: UInt32?
+    private var videoEnabled = true
+    private var allowInput = false
+    private var captureStarting = false
+    private static let displayPreference = "preferredExtendedDisplayID"
     private var displaySession: DisplaySession?
     private var capture: CapturePipeline?
     private var bridge: OpaquePointer?
     private var timer: Timer?
+    private var keyframeTimer: Timer?
+    private var nextKeyframeRetry = 0.0
+    private var activityToken: NSObjectProtocol?
     private var lastSnapshot = "starting"
     private var fatalError: String?
     private var captureWanted = false
@@ -130,48 +134,47 @@ final class AppController: NSObject, NSApplicationDelegate {
 
     init(options: HostOptions) {
         self.options = options
+        self.selectedSource = options.displayID ??
+            (UserDefaults.standard.object(forKey: Self.displayPreference) as? NSNumber)?.uint32Value
         super.init()
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        // Prevent macOS App Nap and timer coalescing from throttling capture
+        // and USB streaming threads after DeskMate loses foreground focus.
+        activityToken = ProcessInfo.processInfo.beginActivity(
+            options: [.userInitiatedAllowingIdleSystemSleep, .latencyCritical],
+            reason: "DeskMate real-time extended display streaming"
+        )
         NSApp.setActivationPolicy(.regular)
         installStatusItem()
         installWindow()
         NSApp.activate(ignoringOtherApps: true)
 
-        if options.dryRun {
-            captureWanted = true
-            lastSnapshot = "{\"state\":\"dry-run\",\"running\":true,\"negotiated\":\"local only\",\"inputEvents\":0,\"error\":\"\"}"
-            guard ensurePermissions() else {
-                startTimer()
-                return
-            }
-            do {
-                try attachDisplay()
-            } catch {
-                fail("\(error)")
-                startTimer()
-                return
-            }
-            Task { await startCaptureIfNeeded() }
-            startTimer()
-            return
-        }
-
         startTimer()
-        guard ensurePermissions() else {
-            return
-        }
+        if !options.dryRun { observeSystemEvents() }
+        prepare()
+    }
+
+    private func prepare() {
+        guard displaySession == nil || (!options.dryRun && bridge == nil) else { return }
+        guard CGPreflightScreenCaptureAccess() else { syncWindow(); return }
+        fatalError = nil
         do {
-            try attachDisplay()
+            if displaySession == nil { try attachDisplay() }
         } catch {
             fail("\(error)")
+            syncWindow()
             return
         }
-
-        createBridge()
-        observeSystemEvents()
-        Task { await startCaptureIfNeeded() }
+        if options.dryRun {
+            captureWanted = true
+            lastSnapshot = "{\"state\":\"dry-run\",\"negotiated\":\"local only\"}"
+            Task { await startCaptureIfNeeded() }
+        } else {
+            createBridge()
+        }
+        syncWindow()
     }
 
     private func observeSystemEvents() {
@@ -228,8 +231,14 @@ final class AppController: NSObject, NSApplicationDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        if let activityToken {
+            ProcessInfo.processInfo.endActivity(activityToken)
+            self.activityToken = nil
+        }
         timer?.invalidate()
         timer = nil
+        keyframeTimer?.invalidate()
+        keyframeTimer = nil
         if let bridge {
             dm_bridge_stop(bridge)
         }
@@ -298,9 +307,9 @@ final class AppController: NSObject, NSApplicationDelegate {
         NSApp.activate(ignoringOtherApps: true)
     }
 
-    @objc private func toggleCapture(_ sender: NSButton) {
-        captureWanted = sender.state == .on
-        if captureWanted {
+    private func setVideo(_ enabled: Bool) {
+        videoEnabled = enabled
+        if enabled {
             Task { await startCaptureIfNeeded() }
         } else {
             stopCapture()
@@ -308,123 +317,122 @@ final class AppController: NSObject, NSApplicationDelegate {
         syncWindow()
     }
 
-    @objc private func toggleInput(_ sender: NSButton) {
-        inputWanted = sender.state == .on
-        syncWindow()
-    }
-
-    @objc private func copyStatusFromWindow() {
-        copyStatus()
+    private func openPermission(screen: Bool) {
+        if screen { _ = CGRequestScreenCaptureAccess() }
+        let privacy = screen ? "Privacy_ScreenCapture" : "Privacy_Accessibility"
+        if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?\(privacy)") {
+            NSWorkspace.shared.open(url)
+        }
     }
 
     private func installWindow() {
-        let frame = NSRect(x: 0, y: 0, width: 460, height: 330)
+        let frame = NSRect(x: 0, y: 0, width: 700, height: 500)
         let window = NSWindow(
             contentRect: frame,
-            styleMask: [.titled, .closable, .miniaturizable],
+            styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
             backing: .buffered,
             defer: false
         )
         window.title = "DeskMate"
+        window.titleVisibility = .hidden
+        window.titlebarAppearsTransparent = true
+        window.isMovableByWindowBackground = true
+        window.contentMinSize = NSSize(width: 610, height: 480)
         window.isReleasedWhenClosed = false
         window.center()
 
-        let content = NSView(frame: frame)
-        let stack = NSStackView()
-        stack.orientation = .vertical
-        stack.alignment = .leading
-        stack.spacing = 8
-        stack.translatesAutoresizingMaskIntoConstraints = false
-
-        let title = NSTextField(labelWithString: "DeskMate 扩展屏")
-        title.font = NSFont.systemFont(ofSize: 17, weight: .semibold)
-        stack.addArrangedSubview(title)
-
-        func row(_ caption: String) -> NSTextField {
-            let label = NSTextField(labelWithString: "\(caption)：—")
-            label.font = NSFont.monospacedSystemFont(ofSize: 12, weight: .regular)
-            label.textColor = .secondaryLabelColor
-            label.lineBreakMode = .byTruncatingTail
-            stack.addArrangedSubview(label)
-            return label
-        }
-
-        windowStateLabel = row("连接")
-        windowProfileLabel = row("码流")
-        windowFramesLabel = row("编码帧")
-        windowInputLabel = row("输入事件")
-        windowDisplayLabel = row("虚拟屏")
-        windowErrorLabel = row("错误")
-        windowErrorLabel?.textColor = .systemRed
-
-        let capture = NSButton(checkboxWithTitle: "发送画面", target: self,
-                               action: #selector(toggleCapture(_:)))
-        let input = NSButton(checkboxWithTitle: "允许反向输入", target: self,
-                             action: #selector(toggleInput(_:)))
-        captureCheckbox = capture
-        inputCheckbox = input
-        let controls = NSStackView(views: [capture, input])
-        controls.orientation = .horizontal
-        controls.spacing = 16
-        stack.addArrangedSubview(controls)
-
-        let copy = NSButton(title: "复制状态", target: self,
-                            action: #selector(copyStatusFromWindow))
-        let quit = NSButton(title: "退出", target: self, action: #selector(quit))
-        let buttons = NSStackView(views: [copy, quit])
-        buttons.orientation = .horizontal
-        buttons.spacing = 8
-        stack.addArrangedSubview(buttons)
-
-        content.addSubview(stack)
-        NSLayoutConstraint.activate([
-            stack.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 20),
-            stack.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -20),
-            stack.topAnchor.constraint(equalTo: content.topAnchor, constant: 18),
-        ])
-        window.contentView = content
+        window.contentView = NSHostingView(rootView: HostWindow(
+            model: windowModel,
+            chooseSource: { [weak self] id in self?.chooseSource(id) },
+            setVideo: { [weak self] enabled in self?.setVideo(enabled) },
+            setInput: { [weak self] enabled in
+                self?.allowInput = enabled && AXIsProcessTrusted()
+                self?.syncWindow()
+            },
+            openPermission: { [weak self] screen in self?.openPermission(screen: screen) },
+            retry: { [weak self] in self?.retry() },
+            copy: { [weak self] in self?.copyStatus() }
+        ))
         self.window = window
         window.makeKeyAndOrderFront(nil)
+    }
+
+    private func chooseSource(_ id: UInt32?) {
+        guard let id, displayChoices().contains(where: { $0.id == id }) else { return }
+        selectedSource = id
+        UserDefaults.standard.set(Int(id), forKey: Self.displayPreference)
+        if displaySession == nil { prepare() }
+        syncWindow()
+    }
+
+    private func retry() {
+        if bridge == nil && (!options.dryRun || displaySession == nil) {
+            prepare()
+        } else {
+            fatalError = nil
+            Task { await startCaptureIfNeeded() }
+        }
+        syncWindow()
+    }
+
+    private func displayChoices() -> [DisplayChoice] {
+        DisplayInventory.onlineDisplayIDs().compactMap { id in
+            guard CGDisplayIsMain(id) == 0, CGDisplayIsActive(id) != 0,
+                  CGDisplayIsInMirrorSet(id) == 0,
+                  CGDisplayMirrorsDisplay(id) == kCGNullDirectDisplay,
+                  let mode = CGDisplayCopyDisplayMode(id) else { return nil }
+            let screen = NSScreen.screens.first {
+                ($0.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?.uint32Value == id
+            }
+            return DisplayChoice(id: id, title: "\(screen?.localizedName ?? "扩展显示器") · \(mode.pixelWidth)×\(mode.pixelHeight)（\(id)）")
+        }
     }
 
     private func syncWindow() {
         let snapshot = parseSnapshot(lastSnapshot)
         let state = snapshot?["state"] as? String ?? (options.dryRun ? "dry-run" : "starting")
-        let negotiated = snapshot?["negotiated"] as? String ?? "none"
-        let encoded = capture?.encodedFrameCount ?? 0
-        let inputs = snapshot?["inputEvents"] as? Int ?? 0
-        let info = displaySession?.info
-
-        windowStateLabel?.stringValue = "连接：\(state)"
-        windowProfileLabel?.stringValue =
-            "码流：\(negotiated == "none" ? "\(options.width)x\(options.height)@\(Int(options.frameRate)) \(options.codec)" : negotiated)"
-        windowFramesLabel?.stringValue = "编码帧：\(encoded)"
-        windowInputLabel?.stringValue = "输入事件：\(inputs)"
-        windowDisplayLabel?.stringValue =
-            "虚拟屏：\(info.map { "\($0.displayID) \($0.summary)" } ?? "未连接")"
-        let message = fatalError ?? (snapshot?["error"] as? String ?? "")
-        windowErrorLabel?.stringValue = "错误：\(message.isEmpty ? "无" : message)"
-        windowErrorLabel?.textColor = message.isEmpty ? .secondaryLabelColor : .systemRed
-        captureCheckbox?.state = captureWanted ? .on : .off
-        inputCheckbox?.state = inputWanted ? .on : .off
-    }
-
-    private func ensurePermissions() -> Bool {
-        if !CGPreflightScreenCaptureAccess() {
-            let granted = CGRequestScreenCaptureAccess()
-            if !granted {
-                fail("Screen Recording permission is required; enable it in System Settings and relaunch")
-                return false
-            }
+        var view = HostWindowState()
+        view.screenPermission = CGPreflightScreenCaptureAccess()
+        view.inputPermission = AXIsProcessTrusted()
+        view.videoEnabled = videoEnabled
+        view.inputEnabled = allowInput && view.inputPermission
+        view.input = view.inputEnabled ? (inputWanted ? "已启用" : "等待会话") : "未开启"
+        view.choices = displayChoices()
+        view.fixedSource = options.createDisplay || options.displayID != nil
+        view.selected = view.choices.contains(where: { $0.id == selectedSource }) ? selectedSource : nil
+        if let id = displaySession?.info.displayID {
+            view.source = view.choices.first(where: { $0.id == id })?.title ?? "扩展显示器（\(id)）"
+            view.needsRestart = !view.fixedSource && selectedSource != nil && selectedSource != id
         }
-        if !options.dryRun {
-            let promptKey = kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String
-            let trusted = AXIsProcessTrustedWithOptions([promptKey: true] as CFDictionary)
-            if !trusted {
-                NSLog("DeskMate: Accessibility permission missing; input injection stays disabled until granted")
-            }
+        if !view.screenPermission {
+            (view.title, view.guidance, view.badge) = ("需要屏幕录制权限", "在系统设置中允许 DeskMate 录制屏幕，再返回重试。", "待授权")
+            view.canRetry = true
+        } else if displaySession == nil {
+            view.title = "需要扩展显示器"
+            view.guidance = view.choices.isEmpty ? "先在 Mac 上准备一块扩展显示器，再重试。DeskMate 不会采集主屏。" : "请在设置中选择要发送到鸿蒙平板的扩展显示器。"
+            view.badge = "未就绪"
+            view.canRetry = true
+        } else if fatalError != nil {
+            (view.title, view.guidance, view.badge) = ("暂时无法发送画面", "重试或打开诊断查看原因。", "出错")
+            view.canRetry = true
+        } else if options.dryRun {
+            (view.title, view.guidance, view.badge) = ("本机采集测试", "仅在本机采集，不建立 USB 会话。", "测试模式")
+        } else if state == "awaiting_client_hello" {
+            (view.title, view.guidance, view.badge) = ("等待平板确认", "请在平板上打开 DeskMate，并在系统提示中允许 USB 配件连接。", "USB 已连接")
+            view.linked = true
+        } else if state == "streaming" && videoEnabled && capture != nil {
+            (view.title, view.guidance, view.badge) = ("正在发送画面", "在平板上查看 Mac 的扩展桌面。", "会话已建立")
+            view.linked = true
+            view.video = "正在发送"
+        } else if state.hasPrefix("awaiting_") || state == "streaming" || state == "paused" {
+            view.linked = true
+            view.badge = "USB 已连接"
+            view.title = state == "paused" || !videoEnabled ? "画面发送已停止" : "正在准备画面"
+            view.guidance = !videoEnabled ? "需要继续时，开启画面发送。" : "保持 USB 数据线连接，并确认 Mac 未锁屏。"
         }
-        return true
+        if !videoEnabled { view.video = "已关闭" }
+        view.diagnostic = "连接：\(state)\n显示来源：\(view.source)\n编码帧：\(capture?.encodedFrameCount ?? 0)\n\(fatalError ?? "")\n\(lastSnapshot)"
+        if windowModel.state != view { windowModel.state = view }
     }
 
     private func attachDisplay() throws {
@@ -438,11 +446,29 @@ final class AppController: NSObject, NSApplicationDelegate {
             )
             displaySession = session
         } else {
-            displaySession = try DisplaySession.attach(displayID: options.displayID)
+            let choices = displayChoices()
+            let saved = choices.first { $0.id == selectedSource }?.id
+            guard let id = options.displayID ?? saved ?? (choices.count == 1 ? choices.first?.id : nil) else {
+                throw DisplaySessionError.unavailable("no extended display selected")
+            }
+            displaySession = try DisplaySession.attach(displayID: id)
+            selectedSource = id
         }
         if let info = displaySession?.info {
             NSLog("DeskMate: attached display \(info.displayID) \(info.summary)")
         }
+    }
+
+    private func targetFrameRate() -> Double {
+        if options.frameRateExplicit {
+            return options.frameRate
+        }
+        guard let refresh = displaySession?.info.refreshRate, refresh >= 60.0 else {
+            return options.frameRate
+        }
+        if refresh >= 115.0 { return 120.0 }
+        if refresh >= 85.0 { return 90.0 }
+        return 60.0
     }
 
     private func createBridge() {
@@ -450,7 +476,7 @@ final class AppController: NSObject, NSApplicationDelegate {
         config.device_selector = nil
         config.width = Int32(options.width)
         config.height = Int32(options.height)
-        config.refresh_hz = Int32(options.frameRate.rounded())
+        config.refresh_hz = Int32(targetFrameRate().rounded())
         config.prefer_hevc = options.codec == "hevc" ? 1 : 0
 
         let bridge = dm_bridge_create(&config)
@@ -471,6 +497,8 @@ final class AppController: NSObject, NSApplicationDelegate {
 
         if dm_bridge_start(bridge) != 0 {
             fail("failed to start USB bridge")
+            dm_bridge_destroy(bridge)
+            self.bridge = nil
         }
     }
 
@@ -495,6 +523,22 @@ final class AppController: NSObject, NSApplicationDelegate {
         timer = Timer.scheduledTimer(withTimeInterval: 0.25, repeats: true) { [weak self] _ in
             self?.tick()
         }
+        let keyframeTimer = Timer(timeInterval: 1.0 / 30.0, repeats: true) { [weak self] _ in
+            self?.pollKeyframeRequest()
+        }
+        RunLoop.main.add(keyframeTimer, forMode: .common)
+        self.keyframeTimer = keyframeTimer
+    }
+
+    private func pollKeyframeRequest() {
+        guard let bridge, let capture, dm_bridge_needs_keyframe(bridge) != 0 else {
+            nextKeyframeRetry = 0
+            return
+        }
+        let now = ProcessInfo.processInfo.systemUptime
+        guard now >= nextKeyframeRetry else { return }
+        nextKeyframeRetry = now + 0.1
+        capture.requestKeyframe()
     }
 
     private func tick() {
@@ -502,9 +546,6 @@ final class AppController: NSObject, NSApplicationDelegate {
             if let snapshot = dm_bridge_snapshot(bridge) {
                 lastSnapshot = String(cString: snapshot)
                 free(snapshot)
-            }
-            if dm_bridge_needs_keyframe(bridge) != 0 {
-                capture?.requestKeyframe()
             }
             drainInput(bridge)
         }
@@ -533,7 +574,7 @@ final class AppController: NSObject, NSApplicationDelegate {
     }
 
     private func drainInput(_ bridge: OpaquePointer) {
-        guard inputWanted, let displaySession else { return }
+        let canInject = inputWanted && allowInput && AXIsProcessTrusted()
         var buffer = [DMInputEvent](repeating: DMInputEvent(), count: 32)
         while true {
             let count = buffer.withUnsafeMutableBufferPointer { pointer -> Int32 in
@@ -541,22 +582,33 @@ final class AppController: NSObject, NSApplicationDelegate {
                 return dm_bridge_take_input(bridge, base, Int32(pointer.count))
             }
             if count <= 0 { break }
-            let bounds = displaySession.bounds()
-            for index in 0..<Int(count) {
-                _ = InputInjector.inject(DMInputEventValue(buffer[index]), displayBounds: bounds)
+            if canInject, let displaySession {
+                let bounds = displaySession.bounds()
+                for index in 0..<Int(count) {
+                    _ = InputInjector.inject(DMInputEventValue(buffer[index]), displayBounds: bounds)
+                }
             }
             if count < Int32(buffer.count) { break }
         }
     }
 
     private func startCaptureIfNeeded() async {
-        guard captureWanted, capture == nil, let displaySession else { return }
+        guard captureWanted, videoEnabled, capture == nil, !captureStarting,
+              CGPreflightScreenCaptureAccess(), let displaySession else { return }
+        captureStarting = true
+        defer { captureStarting = false }
+        let negotiatedHz = bridge.map { Int(dm_bridge_negotiated_refresh_hz($0)) } ?? 0
+        let captureFrameRate = negotiatedHz > 0 ? Double(negotiatedHz) : targetFrameRate()
         let pipeline = CapturePipeline(
             displayID: displaySession.info.displayID,
             width: options.width,
             height: options.height,
-            frameRate: options.frameRate,
+            frameRate: captureFrameRate,
             codec: options.codec,
+            keyframeRequestIDProvider: { [weak self] in
+                guard let bridge = self?.bridge else { return 0 }
+                return dm_bridge_keyframe_request_id(bridge)
+            },
             onFrame: { [weak self] frame in
                 self?.submit(frame)
             },
@@ -566,8 +618,12 @@ final class AppController: NSObject, NSApplicationDelegate {
         )
         do {
             try await pipeline.start()
+            guard captureWanted, videoEnabled else {
+                await pipeline.stop()
+                return
+            }
             capture = pipeline
-            NSLog("DeskMate: capture started at \(options.width)x\(options.height)@\(Int(options.frameRate)) \(options.codec)")
+            NSLog("DeskMate: capture started at \(options.width)x\(options.height)@\(Int(captureFrameRate.rounded())) \(options.codec)")
         } catch {
             fail("capture start failed: \(error)")
         }

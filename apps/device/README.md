@@ -34,21 +34,24 @@ HDC=/Applications/DevEco-Studio.app/Contents/sdk/default/openharmony/toolchains/
 $HDC install entry/build/default/outputs/default/entry-default-signed.hap
 ```
 
-先启动 Host 侧的 AOA 前台保活（平板切到 accessory 模式后 ArkTS 定时器会被挂起，
-必须靠本地 `aa start` 把应用拉回前台）：
+从平板桌面打开 DeskMate，再打开 Mac 应用并接上 USB 数据线。在系统提示中允许 USB 配件连接。
+如果切换到 AOA 模式时平板应用退到后台，请从平板桌面重新打开。当前版本尚未真机验收无终端流程。
+如果重新打开仍无法恢复轮询，可使用既有的开发辅助脚本；需要在平板仍处于 HDC 模式时启动：
 
 ```sh
 cd ../host
 make device-foreground HDC=$HDC BUNDLE=com.deskmate.gate3
 ```
 
-然后再启动 Host 应用。切换 AOA 时平板会弹一次「允许访问 USB 配件」，需手动允许。
+平板以原生解码器成功输出到 Surface 作为进入全屏的触发信号。全屏左上角可展开工具栏并返回首页；
+也可使用系统返回。同一次连接中主动退出全屏后，可点「返回画面」。设置中的帧率来自平板解码输出计数，
+不是协商刷新率，也不是系统合成器的实测呈现帧率。
 
 ## 结构
 
 ```text
 entry/src/main/ets/deskmate/AccessoryLink.ets   ArkTS 侧 USB 授权、handle 所有权
-entry/src/main/ets/pages/Index.ets              XComponent 与状态栏
+entry/src/main/ets/pages/Index.ets              首页、设置、诊断与常驻的 XComponent Surface
 entry/src/main/cpp/device_engine.cpp            会话、调度、输入采集
 entry/src/main/cpp/video_decoder.cpp            OH_VideoDecoder → Surface
 entry/src/main/cpp/fd_byte_io.hpp               以 POLLIN 为许可的字节 I/O

@@ -10,7 +10,7 @@ export default class EntryAbility extends UIAbility {
   onCreate(_want: Want, _launchParam: AbilityConstant.LaunchParam): void {
     hilog.info(DOMAIN, TAG, 'onCreate');
     this.context.getApplicationContext().setColorMode(
-      ConfigurationConstant.ColorMode.COLOR_MODE_DARK);
+      ConfigurationConstant.ColorMode.COLOR_MODE_LIGHT);
   }
 
   onWindowStageCreate(windowStage: window.WindowStage): void {
@@ -20,11 +20,9 @@ export default class EntryAbility extends UIAbility {
           JSON.stringify(error));
         return;
       }
-      // Immersive full screen: the extended display must not be letterboxed by
-      // system bars.
+      // Keep the decoder surface the same size across page changes.
       windowStage.getMainWindow().then((mainWindow: window.Window) => {
         mainWindow.setWindowLayoutFullScreen(true);
-        mainWindow.setWindowSystemBarEnable([]);
         mainWindow.setWindowKeepScreenOn(true);
       }).catch((error: Error) => {
         hilog.error(DOMAIN, TAG, 'window setup failed: %{public}s',

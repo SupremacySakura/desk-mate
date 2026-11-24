@@ -64,8 +64,12 @@ CapabilitySet DeviceCapabilities()
     capabilities.encoders = {VideoEncoder::Hevc, VideoEncoder::H264};
     capabilities.pixel_formats = {PixelFormat::Nv12};
     capabilities.resolutions = {
+        DisplayResolution{2800, 1840, 120},
+        DisplayResolution{2800, 1840, 90},
         DisplayResolution{2800, 1840, 60},
+        DisplayResolution{1920, 1280, 120},
         DisplayResolution{1920, 1280, 60},
+        DisplayResolution{1280, 800, 120},
         DisplayResolution{1280, 800, 60},
     };
     return capabilities;
@@ -221,6 +225,7 @@ bool DeviceEngine::StartSession(int accessory_fd)
         last_error_.clear();
         session_failure_.clear();
         session_state_ = "starting";
+        decoder_stats_ = {};
         ++sessions_started_;
     }
     running_.store(true);
@@ -245,9 +250,10 @@ bool DeviceEngine::StopSession()
 void DeviceEngine::RequestStop()
 {
     stop_requested_.store(true);
-    if (wake_fd_ >= 0) {
+    const int fd = wake_fd_.load(std::memory_order_acquire);
+    if (fd >= 0) {
         const std::uint64_t value = 1;
-        const ssize_t written = ::write(wake_fd_, &value, sizeof(value));
+        const ssize_t written = ::write(fd, &value, sizeof(value));
         (void)written;
     }
     OH_LOG_INFO(LOG_APP, "session stop requested");
@@ -258,6 +264,13 @@ bool DeviceEngine::SurfaceCreated(const std::string &surface_id)
     std::lock_guard lock(mutex_);
     surface_id_ = surface_id;
     surface_dirty_ = true;
+    config_dirty_.store(true, std::memory_order_release);
+    const int fd = wake_fd_.load(std::memory_order_acquire);
+    if (fd >= 0) {
+        const std::uint64_t value = 1;
+        const ssize_t written = ::write(fd, &value, sizeof(value));
+        (void)written;
+    }
     return true;
 }
 
@@ -268,6 +281,7 @@ bool DeviceEngine::SurfaceDestroyed(const std::string &surface_id)
         surface_id_.clear();
         native_window_ = nullptr;
         surface_dirty_ = true;
+        config_dirty_.store(true, std::memory_order_release);
     }
     return true;
 }
@@ -277,6 +291,13 @@ void DeviceEngine::SetNativeWindow(void *window)
     std::lock_guard lock(mutex_);
     native_window_ = window;
     surface_dirty_ = true;
+    config_dirty_.store(true, std::memory_order_release);
+    const int fd = wake_fd_.load(std::memory_order_acquire);
+    if (fd >= 0) {
+        const std::uint64_t value = 1;
+        const ssize_t written = ::write(fd, &value, sizeof(value));
+        (void)written;
+    }
 }
 
 void DeviceEngine::NoteLifecycle(const std::string &event)
@@ -289,21 +310,30 @@ bool DeviceEngine::SendInput(std::uint8_t kind, std::uint8_t pointer_id,
                              std::uint16_t flags, float x, float y, float dx,
                              float dy, std::uint32_t keycode)
 {
-    std::lock_guard lock(mutex_);
-    if (input_queue_.size() >= kMaxQueuedInput) {
-        input_queue_.pop_front();
-        ++input_events_rejected_;
+    {
+        std::lock_guard lock(mutex_);
+        if (input_queue_.size() >= kMaxQueuedInput) {
+            input_queue_.pop_front();
+            ++input_events_rejected_;
+        }
+        InputEvent event;
+        event.kind = static_cast<InputKind>(kind);
+        event.pointer_id = pointer_id;
+        event.flags = flags;
+        event.x = x;
+        event.y = y;
+        event.dx = dx;
+        event.dy = dy;
+        event.keycode = keycode;
+        input_queue_.push_back(event);
+        has_pending_input_.store(true, std::memory_order_release);
     }
-    InputEvent event;
-    event.kind = static_cast<InputKind>(kind);
-    event.pointer_id = pointer_id;
-    event.flags = flags;
-    event.x = x;
-    event.y = y;
-    event.dx = dx;
-    event.dy = dy;
-    event.keycode = keycode;
-    input_queue_.push_back(event);
+    const int fd = wake_fd_.load(std::memory_order_acquire);
+    if (fd >= 0) {
+        const std::uint64_t value = 1;
+        const ssize_t written = ::write(fd, &value, sizeof(value));
+        (void)written;
+    }
     return true;
 }
 
@@ -312,6 +342,7 @@ bool DeviceEngine::CommitProfile(const StreamProfile &profile)
     std::lock_guard lock(mutex_);
     pending_profile_ = profile;
     profile_dirty_ = true;
+    config_dirty_.store(true, std::memory_order_release);
     return true;
 }
 
@@ -319,6 +350,7 @@ void DeviceEngine::ReleaseDecoder()
 {
     std::lock_guard lock(mutex_);
     release_requested_ = true;
+    config_dirty_.store(true, std::memory_order_release);
 }
 
 bool DeviceEngine::EnsureDecoder()
@@ -347,7 +379,7 @@ bool DeviceEngine::EnsureDecoder()
     config.frame_rate = profile->resolution.refresh_hz;
 
     if (decoder_ == nullptr) {
-        decoder_ = std::make_unique<VideoDecoder>(wake_fd_);
+        decoder_ = std::make_unique<VideoDecoder>(wake_fd_.load(std::memory_order_acquire));
     }
     const bool ok = decoder_->Open(config, window);
     {
@@ -448,24 +480,29 @@ void DeviceEngine::DrainVideo()
 void DeviceEngine::PumpTimer()
 {
     // Drain the eventfd counter so the next tick blocks again.
+    const int fd = wake_fd_.load(std::memory_order_acquire);
+    if (fd < 0) {
+        return;
+    }
     std::uint64_t value = 0;
-    while (::read(wake_fd_, &value, sizeof(value)) > 0) {
+    while (::read(fd, &value, sizeof(value)) > 0) {
     }
 }
 
 void DeviceEngine::WorkerMain()
 {
-    wake_fd_ = ::eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);
-    if (wake_fd_ < 0) {
+    const int created_wake_fd = ::eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);
+    if (created_wake_fd < 0) {
         std::lock_guard lock(mutex_);
         last_error_ = "eventfd creation failed";
         running_.store(false);
         return;
     }
+    wake_fd_.store(created_wake_fd, std::memory_order_release);
     FdByteIo io(accessory_fd_);
     protocol::SteadyClock clock;
     EngineBoundary boundary(this);
-    TickTimer timer(wake_fd_);
+    TickTimer timer(created_wake_fd);
     timer.Start();
 
     int rebuilds = 0;
@@ -480,6 +517,8 @@ void DeviceEngine::WorkerMain()
         session_->start();
 
         bool rebuild = false;
+        SessionState last_published_state = SessionState::Idle;
+        config_dirty_.store(true, std::memory_order_release);
         while (!stop_requested_.load()) {
             // poll() on the accessory descriptor ignores its timeout on this
             // platform, so this loop is driven by the 5 ms eventfd tick; the
@@ -488,7 +527,7 @@ void DeviceEngine::WorkerMain()
             // POLLOUT, which would otherwise make poll() spin when writable.
             pollfd fds[2] = {
                 {accessory_fd_, POLLIN, 0},
-                {wake_fd_, POLLIN, 0},
+                {created_wake_fd, POLLIN, 0},
             };
             const int ready = ::poll(fds, 2, 1000);
             if (ready < 0 && errno != EINTR) {
@@ -505,53 +544,71 @@ void DeviceEngine::WorkerMain()
                 break;
             }
             io.note_poll_revents(fds[0].revents);
-            if ((fds[1].revents & POLLIN) != 0) {
+            const bool woke_by_eventfd = (fds[1].revents & POLLIN) != 0;
+            if (woke_by_eventfd) {
                 PumpTimer();
             }
             session_->pump();
 
-            bool dirty = false;
-            bool release = false;
-            {
-                std::lock_guard lock(mutex_);
-                dirty = profile_dirty_;
-                release = release_requested_;
-                release_requested_ = false;
-            }
-            if (release && decoder_ != nullptr) {
-                decoder_->Close();
-                decoder_.reset();
-            }
-            ApplyPendingSurface();
-            if (dirty) {
-                (void)EnsureDecoder();
+            if (config_dirty_.exchange(false, std::memory_order_acq_rel)) {
+                bool dirty = false;
+                bool release = false;
+                {
+                    std::lock_guard lock(mutex_);
+                    dirty = profile_dirty_;
+                    release = release_requested_;
+                    release_requested_ = false;
+                }
+                if (release && decoder_ != nullptr) {
+                    decoder_->Close();
+                    decoder_.reset();
+                }
+                ApplyPendingSurface();
+                if (dirty) {
+                    (void)EnsureDecoder();
+                }
             }
             if (decoder_ != nullptr) {
                 decoder_->ProcessEvents();
             }
             DrainVideo();
 
-            {
-                std::lock_guard lock(mutex_);
-                if (decoder_ != nullptr) {
-                    decoder_stats_ = decoder_->stats();
+            if (has_pending_input_.exchange(false, std::memory_order_acq_rel)) {
+                std::deque<InputEvent> pending_input;
+                {
+                    std::lock_guard lock(mutex_);
+                    pending_input.swap(input_queue_);
                 }
-                while (!input_queue_.empty() && session_ != nullptr) {
-                    const InputEvent event = input_queue_.front();
-                    input_queue_.pop_front();
-                    if (session_->send_input(event) == SessionCommandStatus::Ok) {
-                        ++input_events_sent_;
+                std::uint64_t sent = 0;
+                std::uint64_t rejected = 0;
+                for (const InputEvent &event : pending_input) {
+                    if (session_ != nullptr &&
+                        session_->send_input(event) == SessionCommandStatus::Ok) {
+                        ++sent;
                     } else {
-                        ++input_events_rejected_;
+                        ++rejected;
                     }
                 }
-                if (session_ != nullptr) {
-                    session_state_ = StateName(session_->state());
-                    if (session_->failure().has_value()) {
-                        session_failure_ =
-                            std::string(protocol::session_failure_name(
-                                *session_->failure()));
-                    }
+                if (sent > 0 || rejected > 0) {
+                    std::lock_guard lock(mutex_);
+                    input_events_sent_ += sent;
+                    input_events_rejected_ += rejected;
+                }
+            }
+
+            const SessionState current_state = session_->state();
+            if (woke_by_eventfd || current_state != last_published_state ||
+                session_->is_terminal()) {
+                last_published_state = current_state;
+                const VideoDecoder::Stats latest_decoder =
+                    decoder_ != nullptr ? decoder_->stats() : VideoDecoder::Stats{};
+                std::lock_guard lock(mutex_);
+                decoder_stats_ = latest_decoder;
+                session_state_ = StateName(current_state);
+                if (session_->failure().has_value()) {
+                    session_failure_ =
+                        std::string(protocol::session_failure_name(
+                            *session_->failure()));
                 }
             }
 
@@ -665,9 +722,9 @@ void DeviceEngine::WorkerMain()
         decoder_.reset();
     }
     session_.reset();
-    if (wake_fd_ >= 0) {
-        ::close(wake_fd_);
-        wake_fd_ = -1;
+    const int old_wake_fd = wake_fd_.exchange(-1, std::memory_order_acq_rel);
+    if (old_wake_fd >= 0) {
+        ::close(old_wake_fd);
     }
     {
         std::lock_guard lock(mutex_);

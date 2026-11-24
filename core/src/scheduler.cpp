@@ -2,10 +2,28 @@
 
 #include <algorithm>
 #include <array>
+#include <cstdio>
+#include <cstdlib>
 #include <utility>
 
 namespace deskmate::protocol {
 namespace {
+
+void trace_recovery(const char* trigger, std::uint64_t now_ns,
+                    std::size_t pending_bytes, std::size_t incoming_bytes,
+                    std::uint64_t age_ns, std::uint32_t peer_id) {
+  static const bool enabled = std::getenv("DESKMATE_PERF_TRACE") != nullptr;
+  if (!enabled) {
+    return;
+  }
+  std::fprintf(stderr,
+               "[DEBUG-dm-fps-recovery] mono_ns=%llu trigger=%s "
+               "pending=%zu incoming=%zu age_ns=%llu peer_id=%u\n",
+               static_cast<unsigned long long>(now_ns), trigger,
+               pending_bytes, incoming_bytes,
+               static_cast<unsigned long long>(age_ns),
+               static_cast<unsigned>(peer_id));
+}
 
 std::size_t fragment_bytes(
     const std::vector<std::vector<std::uint8_t>>& fragments,
@@ -193,8 +211,12 @@ SchedulerQueueStatus HostSendScheduler::admit_video_frame(
   if (idr_request_.has_value() && !keyframe) {
     return SchedulerQueueStatus::IdrRequired;
   }
-  if (pending_video_bytes() + incoming_bytes >
-      config_.max_pending_video_bytes) {
+  const auto pending_bytes = pending_video_bytes();
+  if (pending_bytes + incoming_bytes > config_.max_pending_video_bytes) {
+    if (!idr_request_.has_value()) {
+      trace_recovery("queue_bytes", clock_.now_ns(), pending_bytes,
+                     incoming_bytes, 0, 0);
+    }
     drop_unstarted_video_frames();
     request_recovery(IdrRequestReason::Congestion);
     if (!keyframe) {
@@ -214,9 +236,22 @@ void HostSendScheduler::request_idr_from_peer(std::uint32_t recovery_id) {
   if (stopping_ || recovery_id == 0) {
     return;
   }
+  if ((idr_request_.has_value() &&
+       idr_request_->reason == IdrRequestReason::PeerRequest &&
+       idr_request_->recovery_id == recovery_id) ||
+      active_recovery_id_ == recovery_id ||
+      std::any_of(video_.begin(), video_.end(), [recovery_id](const auto& frame) {
+        return frame.next_fragment > 0 &&
+               frame.next_fragment < frame.fragments.size() &&
+               frame.recovery_id == recovery_id;
+      })) {
+    return;
+  }
+  const auto now = clock_.now_ns();
+  trace_recovery("peer_request", now, 0, 0, 0, recovery_id);
   last_recovery_id_ = std::max(last_recovery_id_, recovery_id);
   idr_request_ = SchedulerIdrRequest{
-      recovery_id, IdrRequestReason::PeerRequest, clock_.now_ns()};
+      recovery_id, IdrRequestReason::PeerRequest, now};
   drop_unstarted_video_frames();
   mark_queued_recovery_keyframe();
 }
@@ -295,6 +330,7 @@ void HostSendScheduler::begin_stopping() noexcept {
   priority_.clear();
   video_.clear();
   active_.reset();
+  active_recovery_id_.reset();
   active_offset_ = 0;
   idr_request_.reset();
   started_video_streams_.clear();
@@ -396,6 +432,9 @@ void HostSendScheduler::check_oldest_unsent_frame_age() {
       now - oldest->enqueue_ns < config_.max_oldest_unsent_frame_age_ns) {
     return;
   }
+  if (!idr_request_.has_value()) {
+    trace_recovery("queue_age", now, 0, 0, now - oldest->enqueue_ns, 0);
+  }
   drop_unstarted_video_frames();
   request_recovery(IdrRequestReason::Congestion);
 }
@@ -436,6 +475,7 @@ HostSendScheduler::next_video_fragment() {
           idr_request_->recovery_id == *frame.recovery_id) {
         idr_request_.reset();
       }
+      active_recovery_id_ = frame.recovery_id;
       return std::move(frame.fragments[frame.next_fragment++]);
     }
     video_.pop_front();
@@ -459,6 +499,7 @@ void HostSendScheduler::write_active() {
     active_offset_ += result.bytes;
     if (active_offset_ == active_->size()) {
       active_.reset();
+      active_recovery_id_.reset();
       active_offset_ = 0;
       return;
     }

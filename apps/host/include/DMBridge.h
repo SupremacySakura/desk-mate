@@ -52,6 +52,10 @@ int32_t dm_bridge_take_input(DMBridge *bridge, DMInputEvent *out, int32_t capaci
 
 /* Non-zero when the scheduler asked for a fresh IDR. */
 int32_t dm_bridge_needs_keyframe(DMBridge *bridge);
+/* Non-zero recovery_id when the scheduler needs a fresh IDR; 0 otherwise. */
+uint32_t dm_bridge_keyframe_request_id(DMBridge *bridge);
+/* Returns the negotiated refresh rate in Hz, or 0 if not yet negotiated. */
+int32_t dm_bridge_negotiated_refresh_hz(DMBridge *bridge);
 
 /* Host system events; values mirror deskmate::protocol::HostEvent. */
 enum {

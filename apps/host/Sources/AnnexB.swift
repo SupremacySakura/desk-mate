@@ -35,41 +35,45 @@ enum AnnexB {
             return data
         }
 
-        let bytes = [UInt8](data)
-        var output = Data()
-        output.reserveCapacity(bytes.count + 16)
-        var offset = 0
+        return try data.withUnsafeBytes { rawBuffer -> Data in
+            let bytes = rawBuffer.bindMemory(to: UInt8.self)
+            var output = Data()
+            output.reserveCapacity(bytes.count + 16)
+            var offset = 0
 
-        while offset < bytes.count {
-            let remaining = bytes.count - offset
-            guard remaining >= nalUnitHeaderLength else {
-                throw AnnexBError.truncatedNALLength(offset: offset, remaining: remaining)
+            while offset < bytes.count {
+                let remaining = bytes.count - offset
+                guard remaining >= nalUnitHeaderLength else {
+                    throw AnnexBError.truncatedNALLength(offset: offset, remaining: remaining)
+                }
+
+                var length = 0
+                for index in 0..<nalUnitHeaderLength {
+                    length = (length << 8) | Int(bytes[offset + index])
+                }
+                offset += nalUnitHeaderLength
+
+                guard length > 0 else {
+                    throw AnnexBError.zeroLengthNALUnit(offset: offset - nalUnitHeaderLength)
+                }
+                let remainingPayload = bytes.count - offset
+                guard length <= remainingPayload else {
+                    throw AnnexBError.invalidNALLength(
+                        offset: offset - nalUnitHeaderLength,
+                        declared: length,
+                        remaining: remainingPayload
+                    )
+                }
+
+                output.append(startCode)
+                if let base = bytes.baseAddress {
+                    output.append(base.advanced(by: offset), count: length)
+                }
+                offset += length
             }
 
-            var length = 0
-            for index in 0..<nalUnitHeaderLength {
-                length = (length << 8) | Int(bytes[offset + index])
-            }
-            offset += nalUnitHeaderLength
-
-            guard length > 0 else {
-                throw AnnexBError.zeroLengthNALUnit(offset: offset - nalUnitHeaderLength)
-            }
-            let remainingPayload = bytes.count - offset
-            guard length <= remainingPayload else {
-                throw AnnexBError.invalidNALLength(
-                    offset: offset - nalUnitHeaderLength,
-                    declared: length,
-                    remaining: remainingPayload
-                )
-            }
-
-            output.append(startCode)
-            output.append(contentsOf: bytes[offset..<(offset + length)])
-            offset += length
+            return output
         }
-
-        return output
     }
 
     static func parameterSetType(codec: String, nalUnit: Data) -> String? {

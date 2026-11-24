@@ -11,6 +11,7 @@ CORE_SOURCES := $(wildcard $(REPO)/core/src/*.cpp)
 CORE_OBJECTS := $(patsubst $(REPO)/core/src/%.cpp,$(BUILD_DIR)/core/%.o,$(CORE_SOURCES))
 BRIDGE_OBJECT := $(BUILD_DIR)/Bridge.o
 OBJC_OBJECT := $(BUILD_DIR)/DMVirtualDisplay.o
+USB_BYTE_IO_TEST := $(BUILD_DIR)/usb-byte-io-test
 
 SWIFT_SOURCES := $(wildcard $(ROOT)/Sources/*.swift)
 BRIDGE_HEADER := $(ROOT)/Sources/include/DeskMateBridge.h
@@ -103,8 +104,13 @@ build: $(CORE_OBJECTS) $(BRIDGE_OBJECT) $(OBJC_OBJECT) | $(BUILD_DIR) $(MODULE_C
 
 app: build
 
-test: app
+$(USB_BYTE_IO_TEST): $(ROOT)/tests/usb_byte_io_test.cpp $(ROOT)/Sources/Bridge.cpp $(ROOT)/include/DMBridge.h $(CORE_OBJECTS) | $(BUILD_DIR)
+	@xcrun --sdk macosx clang++ $(CORE_FLAGS) "$<" $(CORE_OBJECTS) \
+		-L"$(LIBUSB_PREFIX)/lib" -lusb-1.0 -Wl,-rpath,"$(LIBUSB_PREFIX)/lib" -o "$@"
+
+test: app $(USB_BYTE_IO_TEST)
 	@bash "$(ROOT)/tests/contract.sh" "$(APP)"
+	@"$(USB_BYTE_IO_TEST)"
 
 list-displays: app
 	@"$(BIN)" --list-displays

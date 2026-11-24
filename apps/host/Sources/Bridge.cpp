@@ -7,12 +7,15 @@
 #include <libusb-1.0/libusb.h>
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <deque>
+#include <functional>
 #include <mutex>
 #include <sstream>
 #include <string>
@@ -27,8 +30,13 @@ constexpr std::uint16_t kAccessoryVendorId = 0x18D1;
 constexpr std::uint16_t kAccessoryProductIdMin = 0x2D00;
 constexpr std::uint16_t kAccessoryProductIdMax = 0x2D05;
 constexpr unsigned kControlTimeoutMs = 3000;
-constexpr unsigned kIoTimeoutMs = 4;
+constexpr unsigned kReadTimeoutMs = 1;
+constexpr unsigned kReadThreadTimeoutMs = 25;
 constexpr unsigned kWriteTimeoutMs = 20;
+constexpr std::size_t kMaxRxBufferBytes = 256U * 1024U;
+constexpr std::size_t kHostSchedulerMaxVideoUrbs = 8;
+constexpr std::size_t kHostSchedulerMaxPendingVideoBytes = 2U * 1024U * 1024U;
+constexpr std::uint64_t kHostSchedulerMaxUnsentFrameAgeNs = 100'000'000ULL;
 constexpr int kMaxHandshakeAttempts = 5;
 /* In-place session rebuilds are right while the tablet has not opened the
    accessory yet. Once it answers and then stalls mid-handshake, the device side
@@ -39,7 +47,7 @@ constexpr int kInPlaceRetriesBeforeRelink = 2;
    buffer; larger packets are truncated by the driver. 64 fragments per frame
    (the protocol maximum) still covers a 768 KiB keyframe. */
 constexpr std::size_t kVideoFragmentPayload = 12U * 1024U;
-constexpr std::size_t kMaxPendingVideoFrames = 8;
+constexpr std::size_t kMaxPendingVideoFrames = 16;
 /* The tablet shows a USB-accessory consent dialog the first time an accessory
    claims the interface. The protocol default of 2 s expires before anyone can
    tap it, so the host allows a full 20 s for the first ClientHello. */
@@ -58,30 +66,57 @@ class UsbByteIo final : public deskmate::protocol::ByteIo {
   UsbByteIo(libusb_device_handle *handle, std::uint8_t endpoint_in,
             std::uint8_t endpoint_out, std::atomic<std::uint64_t> *rx_bytes,
             std::atomic<std::uint64_t> *tx_bytes,
-            std::atomic<std::uint64_t> *bulk_errors)
+            std::atomic<std::uint64_t> *bulk_errors,
+            std::uint64_t *write_timeouts,
+            std::uint64_t *write_timeout_bytes,
+            std::function<void()> on_rx_ready = nullptr)
       : handle_(handle),
         endpoint_in_(endpoint_in),
         endpoint_out_(endpoint_out),
         rx_bytes_(rx_bytes),
         tx_bytes_(tx_bytes),
-        bulk_errors_(bulk_errors) {}
+        bulk_errors_(bulk_errors),
+        write_timeouts_(write_timeouts),
+        write_timeout_bytes_(write_timeout_bytes),
+        on_rx_ready_(std::move(on_rx_ready)) {
+    if (handle_ != nullptr) {
+      rx_thread_ = std::thread([this] { rx_loop(); });
+    }
+  }
+
+  ~UsbByteIo() override { stop_rx(); }
 
   deskmate::protocol::IoResult read(
       std::span<std::uint8_t> destination) override {
+    if (handle_ != nullptr) {
+      std::lock_guard lock(rx_mutex_);
+      if (!rx_buffer_.empty()) {
+        const std::size_t take = std::min(destination.size(), rx_buffer_.size());
+        std::copy_n(rx_buffer_.begin(), take, destination.data());
+        rx_buffer_.erase(rx_buffer_.begin(),
+                         rx_buffer_.begin() + static_cast<std::ptrdiff_t>(take));
+        return {deskmate::protocol::IoStatus::Ok, take};
+      }
+      if (rx_closed_) {
+        return {deskmate::protocol::IoStatus::Closed, 0};
+      }
+      if (rx_error_) {
+        return {deskmate::protocol::IoStatus::Error, 0};
+      }
+      return {deskmate::protocol::IoStatus::WouldBlock, 0};
+    }
+
     int transferred = 0;
     const int rc = libusb_bulk_transfer(
         handle_, endpoint_in_, destination.data(),
-        static_cast<int>(destination.size()), &transferred, kIoTimeoutMs);
-    if (rc == LIBUSB_SUCCESS) {
+        static_cast<int>(destination.size()), &transferred, kReadTimeoutMs);
+    if (rc == LIBUSB_SUCCESS || rc == LIBUSB_ERROR_TIMEOUT) {
       if (transferred == 0) {
         return {deskmate::protocol::IoStatus::WouldBlock, 0};
       }
       rx_bytes_->fetch_add(static_cast<std::uint64_t>(transferred));
       return {deskmate::protocol::IoStatus::Ok,
               static_cast<std::size_t>(transferred)};
-    }
-    if (rc == LIBUSB_ERROR_TIMEOUT) {
-      return {deskmate::protocol::IoStatus::WouldBlock, 0};
     }
     if (rc == LIBUSB_ERROR_NO_DEVICE) {
       return {deskmate::protocol::IoStatus::Closed, 0};
@@ -97,16 +132,25 @@ class UsbByteIo final : public deskmate::protocol::ByteIo {
         handle_, endpoint_out_,
         const_cast<unsigned char *>(source.data()),
         static_cast<int>(source.size()), &transferred, kWriteTimeoutMs);
-    if (rc == LIBUSB_SUCCESS) {
+    if (rc == LIBUSB_ERROR_TIMEOUT && write_timeouts_ != nullptr) {
+      ++*write_timeouts_;
+      if (*write_timeouts_ <= 30) {
+        std::fprintf(stderr, "[DEBUG-dm-out] len=%zu transferred=%d\n",
+                     source.size(), transferred);
+      }
+      if (transferred > 0) {
+        *write_timeout_bytes_ += static_cast<std::uint64_t>(transferred);
+      }
+    }
+    // A timed-out bulk write may have sent a prefix; retry only its suffix.
+    if (rc == LIBUSB_SUCCESS || rc == LIBUSB_ERROR_TIMEOUT) {
       if (transferred == 0) {
+        write_blocked_.store(true, std::memory_order_relaxed);
         return {deskmate::protocol::IoStatus::WouldBlock, 0};
       }
       tx_bytes_->fetch_add(static_cast<std::uint64_t>(transferred));
       return {deskmate::protocol::IoStatus::Ok,
               static_cast<std::size_t>(transferred)};
-    }
-    if (rc == LIBUSB_ERROR_TIMEOUT) {
-      return {deskmate::protocol::IoStatus::WouldBlock, 0};
     }
     if (rc == LIBUSB_ERROR_NO_DEVICE) {
       return {deskmate::protocol::IoStatus::Closed, 0};
@@ -115,15 +159,93 @@ class UsbByteIo final : public deskmate::protocol::ByteIo {
     return {deskmate::protocol::IoStatus::Error, 0};
   }
 
-  void cancel() override {}
+  bool consume_write_blocked() noexcept {
+    return write_blocked_.exchange(false, std::memory_order_relaxed);
+  }
+
+  void cancel() override {
+    if (on_rx_ready_) {
+      on_rx_ready_();
+    }
+  }
 
  private:
+  void stop_rx() {
+    rx_stop_.store(true, std::memory_order_release);
+    if (rx_thread_.joinable()) {
+      rx_thread_.join();
+    }
+  }
+
+  void rx_loop() {
+    std::array<std::uint8_t, 4096> chunk{};
+    while (!rx_stop_.load(std::memory_order_acquire)) {
+      int transferred = 0;
+      const int rc = libusb_bulk_transfer(
+          handle_, endpoint_in_, chunk.data(), static_cast<int>(chunk.size()),
+          &transferred, kReadThreadTimeoutMs);
+      if (rc == LIBUSB_SUCCESS || rc == LIBUSB_ERROR_TIMEOUT) {
+        if (transferred > 0) {
+          rx_bytes_->fetch_add(static_cast<std::uint64_t>(transferred));
+          {
+            std::lock_guard lock(rx_mutex_);
+            const std::size_t count = static_cast<std::size_t>(transferred);
+            if (rx_buffer_.size() + count > kMaxRxBufferBytes) {
+              const std::size_t drop =
+                  std::min(rx_buffer_.size(),
+                           rx_buffer_.size() + count - kMaxRxBufferBytes);
+              rx_buffer_.erase(rx_buffer_.begin(),
+                               rx_buffer_.begin() + static_cast<std::ptrdiff_t>(drop));
+            }
+            rx_buffer_.insert(rx_buffer_.end(), chunk.begin(),
+                              chunk.begin() + static_cast<std::ptrdiff_t>(count));
+          }
+          if (on_rx_ready_) {
+            on_rx_ready_();
+          }
+        }
+        continue;
+      }
+      if (rc == LIBUSB_ERROR_NO_DEVICE) {
+        {
+          std::lock_guard lock(rx_mutex_);
+          rx_closed_ = true;
+        }
+        if (on_rx_ready_) {
+          on_rx_ready_();
+        }
+        return;
+      }
+      if (!rx_stop_.load(std::memory_order_acquire)) {
+        bulk_errors_->fetch_add(1);
+        {
+          std::lock_guard lock(rx_mutex_);
+          rx_error_ = true;
+        }
+        if (on_rx_ready_) {
+          on_rx_ready_();
+        }
+      }
+      return;
+    }
+  }
+
   libusb_device_handle *handle_;
   std::uint8_t endpoint_in_;
   std::uint8_t endpoint_out_;
   std::atomic<std::uint64_t> *rx_bytes_;
   std::atomic<std::uint64_t> *tx_bytes_;
   std::atomic<std::uint64_t> *bulk_errors_;
+  std::uint64_t *write_timeouts_;
+  std::uint64_t *write_timeout_bytes_;
+  std::function<void()> on_rx_ready_;
+  std::atomic<bool> write_blocked_{false};
+  std::atomic<bool> rx_stop_{false};
+  std::thread rx_thread_;
+  std::mutex rx_mutex_;
+  std::deque<std::uint8_t> rx_buffer_;
+  bool rx_closed_{false};
+  bool rx_error_{false};
 };
 
 struct BulkEndpoints {
@@ -318,12 +440,17 @@ struct DMBridge {
 
   std::mutex session_mutex;
   std::mutex video_mutex;
+  std::condition_variable wake_cv;
+  bool rx_wakeup = false;
   std::deque<PendingVideo> video_queue;
   std::atomic<std::uint64_t> frames_dropped_backlog{0};
 
   std::thread worker;
   std::atomic<bool> stop_requested{false};
   std::atomic<bool> running{false};
+  std::atomic<bool> needs_keyframe{false};
+  std::atomic<std::uint32_t> keyframe_request_id{0};
+  std::atomic<std::int32_t> negotiated_refresh_hz{0};
 
   DMLogCallback log_callback = nullptr;
   void *log_context = nullptr;
@@ -338,6 +465,13 @@ struct DMBridge {
   std::atomic<std::uint64_t> rx_bytes{0};
   std::atomic<std::uint64_t> tx_bytes{0};
   std::atomic<std::uint64_t> bulk_errors{0};
+  const bool perf_trace = std::getenv("DESKMATE_PERF_TRACE") != nullptr;
+  std::uint64_t perf_idr_wait = 0;
+  std::uint64_t perf_invalid = 0;
+  std::uint64_t perf_other_rejected = 0;
+  std::uint64_t perf_inactive = 0;
+  std::uint64_t perf_write_timeouts = 0;
+  std::uint64_t perf_write_timeout_bytes = 0;
 
   std::mutex error_mutex;
   std::string last_error;
@@ -484,6 +618,24 @@ void start_session(DMBridge *bridge) {
      answer with the previous attempt's StreamReady/StreamCommitted. */
   session_config.initial_config_id = (random_nonzero_u32() & 0x7FFFFFFFU) | 1U;
   session_config.limits.stage_timeout_ns = kHandshakeStageTimeoutNs;
+  session_config.scheduler.max_video_urbs = kHostSchedulerMaxVideoUrbs;
+  session_config.scheduler.max_pending_video_bytes =
+      kHostSchedulerMaxPendingVideoBytes;
+  session_config.scheduler.max_oldest_unsent_frame_age_ns =
+      kHostSchedulerMaxUnsentFrameAgeNs;
+  if (bridge->perf_trace) {
+    const char *frame_age_ms = std::getenv("DESKMATE_PERF_FRAME_AGE_MS");
+    if (frame_age_ms != nullptr) {
+      const long parsed = std::strtol(frame_age_ms, nullptr, 10);
+      if (parsed > 0) {
+        session_config.scheduler.max_oldest_unsent_frame_age_ns =
+            static_cast<std::uint64_t>(parsed) * 1'000'000ULL;
+      }
+    }
+    std::fprintf(stderr, "[DEBUG-dm-fps] frame_age_limit_ns=%llu\n",
+        static_cast<unsigned long long>(
+            session_config.scheduler.max_oldest_unsent_frame_age_ns));
+  }
   /* The tablet's accessory read() is message-oriented and its buffer tops out
      at 16 KiB (64 KiB requests fail with EINVAL); anything beyond the read
      buffer is discarded by the driver, not returned by a later read. A 32 KiB
@@ -501,16 +653,27 @@ void start_session(DMBridge *bridge) {
   }
   session_config.capabilities.pixel_formats = {
       deskmate::protocol::PixelFormat::Nv12};
-  session_config.capabilities.resolutions = {
-      deskmate::protocol::DisplayResolution{
-          static_cast<std::uint16_t>(bridge->config.width),
-          static_cast<std::uint16_t>(bridge->config.height),
-          static_cast<std::uint16_t>(bridge->config.refresh_hz)}};
+  const auto width = static_cast<std::uint16_t>(bridge->config.width);
+  const auto height = static_cast<std::uint16_t>(bridge->config.height);
+  const auto target_hz = static_cast<std::uint16_t>(bridge->config.refresh_hz);
+  session_config.capabilities.resolutions.push_back(
+      deskmate::protocol::DisplayResolution{width, height, target_hz});
+  if (target_hz > 90) {
+    session_config.capabilities.resolutions.push_back(
+        deskmate::protocol::DisplayResolution{width, height, 90});
+  }
+  if (target_hz > 60) {
+    session_config.capabilities.resolutions.push_back(
+        deskmate::protocol::DisplayResolution{width, height, 60});
+  }
 
   auto session = std::make_unique<deskmate::protocol::HostSession>(
       *bridge->io, *bridge->clock, session_config, bridge->boundary);
   session->start();
   std::lock_guard lock(bridge->session_mutex);
+  bridge->negotiated_refresh_hz.store(0);
+  bridge->keyframe_request_id.store(0);
+  bridge->needs_keyframe.store(false);
   bridge->session = std::move(session);
 }
 
@@ -568,11 +731,18 @@ bool connect_once(DMBridge *bridge) {
   }
   bridge->interface_claimed = true;
 
-  bridge->io = std::make_unique<UsbByteIo>(bridge->handle, endpoints.endpoint_in,
-                                           endpoints.endpoint_out,
-                                           &bridge->rx_bytes,
-                                           &bridge->tx_bytes,
-                                           &bridge->bulk_errors);
+  bridge->io = std::make_unique<UsbByteIo>(
+      bridge->handle, endpoints.endpoint_in, endpoints.endpoint_out,
+      &bridge->rx_bytes, &bridge->tx_bytes, &bridge->bulk_errors,
+      bridge->perf_trace ? &bridge->perf_write_timeouts : nullptr,
+      bridge->perf_trace ? &bridge->perf_write_timeout_bytes : nullptr,
+      [bridge] {
+        {
+          std::lock_guard lock(bridge->video_mutex);
+          bridge->rx_wakeup = true;
+        }
+        bridge->wake_cv.notify_one();
+      });
   {
     std::ostringstream line;
     line << "claimed interface " << endpoints.interface_number << " in=0x"
@@ -588,6 +758,9 @@ bool connect_once(DMBridge *bridge) {
 void teardown_link(DMBridge *bridge) {
   {
     std::lock_guard lock(bridge->session_mutex);
+    bridge->needs_keyframe.store(false);
+    bridge->keyframe_request_id.store(0);
+    bridge->negotiated_refresh_hz.store(0);
     bridge->session.reset();
   }
   bridge->io.reset();
@@ -632,12 +805,15 @@ void worker_main(DMBridge *bridge) {
     std::string failure;
     bool stopped = false;
     auto next_status_log = std::chrono::steady_clock::now();
+    auto next_perf_log = next_status_log;
     for (;;) {
       if (bridge->stop_requested.load()) {
         stopped = true;
         break;
       }
       bool terminal = false;
+      bool has_pending_output = false;
+      bool write_blocked = false;
       {
         std::lock_guard lock(bridge->session_mutex);
         if (bridge->session == nullptr) {
@@ -649,11 +825,24 @@ void worker_main(DMBridge *bridge) {
           {
             std::lock_guard video_lock(bridge->video_mutex);
             batch.swap(bridge->video_queue);
+            bridge->rx_wakeup = false;
           }
           for (const DMBridge::PendingVideo &frame : batch) {
             const auto status = bridge->session->send_video_frame(
                 std::span<const std::uint8_t>(frame.bytes), frame.pts_us,
                 frame.keyframe);
+            if (bridge->perf_trace) {
+              using Status = deskmate::protocol::VideoSendStatus;
+              switch (status) {
+                case Status::Sent: break;
+                case Status::NotStreaming:
+                case Status::Paused: ++bridge->perf_inactive; break;
+                case Status::IdrRequired: ++bridge->perf_idr_wait; break;
+                case Status::InvalidArgument:
+                case Status::EmptyPayload: ++bridge->perf_invalid; break;
+                default: ++bridge->perf_other_rejected; break;
+              }
+            }
             if (status == deskmate::protocol::VideoSendStatus::Sent) {
               bridge->frames_sent.fetch_add(1);
             } else if (status !=
@@ -664,11 +853,56 @@ void worker_main(DMBridge *bridge) {
           }
           bridge->session->pump();
           terminal = bridge->session->is_terminal();
+          has_pending_output =
+              !terminal && bridge->session->has_pending_output();
+          if (bridge->io != nullptr) {
+            write_blocked = bridge->io->consume_write_blocked();
+          }
+          if (!terminal) {
+            if (const auto &idr = bridge->session->pending_idr_request();
+                idr.has_value()) {
+              bridge->needs_keyframe.store(true);
+              bridge->keyframe_request_id.store(idr->recovery_id);
+            } else {
+              bridge->needs_keyframe.store(false);
+              bridge->keyframe_request_id.store(0);
+            }
+            if (const auto &stream = bridge->session->negotiated_stream();
+                stream.has_value()) {
+              bridge->negotiated_refresh_hz.store(
+                  static_cast<std::int32_t>(stream->profile.resolution.refresh_hz));
+            }
+          } else {
+            bridge->needs_keyframe.store(false);
+            bridge->keyframe_request_id.store(0);
+          }
           if (terminal && bridge->session->failure().has_value()) {
             failure = std::string(deskmate::protocol::session_failure_name(
                 *bridge->session->failure()));
           }
         }
+      }
+      const auto now = std::chrono::steady_clock::now();
+      if (bridge->perf_trace && (now >= next_perf_log || terminal)) {
+        next_perf_log = now + std::chrono::seconds(1);
+        const auto timestamp_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::system_clock::now().time_since_epoch()).count();
+        std::fprintf(stderr,
+            "[DEBUG-dm-fps] wall_ms=%lld submitted=%llu queued=%llu "
+            "idr_wait=%llu invalid=%llu other=%llu inactive=%llu backlog=%llu "
+            "usb_bytes=%llu usb_timeouts=%llu usb_timeout_bytes=%llu bulk_errors=%llu terminal=%d\n",
+            static_cast<long long>(timestamp_ms),
+            static_cast<unsigned long long>(bridge->frames_submitted.load()),
+            static_cast<unsigned long long>(bridge->frames_sent.load()),
+            static_cast<unsigned long long>(bridge->perf_idr_wait),
+            static_cast<unsigned long long>(bridge->perf_invalid),
+            static_cast<unsigned long long>(bridge->perf_other_rejected),
+            static_cast<unsigned long long>(bridge->perf_inactive),
+            static_cast<unsigned long long>(bridge->frames_dropped_backlog.load()),
+            static_cast<unsigned long long>(bridge->tx_bytes.load()),
+            static_cast<unsigned long long>(bridge->perf_write_timeouts),
+            static_cast<unsigned long long>(bridge->perf_write_timeout_bytes),
+            static_cast<unsigned long long>(bridge->bulk_errors.load()), terminal);
       }
       if (terminal) {
         break;
@@ -676,7 +910,6 @@ void worker_main(DMBridge *bridge) {
 
       /* Periodic state line: state, byte counters and frame count make a single
          run diagnosable without a second attempt. */
-      const auto now = std::chrono::steady_clock::now();
       if (now >= next_status_log) {
         next_status_log = now + std::chrono::seconds(5);
         std::string state;
@@ -721,7 +954,16 @@ void worker_main(DMBridge *bridge) {
         }
         bridge->log(line);
       }
-      std::this_thread::sleep_for(std::chrono::milliseconds(1));
+      if (!has_pending_output || write_blocked) {
+        const auto wait_duration =
+            has_pending_output ? std::chrono::milliseconds(1)
+                               : std::chrono::milliseconds(5);
+        std::unique_lock video_lock(bridge->video_mutex);
+        bridge->wake_cv.wait_for(video_lock, wait_duration, [bridge] {
+          return bridge->stop_requested.load() ||
+                 !bridge->video_queue.empty() || bridge->rx_wakeup;
+        });
+      }
     }
 
     bridge->running.store(false);
@@ -791,6 +1033,7 @@ void dm_bridge_stop(DMBridge *bridge) {
     return;
   }
   bridge->stop_requested.store(true);
+  bridge->wake_cv.notify_all();
   if (bridge->worker.joinable()) {
     bridge->worker.join();
   }
@@ -820,22 +1063,25 @@ int32_t dm_bridge_submit_video(DMBridge *bridge, const std::uint8_t *data,
     return -1;
   }
   bridge->frames_submitted.fetch_add(1);
-  std::lock_guard lock(bridge->video_mutex);
-  if (bridge->video_queue.size() >= kMaxPendingVideoFrames) {
-    if (keyframe == 0) {
-      bridge->frames_dropped_backlog.fetch_add(1);
-      bridge->frames_rejected.fetch_add(1);
-      return -2;
+  {
+    std::lock_guard lock(bridge->video_mutex);
+    if (bridge->video_queue.size() >= kMaxPendingVideoFrames) {
+      if (keyframe == 0) {
+        bridge->frames_dropped_backlog.fetch_add(1);
+        bridge->frames_rejected.fetch_add(1);
+        return -2;
+      }
+      /* A keyframe supersedes the whole backlog: nothing older can be decoded. */
+      bridge->frames_dropped_backlog.fetch_add(bridge->video_queue.size());
+      bridge->video_queue.clear();
     }
-    /* A keyframe supersedes the whole backlog: nothing older can be decoded. */
-    bridge->frames_dropped_backlog.fetch_add(bridge->video_queue.size());
-    bridge->video_queue.clear();
+    DMBridge::PendingVideo pending;
+    pending.bytes.assign(data, data + size);
+    pending.pts_us = pts_us;
+    pending.keyframe = keyframe != 0;
+    bridge->video_queue.push_back(std::move(pending));
   }
-  DMBridge::PendingVideo pending;
-  pending.bytes.assign(data, data + size);
-  pending.pts_us = pts_us;
-  pending.keyframe = keyframe != 0;
-  bridge->video_queue.push_back(std::move(pending));
+  bridge->wake_cv.notify_one();
   return 0;
 }
 
@@ -844,8 +1090,8 @@ int32_t dm_bridge_take_input(DMBridge *bridge, DMInputEvent *out,
   if (bridge == nullptr || out == nullptr || capacity <= 0) {
     return 0;
   }
-  std::lock_guard lock(bridge->session_mutex);
-  if (bridge->session == nullptr) {
+  std::unique_lock lock(bridge->session_mutex, std::try_to_lock);
+  if (!lock.owns_lock() || bridge->session == nullptr) {
     return 0;
   }
   const auto events = bridge->session->take_input_events();
@@ -867,14 +1113,31 @@ int32_t dm_bridge_take_input(DMBridge *bridge, DMInputEvent *out,
 }
 
 int32_t dm_bridge_needs_keyframe(DMBridge *bridge) {
+  return bridge != nullptr && bridge->needs_keyframe.load() ? 1 : 0;
+}
+
+uint32_t dm_bridge_keyframe_request_id(DMBridge *bridge) {
+  return bridge != nullptr ? bridge->keyframe_request_id.load() : 0;
+}
+
+int32_t dm_bridge_negotiated_refresh_hz(DMBridge *bridge) {
   if (bridge == nullptr) {
     return 0;
   }
-  std::lock_guard lock(bridge->session_mutex);
-  if (bridge->session == nullptr) {
-    return 0;
+  const std::int32_t cached = bridge->negotiated_refresh_hz.load();
+  if (cached > 0) {
+    return cached;
   }
-  return bridge->session->pending_idr_request().has_value() ? 1 : 0;
+  std::unique_lock lock(bridge->session_mutex, std::try_to_lock);
+  if (lock.owns_lock() && bridge->session != nullptr) {
+    if (const auto &stream = bridge->session->negotiated_stream();
+        stream.has_value()) {
+      const auto hz = static_cast<std::int32_t>(stream->profile.resolution.refresh_hz);
+      bridge->negotiated_refresh_hz.store(hz);
+      return hz;
+    }
+  }
+  return 0;
 }
 
 int32_t dm_bridge_host_event(DMBridge *bridge, int32_t event) {
@@ -920,7 +1183,10 @@ char *dm_bridge_snapshot(DMBridge *bridge) {
   std::string negotiated = "none";
   bool input_enabled = false;
   {
-    std::lock_guard lock(bridge->session_mutex);
+    std::unique_lock lock(bridge->session_mutex, std::try_to_lock);
+    if (!lock.owns_lock()) {
+      return nullptr;
+    }
     if (bridge->session != nullptr) {
       state = state_name(bridge->session->state());
       if (const auto &stream = bridge->session->negotiated_stream();

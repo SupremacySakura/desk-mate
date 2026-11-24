@@ -110,6 +110,7 @@ class HostSendScheduler {
   std::deque<std::vector<std::uint8_t>> priority_;
   std::deque<VideoFrame> video_;
   std::optional<std::vector<std::uint8_t>> active_;
+  std::optional<std::uint32_t> active_recovery_id_;
   std::size_t active_offset_{};
   std::optional<SchedulerIdrRequest> idr_request_;
   std::uint32_t last_recovery_id_{};

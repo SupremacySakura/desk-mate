@@ -20,6 +20,9 @@ _避免使用_：副屏、镜像屏、投屏
 从 Host 的 Extended Display 采集、编码并传输到 Device 的视频画面。
 _避免使用_：音视频流、投屏音频
 
+**首帧上屏**:
+一次 Session 中，Device 第一次实际呈现 Extended Display 的有效画面。配件打开、Session 协商完成或 Host 已开始编码均不代表首帧上屏。
+
 **Reverse Input**:
 由 Device 采集并发送给 Host 的触控、手写笔或键盘输入。
 _避免使用_：反向控制、触控回传

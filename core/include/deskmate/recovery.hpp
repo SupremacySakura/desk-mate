@@ -30,6 +30,7 @@ class DeviceRecoveryGate {
   [[nodiscard]] RecoveryFrameAction observe_frame(
       std::uint16_t flags, std::optional<std::uint32_t> recovery_id);
   [[nodiscard]] std::optional<std::uint32_t> retry_if_due();
+  void accept_unsolicited_recovery(std::uint32_t recovery_id) noexcept;
   void reset() noexcept;
 
   [[nodiscard]] bool gated() const noexcept { return gated_; }

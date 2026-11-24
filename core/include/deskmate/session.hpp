@@ -404,6 +404,7 @@ class HostSession {
   [[nodiscard]] const std::optional<NegotiatedStream>& negotiated_stream() const;
   [[nodiscard]] const std::optional<SchedulerIdrRequest>& pending_idr_request()
       const;
+  [[nodiscard]] bool has_pending_output() const;
   [[nodiscard]] bool capture_encoding_intent() const;
   [[nodiscard]] bool input_injection_intent() const;
   [[nodiscard]] bool pause_acknowledged() const;

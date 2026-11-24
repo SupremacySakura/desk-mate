@@ -362,6 +362,34 @@ void test_scheduled_recovery_keyframe_marks_wire_before_clearing_request() {
   CHECK(!scheduler.idr_request().has_value());
 }
 
+void test_peer_retry_does_not_restart_in_flight_recovery() {
+  using namespace deskmate::protocol;
+  ManualClock clock;
+  CaptureIo io;
+  HostSendScheduler scheduler(io, clock, SendSchedulerConfig{.max_video_urbs = 1});
+  scheduler.request_idr_from_peer(7);
+  CHECK_EQ(scheduler.enqueue_video_frame(ScheduledVideoFrame{
+               .fragments = encoded_keyframe(1, std::vector<std::uint8_t>(70, 0xAA)),
+               .keyframe = true,
+           }), SchedulerQueueStatus::Queued);
+  scheduler.pump();
+  CHECK(!scheduler.idr_request().has_value());
+  scheduler.request_idr_from_peer(7);
+  CHECK(!scheduler.idr_request().has_value());
+  CHECK_EQ(scheduler.enqueue_video_frame(ScheduledVideoFrame{
+               .fragments = encoded_video_frame(2, {0xBB}),
+           }), SchedulerQueueStatus::Queued);
+  scheduler.pump();
+  scheduler.pump();
+  scheduler.pump();
+  MessageStreamDecoder decoder(StreamDecoderConfig{0x11223344, 0x55667788});
+  const auto events = decoder.feed(io.bytes);
+  CHECK_EQ(events.size(), 2U);
+  CHECK_EQ(events[1].header.seq, 2U);
+  scheduler.request_idr_from_peer(7);
+  CHECK(scheduler.idr_request().has_value());
+}
+
 void test_recovery_request_marks_already_queued_keyframe() {
   deskmate::protocol::ManualClock clock;
   CaptureIo io;
@@ -670,6 +698,8 @@ int main() {
        test_scheduled_recovery_keyframe_marks_wire_before_clearing_request},
       {"recovery request marks already queued keyframe",
        test_recovery_request_marks_already_queued_keyframe},
+      {"peer retry does not restart in-flight recovery",
+       test_peer_retry_does_not_restart_in_flight_recovery},
       {"recovery request drops unstarted P frames",
        test_recovery_request_drops_unstarted_p_frames},
       {"unmarkable scheduled keyframes keep recovery request",

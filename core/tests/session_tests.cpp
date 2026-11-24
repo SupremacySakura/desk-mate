@@ -1151,6 +1151,83 @@ void test_host_oldest_unsent_frame_age_triggers_recovery() {
   CHECK_EQ(pair.device.last_good_frame()->header.seq, 4U);
 }
 
+void test_multifragment_congestion_idr_delivered_one_fragment_per_pump_does_not_loop() {
+  SessionPair pair(default_host_config(), default_device_config());
+  drive_to_committed(pair);
+
+  CHECK_EQ(pair.host.send_video_frame(std::vector<std::uint8_t>{0x10}, 1, true),
+           VideoSendStatus::Sent);
+  pair.host.pump();
+  pair.device.pump();
+  CHECK_EQ(pair.device.take_video_frames().size(), 1U);
+
+  const auto controls_before = decode_controls(pair.device_to_host).size();
+
+  // Build a 4-fragment Host congestion recovery IDR with a seq gap (seq=5 after
+  // seq=1) and a Host-side recovery_id (3) that differs from Device's next id (1).
+  deskmate::protocol::VideoFrameToSend idr;
+  idr.session_nonce = 0x88888888;
+  idr.video_stream_id = 0x77777777;
+  idr.seq = 5;
+  idr.timestamp_us = 5000;
+  idr.flags = deskmate::protocol::kFlagKeyFrame |
+              deskmate::protocol::kFlagRecoveryIdr;
+  idr.recovery_id = 3;
+  idr.payload = {0xA1, 0xA2, 0xA3, 0xA4, 0xA5, 0xA6, 0xA7, 0xA8};
+  auto fragments = deskmate::protocol::encode_video_fragments(idr, 4);
+  CHECK(fragments);
+  CHECK(fragments.value().size() >= 3U);
+
+  // Deliver exactly one fragment per device.pump() (matching FdByteIo's 1-permit
+  // poll loop on the tablet). Fragment 0 must NOT emit a premature RequestIdr.
+  for (std::size_t index = 0; index + 1 < fragments.value().size(); ++index) {
+    pair.host_to_device.append(fragments.value()[index]);
+    pair.device.pump();
+    CHECK(pair.device.take_video_frames().empty());
+    CHECK_EQ(decode_controls(pair.device_to_host).size(), controls_before);
+  }
+
+  // Final fragment completes the unsolicited recovery IDR, ungates cleanly, and
+  // still emits zero RequestIdr controls.
+  pair.host_to_device.append(fragments.value().back());
+  pair.device.pump();
+  const auto frames = pair.device.take_video_frames();
+  CHECK_EQ(frames.size(), 1U);
+  CHECK_EQ(frames[0].header.seq, 5U);
+  CHECK_EQ(frames[0].payload, idr.payload);
+  CHECK(!pair.device.recovery_gated());
+  CHECK_EQ(decode_controls(pair.device_to_host).size(), controls_before);
+
+  // Subsequent P-frame continues seamlessly without recovery.
+  append_video(pair.host_to_device, 0x88888888, 0x77777777, 6, {0xB1, 0xB2}, 0);
+  pair.device.pump();
+  const auto next_frames = pair.device.take_video_frames();
+  CHECK_EQ(next_frames.size(), 1U);
+  CHECK_EQ(next_frames[0].header.seq, 6U);
+  CHECK(!pair.device.recovery_gated());
+  CHECK_EQ(decode_controls(pair.device_to_host).size(), controls_before);
+
+  // If a multi-fragment unsolicited recovery IDR is interrupted mid-frame by a
+  // newer frame, the device MUST emit RequestIdr (strictly above recovery_id 3).
+  deskmate::protocol::VideoFrameToSend broken_idr = idr;
+  broken_idr.seq = 10;
+  broken_idr.recovery_id = 4;
+  auto broken_fragments = deskmate::protocol::encode_video_fragments(broken_idr, 4);
+  CHECK(broken_fragments);
+  pair.host_to_device.append(broken_fragments.value()[0]);
+  pair.device.pump();
+  CHECK_EQ(decode_controls(pair.device_to_host).size(), controls_before);
+  append_video(pair.host_to_device, 0x88888888, 0x77777777, 11, {0xC1}, 0);
+  pair.device.pump();
+  CHECK(pair.device.recovery_gated());
+  const auto controls_after = decode_controls(pair.device_to_host);
+  CHECK_EQ(controls_after.size(), controls_before + 1U);
+  CHECK_EQ(static_cast<int>(controls_after.back().opcode),
+           static_cast<int>(ControlOpcode::RequestIdr));
+  CHECK(pair.device.recovery_id().has_value());
+  CHECK(*pair.device.recovery_id() > 3U);
+}
+
 void test_device_rejects_prepare_revision_mismatch() {
   ManualClock clock;
   BytePipe host_to_device;
@@ -3642,6 +3719,8 @@ int main() {
        test_host_congestion_drops_unstarted_gop_and_recovers_with_new_idr},
       {"host oldest unsent frame age triggers recovery",
        test_host_oldest_unsent_frame_age_triggers_recovery},
+      {"multifragment congestion IDR delivered one fragment per pump does not loop",
+       test_multifragment_congestion_idr_delivered_one_fragment_per_pump_does_not_loop},
       {"device rejects prepare revision mismatch",
        test_device_rejects_prepare_revision_mismatch},
       {"different config id does not repeat prepare or switch stream",

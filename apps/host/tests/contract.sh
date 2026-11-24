@@ -13,8 +13,8 @@ fail() {
 [[ -x "$BIN" ]] || fail "missing executable: $BIN"
 [[ -f "$PLIST" ]] || fail "missing Info.plist"
 
-/usr/libexec/PlistBuddy -c 'Print :LSUIElement' "$PLIST" | grep -qx true \
-  || fail "LSUIElement must be true"
+/usr/libexec/PlistBuddy -c 'Print :LSUIElement' "$PLIST" | grep -qx false \
+  || fail "the desktop client must launch as a regular app"
 /usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$PLIST" | grep -qx 'dev.deskmate.host' \
   || fail "unexpected bundle identifier"
 /usr/libexec/PlistBuddy -c 'Print :NSScreenCaptureUsageDescription' "$PLIST" >/dev/null \
@@ -40,15 +40,16 @@ otool -L "$BIN" | grep -q 'ScreenCaptureKit' || fail "ScreenCaptureKit is not li
 otool -L "$BIN" | grep -q 'VideoToolbox' || fail "VideoToolbox is not linked"
 echo "PASS required frameworks"
 
-if strings "$BIN" | grep -Eq 'BEGIN (RSA |EC )?PRIVATE KEY|password='; then
+binary_strings="$(strings "$BIN")"
+if grep -Eq 'BEGIN (RSA |EC )?PRIVATE KEY|password=' <<<"$binary_strings"; then
   fail "binary contains signing material"
 fi
 echo "PASS no signing material"
 
-if strings "$BIN" | grep -q 'set_configuration'; then
+if grep -q 'set_configuration' <<<"$binary_strings"; then
   fail "accessory teardown must not reconfigure the device (it strands it in AOA)"
 fi
-strings "$BIN" | grep -q 'waiting for the tablet to allow the USB accessory' \
+grep -q 'waiting for the tablet to allow the USB accessory' <<<"$binary_strings" \
   || fail "missing the consent-dialog hint in the state log"
 echo "PASS AOA teardown and diagnostics"
 

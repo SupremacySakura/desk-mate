@@ -206,7 +206,7 @@ class EndpointCore {
     }
     maybe_send_heartbeat();
 
-    std::array<std::uint8_t, 4096> buffer{};
+    std::array<std::uint8_t, 16384> buffer{};
     while (state_ != SessionState::Failed) {
       const IoResult result = io_.read(buffer);
       if (result.status == IoStatus::WouldBlock) {
@@ -308,6 +308,10 @@ class EndpointCore {
 
   void retarget_decoder_stream(std::uint32_t video_stream_id) {
     decoder_.retarget_video_stream(video_stream_id);
+  }
+
+  [[nodiscard]] const std::optional<Header>& active_video_header() const noexcept {
+    return decoder_.active_video_header();
   }
 
   void set_negotiated_stream(NegotiatedStream stream) {
@@ -1084,6 +1088,10 @@ struct HostSession::Impl final : EndpointCore {
   [[nodiscard]] const std::optional<SchedulerIdrRequest>& pending_idr_request()
       const {
     return scheduler_.idr_request();
+  }
+
+  [[nodiscard]] bool has_pending_output() const {
+    return !scheduler_.idle();
   }
 
   SessionCommandStatus pause() {
@@ -1945,14 +1953,41 @@ struct DeviceSession::Impl final : EndpointCore {
         event.header.video_stream_id != *committed_stream_id_) {
       return;
     }
-    (void)recovery_gate_.begin_recovery();
+    const bool was_gated = recovery_gate_.gated();
+    const bool is_unsolicited_recovery_idr_gap =
+        !was_gated &&
+        event.error.code == ErrorCode::SequenceDiscontinuity &&
+        (event.header.flags & (kFlagKeyFrame | kFlagRecoveryIdr)) ==
+            (kFlagKeyFrame | kFlagRecoveryIdr);
+    if (recovery_gate_.begin_recovery()) {
+      if (is_unsolicited_recovery_idr_gap) {
+        pending_unsolicited_recovery_seq_ = event.header.seq;
+      } else {
+        pending_unsolicited_recovery_seq_.reset();
+      }
+    }
   }
 
   void finish_receive_cycle() override {
     if (state() != SessionState::Streaming ||
         !recovery_gate_.gated() ||
         !recovery_gate_.recovery_id().has_value()) {
+      pending_unsolicited_recovery_seq_.reset();
       return;
+    }
+    // Wait for a Host-initiated multi-fragment recovery IDR to finish
+    // reassembling before emitting RequestIdr. Firing RequestIdr on fragment 0
+    // reaches the Host after the IDR finishes transmitting and restarts
+    // recovery in an infinite loop.
+    if (pending_unsolicited_recovery_seq_.has_value()) {
+      const auto& active = active_video_header();
+      if (active.has_value() &&
+          active->seq == *pending_unsolicited_recovery_seq_ &&
+          (active->flags & (kFlagKeyFrame | kFlagRecoveryIdr)) ==
+              (kFlagKeyFrame | kFlagRecoveryIdr)) {
+        return;
+      }
+      pending_unsolicited_recovery_seq_.reset();
     }
     const std::uint32_t recovery_id = *recovery_gate_.recovery_id();
     if (requested_recovery_id_.has_value() &&
@@ -2040,10 +2075,21 @@ struct DeviceSession::Impl final : EndpointCore {
       }
       awaiting_rollback_idr_ = false;
     }
+    if (pending_unsolicited_recovery_seq_.has_value()) {
+      const std::uint32_t expected_seq = *pending_unsolicited_recovery_seq_;
+      pending_unsolicited_recovery_seq_.reset();
+      if (header.seq == expected_seq &&
+          (header.flags & (kFlagKeyFrame | kFlagRecoveryIdr)) ==
+              (kFlagKeyFrame | kFlagRecoveryIdr) &&
+          recovery_id.has_value() && !requested_recovery_id_.has_value()) {
+        recovery_gate_.accept_unsolicited_recovery(*recovery_id);
+      }
+    }
     if (recovery_gate_.observe_frame(header.flags, recovery_id) ==
         RecoveryFrameAction::Drop) {
       return;
     }
+    requested_recovery_id_.reset();
     ReceivedVideoFrame frame{
         header, std::move(payload), surface_generation_, std::move(recovery_id)};
     last_good_frame_ = frame;
@@ -2323,6 +2369,7 @@ struct DeviceSession::Impl final : EndpointCore {
     prepared_stream_id_.reset();
     recovery_gate_.reset();
     requested_recovery_id_.reset();
+    pending_unsolicited_recovery_seq_.reset();
     transition(SessionState::AwaitingFirstIdr, SessionFailure::InitialIdrTimeout);
     queue_commit_ack(committed_config_id, *stream_id, false);
   }
@@ -2636,6 +2683,7 @@ struct DeviceSession::Impl final : EndpointCore {
   DeviceRecoveryGate recovery_gate_;
   std::optional<ReceivedVideoFrame> last_good_frame_;
   std::optional<std::uint32_t> requested_recovery_id_;
+  std::optional<std::uint32_t> pending_unsolicited_recovery_seq_;
   std::uint32_t next_input_seq_{1};
   std::uint64_t input_events_sent_{};
 };
@@ -2660,6 +2708,9 @@ const std::optional<NegotiatedStream>& HostSession::negotiated_stream() const {
 const std::optional<SchedulerIdrRequest>& HostSession::pending_idr_request()
     const {
   return impl_->pending_idr_request();
+}
+bool HostSession::has_pending_output() const {
+  return impl_->has_pending_output();
 }
 bool HostSession::capture_encoding_intent() const {
   return impl_->capture_encoding_intent();

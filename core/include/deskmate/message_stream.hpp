@@ -41,6 +41,9 @@ class MessageStreamDecoder {
   void retarget_video_stream(std::uint32_t video_stream_id);
   [[nodiscard]] bool failed() const { return failed_; }
   [[nodiscard]] const StreamDecoderConfig& config() const { return config_; }
+  [[nodiscard]] const std::optional<Header>& active_video_header() const noexcept {
+    return video_header_;
+  }
 
  private:
   void drain(std::vector<StreamEvent>& events);

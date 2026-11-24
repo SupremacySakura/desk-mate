@@ -66,8 +66,10 @@ private:
     std::thread worker_;
     std::atomic<bool> running_{false};
     std::atomic<bool> stop_requested_{false};
+    std::atomic<bool> has_pending_input_{false};
+    std::atomic<bool> config_dirty_{false};
     int accessory_fd_ = -1;
-    int wake_fd_ = -1;
+    std::atomic<int> wake_fd_{-1};
     std::string surface_id_;
     void *native_window_ = nullptr;
     bool surface_dirty_ = false;

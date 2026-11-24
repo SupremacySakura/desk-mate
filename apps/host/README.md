@@ -18,7 +18,7 @@ make test     # 打包/参数/链接/脱敏契约检查
 
 ```sh
 ./build/DeskMate.app/Contents/MacOS/DeskMate --list-displays
-./build/DeskMate.app/Contents/MacOS/DeskMate            # 借用 display 41
+open ./build/DeskMate.app
 ./build/DeskMate.app/Contents/MacOS/DeskMate --dry-run  # 只采集编码，不连 USB
 ```
 
@@ -26,16 +26,14 @@ make test     # 打包/参数/链接/脱敏契约检查
 
 | 参数 | 默认 | 说明 |
 |---|---|---|
-| `--display-id N` | `41` | 借用一块已存在的 Extended Display |
+| `--display-id N` | 已保存的选择，或唯一可用的扩展显示器 | 借用一块已存在的 Extended Display |
 | `--create` | 关 | 用 `CGVirtualDisplay` 自建（见下方限制） |
 | `--width/--height` | `2800x1840` | 采集像素尺寸 |
 | `--fps` | `60` | 采集帧率 |
 | `--codec` | `hevc` | `hevc` 或 `h264` |
 | `--dry-run` | 关 | 不建立 USB Session |
 
-应用是菜单栏常驻（`LSUIElement`），标题 `DM ●` 表示采集运行中，`DM !` 表示有错误，
-悬停可看状态 JSON。下拉菜单显示 `State` / `Stream`（协商出的编码与分辨率）/
-`Encoded frames` / `Input events` / `Error`，并提供 `Copy Status` 一键复制。
+从 Finder 打开应用后，主窗口会给出连接或权限提示。设置可选择扩展显示器（主屏和镜像屏不会列出）；会话已启动时，新的选择会在重开应用后生效。连接诊断和菜单栏都可复制状态。主窗口的「正在发送画面」不代表平板已经出画。
 
 桥接日志每 5 秒输出一行
 `state=… rx=…B tx=…B frames=… bulkErrors=… profile=…`，因此一次运行就能判断
@@ -90,8 +88,8 @@ make device-foreground \
 
 ## 权限
 
-- **屏幕录制**：必需。缺失时应用直接报错退出，不做静默降级。
-- **辅助功能**：只影响输入注入。缺失时仍可看画面，但会记录警告。
+- **屏幕录制**：必需。缺失时主窗口会引导打开系统设置；授权后可重试，如系统要求则重新打开 DeskMate。
+- **辅助功能**：只影响反向输入。授权并在 DeskMate 设置中开启开关后，平板才可操作 Mac；不授权仍可接收画面。
 
 ## 已知限制
 

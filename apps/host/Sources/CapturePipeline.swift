@@ -29,7 +29,10 @@ final class CapturePipeline: NSObject, SCStreamOutput, SCStreamDelegate {
     private let height: Int
     private let frameRate: Double
     private let codec: String
-    private let captureQueue = DispatchQueue(label: "dev.deskmate.host.capture")
+    private let captureQueue = DispatchQueue(
+        label: "dev.deskmate.host.capture",
+        qos: .userInteractive
+    )
     private let stateLock = NSLock()
     private var encoder: VideoEncoderCore?
     private var stream: SCStream?
@@ -37,7 +40,10 @@ final class CapturePipeline: NSObject, SCStreamOutput, SCStreamDelegate {
     private var outputRegistered = false
     private var framesReceived = 0
     private var runtimeFailure: String?
+    private var lastForcedKeyframeID: UInt32 = 0
+    private var lastForcedKeyframeTime: Double = 0
 
+    private let keyframeRequestIDProvider: (() -> UInt32)?
     private let onFrame: (EncodedFrame) -> Void
     private let onFailure: (String) -> Void
 
@@ -47,6 +53,7 @@ final class CapturePipeline: NSObject, SCStreamOutput, SCStreamDelegate {
         height: Int,
         frameRate: Double,
         codec: String,
+        keyframeRequestIDProvider: (() -> UInt32)? = nil,
         onFrame: @escaping (EncodedFrame) -> Void,
         onFailure: @escaping (String) -> Void
     ) {
@@ -55,6 +62,7 @@ final class CapturePipeline: NSObject, SCStreamOutput, SCStreamDelegate {
         self.height = height
         self.frameRate = frameRate
         self.codec = codec
+        self.keyframeRequestIDProvider = keyframeRequestIDProvider
         self.onFrame = onFrame
         self.onFailure = onFailure
         super.init()
@@ -109,7 +117,7 @@ final class CapturePipeline: NSObject, SCStreamOutput, SCStreamDelegate {
             value: 1,
             timescale: CMTimeScale(frameRate.rounded())
         )
-        configuration.queueDepth = 3
+        configuration.queueDepth = 6
         configuration.pixelFormat = kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange
         configuration.showsCursor = true
         configuration.capturesAudio = false
@@ -195,6 +203,20 @@ final class CapturePipeline: NSObject, SCStreamOutput, SCStreamDelegate {
         }
 
         guard let activeEncoder else { return }
+        if let provider = keyframeRequestIDProvider {
+            let requestID = provider()
+            if requestID == 0 {
+                lastForcedKeyframeID = 0
+                lastForcedKeyframeTime = 0
+            } else {
+                let now = ProcessInfo.processInfo.systemUptime
+                if requestID != lastForcedKeyframeID || (now - lastForcedKeyframeTime) >= 0.12 {
+                    lastForcedKeyframeID = requestID
+                    lastForcedKeyframeTime = now
+                    activeEncoder.requestKeyframe()
+                }
+            }
+        }
         do {
             try activeEncoder.encode(
                 pixelBuffer: pixelBuffer,

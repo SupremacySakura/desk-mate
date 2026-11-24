@@ -1,0 +1,120 @@
+<!doctype html>
+<html lang="zh-CN">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DeskMate · 双端视觉稿</title>
+<style>
+:root{color-scheme:light;--ink:#202936;--muted:#506073;--line:#dce3eb;--blue:#2152bf;--blue-well:#e8effe;--pale:#f3f6fa;--paper:#fff;--ok:#17634c;--warn:#85451b}
+*{box-sizing:border-box}body{margin:0;background:#e9eef4;color:var(--ink);font:14px/1.5 -apple-system,BlinkMacSystemFont,"PingFang SC",sans-serif}main{max-width:1460px;margin:auto;padding:48px 48px 56px}
+h1,h2,h3,p{margin:0}h1{font-size:38px;line-height:1.2;letter-spacing:-.035em}h2{font-size:23px;letter-spacing:-.025em}p,small{color:var(--muted)}small{font-size:12px}
+.intro{display:flex;align-items:end;justify-content:space-between;gap:24px;margin-bottom:38px}.intro p{margin-top:10px}.edition{border:1px solid #cbd5e2;border-radius:6px;padding:6px 11px;white-space:nowrap}
+.section{margin-top:34px}.section-head{display:flex;justify-content:space-between;align-items:baseline;margin-bottom:12px;gap:12px}.pair{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:20px}.pair>*{min-width:0}figure{margin:0}figcaption{margin-top:9px;color:var(--muted);font-size:13px}figcaption b{color:var(--ink);margin-right:8px}
+.frame{height:438px;background:var(--paper);border:1px solid #cbd5e2;border-radius:13px;overflow:hidden}.mac{display:grid;grid-template-columns:152px minmax(0,1fr)}.side{background:#eef2f8;border-right:1px solid var(--line);padding:17px 10px;display:flex;flex-direction:column;gap:5px}.lights{display:flex;gap:7px;margin:0 4px 17px}.lights i{width:10px;height:10px;border-radius:50%;background:#fc635d}.lights i:nth-child(2){background:#f4bb4a}.lights i:nth-child(3){background:#44b974}
+.brand,.nav-item,.button,.appbar,.topbar,.value{display:flex;align-items:center;gap:8px}.brand{padding:1px 8px 10px;font-weight:700;letter-spacing:-.02em}.brand svg{color:var(--blue)}.nav-item{height:34px;padding:0 8px;border-radius:7px;color:var(--muted);font-size:13px}.nav-item.selected{background:#dce8fb;color:#214990;font-weight:650}.side-note{margin-top:auto;padding:0 8px;color:var(--muted);font-size:11px}.icon{width:17px;height:17px;flex:none;fill:none;stroke:currentColor;stroke-width:1.65;stroke-linecap:round;stroke-linejoin:round}
+.mac-content{min-width:0;padding:0 22px 16px}.topbar{height:47px;border-bottom:1px solid var(--line);justify-content:space-between;font-weight:650}.tag{display:inline-flex;align-items:center;gap:6px;color:#40576f;background:#edf2f7;padding:3px 8px;border-radius:6px;font-size:11px;font-weight:620;white-space:nowrap}.tag::before{content:"";width:6px;height:6px;border-radius:50%;background:currentColor}.tag.ok{color:var(--ok);background:#e5f2ec}.status{margin:16px 0 12px}.status h3{font-size:24px;line-height:1.25;letter-spacing:-.03em}.status p{margin-top:4px;font-size:12px}
+.diagram{background:#f1f5fb;border-radius:10px;display:grid;place-items:center;padding:5px 10px}.diagram svg{width:100%;max-width:380px;height:130px}.diagram text{fill:#526580;font:12px -apple-system,"PingFang SC",sans-serif}.diagram .device{stroke:#516c91;stroke-width:1.8;fill:#fcfdff}.diagram .details{stroke:#7890b0;stroke-width:1.4;fill:none}.diagram .cable{stroke:#8192aa;stroke-width:1.6;stroke-dasharray:3 4;fill:none}.diagram .socket{fill:#f1f5fb;stroke:#7085a1;stroke-width:1.6}.diagram.live .cable{stroke:var(--blue);stroke-dasharray:none;stroke-width:2}.diagram.live .socket{stroke:var(--blue);fill:var(--blue)}
+.rows{margin-top:12px}.row{min-height:34px;display:flex;align-items:center;justify-content:space-between;gap:10px;border-bottom:1px solid var(--line);font-size:12px}.row:last-child{border-bottom:none}.row .value{color:var(--muted);justify-content:end;text-align:right}.group{margin-top:16px}.group h3{font-size:12px;color:var(--muted);margin-bottom:5px}.group .row{min-height:37px}.select{border:1px solid #c6d0df;border-radius:6px;padding:4px 8px;background:white}.text-action{color:var(--blue)!important;font-weight:600}.switch{display:inline-block;width:30px;height:17px;background:#50627a;border-radius:10px;padding:2px;flex:none}.switch::before{content:"";display:block;width:13px;height:13px;border-radius:50%;background:white}.switch.on{background:var(--blue)}.switch.on::before{margin-left:13px}
+.tablet{background:#f4f7fb}.sys{height:26px;display:flex;justify-content:space-between;padding:5px 19px 0;color:var(--muted);font-size:11px;font-variant-numeric:tabular-nums}.appbar{height:47px;padding:0 22px;justify-content:space-between;font-size:16px;font-weight:700}.appbar .brand{padding:0}.button{min-height:31px;border:1px solid #d4ddeb;border-radius:8px;background:#fff;padding:4px 10px;color:#314763;font-size:12px;font-weight:650;white-space:nowrap}.primary{color:white;background:var(--blue);border-color:var(--blue)}.tablet .button{min-height:40px}
+.tablet-home{max-width:425px;margin:6px auto 0;padding:0 18px;text-align:center}.tablet-home .diagram{background:transparent;margin-bottom:4px}.tablet-home .diagram svg{height:126px;max-width:305px}.tablet-home h3{font-size:27px;letter-spacing:-.035em}.tablet-home p{font-size:13px;margin-top:5px}.steps{max-width:320px;margin:16px auto 0;padding:0;list-style:none;text-align:left}.steps li{padding:6px 0;border-top:1px solid var(--line);display:flex;gap:9px;align-items:center;font-size:12px}.steps span{display:grid;place-items:center;width:20px;height:20px;border-radius:6px;background:#e6edf8;color:#315385;font-size:11px;font-weight:700}
+.tablet-settings{padding:4px 29px 0;max-width:520px;margin:auto}.tablet-settings h3{font-size:12px;color:var(--muted);margin:12px 0 7px}.tablet-settings .group{background:white;border:1px solid var(--line);border-radius:10px;padding:0 14px;margin:0}.tablet-settings .row{min-height:54px}.tablet-settings .row b{font-weight:630}.tablet-settings .row p{margin-top:2px;font-size:11px}
+.flow{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:15px}.flow article{min-height:230px;border:1px solid #cbd5e2;border-radius:12px;overflow:hidden;background:#f7f9fc}.flow .mini-bar{display:flex;align-items:center;justify-content:space-between;padding:12px 14px;border-bottom:1px solid var(--line);font-weight:700}.flow .body{padding:17px 15px}.flow h3{font-size:18px;margin:7px 0 4px}.flow p{font-size:12px}.flow .quiet{margin-top:12px}.flow .warning{color:var(--warn);background:#faeee5}.flow .button{width:max-content;margin-top:12px}.full{background:#192e55!important;color:white}.full .mini-bar{border:0}.full .button{margin:0;background:#f4f7fc;color:#233a5e}.full p{color:#e2ebfc}.full .body{display:grid;place-items:center;min-height:162px;text-align:center}.full .body strong{font-size:20px;letter-spacing:-.025em}
+.footer{margin-top:24px;display:flex;justify-content:space-between;align-items:center;gap:12px;border-top:1px solid #cbd5e2;padding-top:12px}.footer small{font-size:11px}
+@media(max-width:1090px){main{padding:32px 24px}.pair{grid-template-columns:1fr}.frame{max-width:760px}.flow{grid-template-columns:1fr}.flow article{min-height:200px}}
+@media(max-width:520px){main{padding:22px 12px}.intro,.section-head,.footer{align-items:start;flex-direction:column;gap:6px}h1{font-size:29px}.mac{grid-template-columns:48px minmax(0,1fr)}.side{padding-inline:5px}.side .brand,.side .nav-item{justify-content:center;padding-inline:0}.side span,.side .side-note,.lights{display:none}.mac-content{padding-inline:12px}.tablet-settings{padding-inline:14px}}
+@page{size:420mm 520mm;margin:0}
+@media print{html{print-color-adjust:exact;-webkit-print-color-adjust:exact}main{max-width:none;padding:34px 42px}.pair{grid-template-columns:repeat(2,minmax(0,1fr))}.flow{grid-template-columns:repeat(3,minmax(0,1fr))}.frame{max-width:none}.section,figure{break-inside:avoid}}
+</style>
+<svg aria-hidden="true" style="position:absolute;width:0;height:0;overflow:hidden">
+  <defs>
+    <symbol id="mark" viewBox="0 0 24 24"><rect x="2.5" y="4" width="13" height="10" rx="2"/><path d="M6 18h8"/><rect x="13" y="11" width="8.5" height="9" rx="2" fill="#eef4ff"/></symbol>
+    <symbol id="display" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="13" rx="2"/><path d="M8 21h8m-4-4v4"/></symbol>
+    <symbol id="settings" viewBox="0 0 24 24"><path d="M4 6h16M4 12h16M4 18h16M8 3v6m8 0v6m-5 0v6"/></symbol>
+    <symbol id="back" viewBox="0 0 24 24"><path d="m14 6-6 6 6 6"/></symbol>
+    <symbol id="chevron" viewBox="0 0 24 24"><path d="m9 6 6 6-6 6"/></symbol>
+    <symbol id="link-map" viewBox="0 0 360 136">
+      <rect class="device" x="22" y="29" width="108" height="66" rx="5"/><path class="device" d="M14 96h124l-8 6H22z"/><path class="details" d="M72 35h8m-50 52h92"/>
+      <rect class="device" x="239" y="25" width="106" height="74" rx="8"/><rect class="details" x="246" y="32" width="92" height="60" rx="4"/>
+      <path class="cable" d="M130 66h109"/><circle class="socket" cx="149" cy="66" r="4"/><circle class="socket" cx="221" cy="66" r="4"/>
+      <rect x="166" y="54" width="38" height="24" rx="5" fill="#f1f5fb"/><text x="185" y="70" text-anchor="middle">USB</text>
+      <text x="76" y="122" text-anchor="middle">Mac</text><text x="292" y="122" text-anchor="middle">鸿蒙平板</text>
+    </symbol>
+  </defs>
+</svg>
+<main>
+  <header class="intro">
+    <div><h1>DeskMate 双端视觉稿</h1><p>一根 USB 数据线，把 Mac 桌面扩展到鸿蒙平板。</p></div>
+    <small class="edition">视觉评审 · 浅色稿</small>
+  </header>
+
+  <section class="section">
+    <div class="section-head"><h2>macOS</h2><small>管理扩展显示、权限与画面发送</small></div>
+    <div class="pair">
+      <figure>
+        <div class="frame mac">
+          <aside class="side"><div class="lights" aria-hidden="true"><i></i><i></i><i></i></div><div class="brand"><svg class="icon"><use href="#mark"/></svg><span>DeskMate</span></div><div class="nav-item selected"><svg class="icon"><use href="#display"/></svg><span>扩展显示</span></div><div class="nav-item"><svg class="icon"><use href="#settings"/></svg><span>设置</span></div><small class="side-note">USB 有线连接</small></aside>
+          <div class="mac-content">
+            <div class="topbar"><span>扩展显示</span><span class="tag">未连接</span></div>
+            <div class="status"><h3>等待平板连接</h3><p>打开平板上的 DeskMate，再接上 USB 数据线。</p></div>
+            <div class="diagram"><svg role="img" aria-label="Mac 到鸿蒙平板的待连接示意" viewBox="0 0 360 136"><use href="#link-map"/></svg></div>
+            <div class="rows"><div class="row"><span>显示来源</span><span class="value">已选扩展显示器</span></div><div class="row"><span>画面发送</span><span class="value">等待连接</span></div><div class="row"><span>反向输入</span><span class="value">未开启</span></div><div class="row"><span class="text-action">查看诊断</span></div></div>
+          </div>
+        </div>
+        <figcaption><b>01 扩展显示</b> 主区先说明当前状态和下一步。</figcaption>
+      </figure>
+      <figure>
+        <div class="frame mac">
+          <aside class="side"><div class="lights" aria-hidden="true"><i></i><i></i><i></i></div><div class="brand"><svg class="icon"><use href="#mark"/></svg><span>DeskMate</span></div><div class="nav-item"><svg class="icon"><use href="#display"/></svg><span>扩展显示</span></div><div class="nav-item selected"><svg class="icon"><use href="#settings"/></svg><span>设置</span></div><small class="side-note">USB 有线连接</small></aside>
+          <div class="mac-content">
+            <div class="topbar"><span>设置</span></div>
+            <div class="group"><h3>扩展显示</h3><div class="row"><span>显示来源</span><span class="value select">扩展显示器<svg class="icon" style="transform:rotate(90deg)"><use href="#chevron"/></svg></span></div></div>
+            <div class="group"><h3>系统权限</h3><div class="row"><span>屏幕录制</span><span class="value"><span class="tag ok">已允许</span></span></div><div class="row"><span>辅助功能</span><span class="value text-action">打开系统设置<svg class="icon"><use href="#chevron"/></svg></span></div></div>
+            <div class="group"><h3>反向输入</h3><div class="row"><span>允许平板操作 Mac</span><span class="value"><span class="switch" aria-label="关闭"></span></span></div><p style="font-size:12px;margin-top:6px">启用前需授权辅助功能。不授权也能发送画面。</p></div>
+          </div>
+        </div>
+        <figcaption><b>02 设置</b> 画面与输入权限分开处理。</figcaption>
+      </figure>
+    </div>
+  </section>
+
+  <section class="section">
+    <div class="section-head"><h2>HarmonyOS</h2><small>连接前有引导，出画后让桌面占满屏幕</small></div>
+    <div class="pair">
+      <figure>
+        <div class="frame tablet">
+          <div class="sys"><span>09:41</span><span>电量 86%</span></div>
+          <div class="appbar"><div class="brand"><svg class="icon"><use href="#mark"/></svg>DeskMate</div><span class="button"><svg class="icon"><use href="#settings"/></svg>设置</span></div>
+          <div class="tablet-home">
+            <div class="diagram"><svg role="img" aria-label="用 USB 数据线连接 Mac 与鸿蒙平板" viewBox="0 0 360 136"><use href="#link-map"/></svg></div>
+            <h3>等待 USB 连接</h3><p>Mac 上的扩展桌面将在这里显示。</p>
+            <ol class="steps"><li><span>1</span>打开 Mac 上的 DeskMate</li><li><span>2</span>用 USB 数据线连接两台设备</li><li><span>3</span>出现系统提示时，允许 USB 配件连接</li></ol>
+          </div>
+        </div>
+        <figcaption><b>01 连接首页</b> 平板等待插线，不显示无效的连接按钮。</figcaption>
+      </figure>
+      <figure>
+        <div class="frame tablet">
+          <div class="sys"><span>09:41</span><span>电量 86%</span></div>
+          <div class="appbar"><div class="value"><svg class="icon"><use href="#back"/></svg>设置</div></div>
+          <div class="tablet-settings">
+            <h3>画面</h3>
+            <div class="group"><div class="row"><div><b>全屏显示帧率</b><p>显示平板实际渲染的帧率</p></div><span class="switch" aria-label="关闭"></span></div></div>
+            <h3>连接</h3>
+            <div class="group"><div class="row"><div><b>连接诊断</b><p>查看 USB、会话和画面状态</p></div><span class="value"><svg class="icon"><use href="#chevron"/></svg></span></div></div>
+          </div>
+        </div>
+        <figcaption><b>02 设置</b> 保留平板自己的显示选项和诊断入口。</figcaption>
+      </figure>
+    </div>
+  </section>
+
+  <section class="section">
+    <div class="section-head"><h2>平板连接状态</h2><small>配件连上，不等于平板已经出画</small></div>
+    <div class="flow">
+      <article><div class="mini-bar">DeskMate <small>连接中</small></div><div class="body"><span class="tag">USB 已连接</span><h3>正在准备画面</h3><p>已连上 Mac，正在等待第一帧。画面就绪后会自动进入全屏。</p></div></article>
+      <article class="full"><div class="mini-bar"><span class="button"><svg class="icon"><use href="#back"/></svg>返回首页</span><small style="color:#e2ebfc">工具条展开时</small></div><div class="body"><div><strong>Mac 扩展桌面</strong><p>区域示意 · 此处显示实时画面</p></div></div></article>
+      <article><div class="mini-bar">DeskMate <small>主动返回后</small></div><div class="body"><span class="tag ok">画面可用</span><h3>扩展显示仍在运行</h3><p>你已返回首页，连接仍然保留。</p><span class="button primary">返回画面<svg class="icon"><use href="#chevron"/></svg></span></div></article>
+    </div>
+    <div class="footer"><small>拔线：回到首页并提示重新接线。授权被拒：提示用户重新授权，不循环弹窗。</small><small>示例状态，不是真机截图。</small></div>
+  </section>
+</main>
+</html>

@@ -312,7 +312,16 @@ final class VideoEncoderCore {
             profileLevel = kVTProfileLevel_H264_High_AutoLevel as String
         }
 
-        let bitRate = max(8_000_000, Int(Double(width * height) * frameRate * 0.10))
+        // Sunshine-inspired low-latency rate control:
+        // - Scale bitrate sublinearly above 60 fps (smaller inter-frame deltas)
+        //   while keeping peak bursts well below USB 2.0 and the 64-fragment cap.
+        // - Use a long GOP (10 s) so reliable USB streaming avoids periodic 1 s
+        //   giant IDR spikes; recovery still forces an immediate IDR on demand.
+        let pixels = Double(width * height)
+        let effectiveFps = frameRate <= 60.0 ? frameRate : (60.0 + (frameRate - 60.0) * 0.5)
+        let bitsPerPixel = codec == "hevc" ? 0.065 : 0.09
+        let bitRate = min(45_000_000, max(8_000_000, Int(pixels * effectiveFps * bitsPerPixel)))
+        let maxKeyFrameInterval = max(300, Int(frameRate.rounded()) * 10)
         let properties: [String: Any] = [
             kVTCompressionPropertyKey_RealTime as String: true,
             kVTCompressionPropertyKey_AllowFrameReordering as String: false,
@@ -320,7 +329,7 @@ final class VideoEncoderCore {
             kVTCompressionPropertyKey_ExpectedFrameRate as String: NSNumber(value: frameRate),
             kVTCompressionPropertyKey_MaximumRealTimeFrameRate as String: NSNumber(value: frameRate),
             kVTCompressionPropertyKey_AverageBitRate as String: NSNumber(value: bitRate),
-            kVTCompressionPropertyKey_MaxKeyFrameInterval as String: NSNumber(value: Int(frameRate)),
+            kVTCompressionPropertyKey_MaxKeyFrameInterval as String: NSNumber(value: maxKeyFrameInterval),
             kVTCompressionPropertyKey_AllowTemporalCompression as String: true,
             kVTCompressionPropertyKey_PrioritizeEncodingSpeedOverQuality as String: true,
             kVTCompressionPropertyKey_ColorPrimaries as String:
@@ -329,6 +338,15 @@ final class VideoEncoderCore {
                 kCVImageBufferTransferFunction_ITU_R_709_2 as String,
             kVTCompressionPropertyKey_YCbCrMatrix as String:
                 kCVImageBufferYCbCrMatrix_ITU_R_709_2 as String,
+        ]
+        // Best-effort low-latency hints supported on Apple Silicon VideoToolbox:
+        // cap 1-second peak bursts so keyframes never exceed 64 USB fragments,
+        // and prevent internal encoder frame buffering.
+        let peakBytesPerSecond = max(1_500_000, Int(Double(bitRate) / 8.0 * 1.5))
+        let optionalProperties: [(CFString, AnyObject)] = [
+            (kVTCompressionPropertyKey_DataRateLimits,
+             [NSNumber(value: peakBytesPerSecond), NSNumber(value: 1.0)] as CFArray),
+            (kVTCompressionPropertyKey_MaxFrameDelayCount, NSNumber(value: 0)),
         ]
         let encoderSpecification: [String: Any] = [
             kVTVideoEncoderSpecification_RequireHardwareAcceleratedVideoEncoder as String: true,
@@ -374,6 +392,10 @@ final class VideoEncoderCore {
                 releaseCallbackContext()
                 throw EncoderError.sessionProperty(key: key, status: propertyStatus)
             }
+        }
+
+        for (key, value) in optionalProperties {
+            _ = VTSessionSetProperty(created, key: key, value: value)
         }
 
         let prepareStatus = VTCompressionSessionPrepareToEncodeFrames(created)

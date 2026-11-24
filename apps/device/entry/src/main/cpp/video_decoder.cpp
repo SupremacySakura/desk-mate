@@ -51,7 +51,7 @@ const char *ErrorName(OH_AVErrCode code)
     }
 }
 
-constexpr std::size_t kMaxQueuedFrames = 8;
+constexpr std::size_t kMaxQueuedFrames = 16;
 
 std::int64_t NowNs()
 {
@@ -212,8 +212,10 @@ bool VideoDecoder::CreateCodec(const DecoderConfig &config)
     (void)OH_AVFormat_SetIntValue(format, OH_MD_KEY_VIDEO_ENABLE_LOW_LATENCY, 1);
     (void)OH_AVFormat_SetIntValue(format, OH_MD_KEY_PIXEL_FORMAT,
                                   AV_PIXEL_FORMAT_SURFACE_FORMAT);
-    (void)OH_AVFormat_SetIntValue(format, OH_MD_KEY_FRAME_RATE,
-                                  config.frame_rate);
+    // OH_MD_KEY_FRAME_RATE is typed as double in OH_AVFormat; SetIntValue is
+    // ignored by the platform decoder and leaves operating rate at default.
+    (void)OH_AVFormat_SetDoubleValue(format, OH_MD_KEY_FRAME_RATE,
+                                     static_cast<double>(config.frame_rate));
     (void)OH_AVFormat_SetIntValue(format, OH_MD_KEY_MAX_INPUT_SIZE, 2 * 1024 * 1024);
 
     result = OH_VideoDecoder_Configure(codec_, format);
@@ -327,7 +329,12 @@ bool VideoDecoder::Push(const std::vector<std::uint8_t> &access_unit,
     }
     {
         std::lock_guard lock(mutex_);
-        if (queued_.size() >= kMaxQueuedFrames) {
+        if (keyframe && !queued_.empty()) {
+            // A fresh keyframe supersedes stale queued frames (Moonlight-style
+            // low-latency catchup without breaking GOP reference order).
+            stats_.frames_dropped += queued_.size();
+            queued_.clear();
+        } else if (queued_.size() >= kMaxQueuedFrames) {
             queued_.pop_front();
             ++stats_.frames_dropped;
         }

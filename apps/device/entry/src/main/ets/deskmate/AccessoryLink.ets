@@ -21,8 +21,9 @@ export class AccessoryLink {
   private pollTimer: number = -1;
   private busy: boolean = false;
   private disposed: boolean = false;
+  private retryRequired: boolean = false;
   private state: LinkState = 'searching';
-  private message: string = 'searching for accessory';
+  private message: string = 'waiting for USB accessory';
   private onUpdate: (snapshot: LinkSnapshot) => void;
 
   constructor(onUpdate: (snapshot: LinkSnapshot) => void) {
@@ -33,6 +34,7 @@ export class AccessoryLink {
     if (this.pollTimer >= 0) {
       return;
     }
+    this.disposed = false;
     this.pollTimer = setInterval(() => {
       this.tick();
     }, 1000);
@@ -48,6 +50,19 @@ export class AccessoryLink {
     this.closeAccessory();
   }
 
+  retry(): void {
+    this.retryRequired = false;
+    this.tick();
+  }
+
+  private fail(message: string): void {
+    if (this.disposed) {
+      return;
+    }
+    this.retryRequired = true;
+    this.publish('error', message);
+  }
+
   snapshot(): LinkSnapshot {
     return {
       state: this.state,
@@ -57,6 +72,9 @@ export class AccessoryLink {
   }
 
   private publish(state: LinkState, message: string): void {
+    if (this.state === state && this.message === message) {
+      return;
+    }
     this.state = state;
     this.message = message;
     this.onUpdate(this.snapshot());
@@ -89,12 +107,23 @@ export class AccessoryLink {
       return;
     }
     if (this.handle !== undefined) {
+      try {
+        if (usbManager.getAccessoryList().length === 0) {
+          this.closeAccessory();
+          this.retryRequired = false;
+          this.publish('searching', 'waiting for USB accessory');
+          return;
+        }
+      } catch (error) {
+        const failure = error as BusinessError;
+        hilog.warn(DOMAIN, TAG, 'getAccessoryList failed during session: %{public}d', failure.code);
+      }
       // The worker exits by itself when the accessory hangs up or the rebuild
-      // budget is spent. Drop the stale handle so the poll can reopen.
+      // budget is spent. Drop the stale handle and let the user retry.
       if (!native.isRunning()) {
-        hilog.warn(DOMAIN, TAG, 'native worker exited, reopening accessory');
+        hilog.warn(DOMAIN, TAG, 'native worker exited');
         this.closeAccessory();
-        this.publish('searching', 'waiting for USB accessory');
+        this.fail('USB session ended');
       }
       return;
     }
@@ -110,11 +139,17 @@ export class AccessoryLink {
       accessories = usbManager.getAccessoryList();
     } catch (error) {
       const failure = error as BusinessError;
-      this.publish('error', `getAccessoryList failed: ${failure.code}`);
+      if (!this.retryRequired) {
+        this.fail(`getAccessoryList failed: ${failure.code}`);
+      }
       return;
     }
     if (accessories.length === 0) {
+      this.retryRequired = false;
       this.publish('searching', 'waiting for USB accessory');
+      return;
+    }
+    if (this.retryRequired) {
       return;
     }
 
@@ -125,14 +160,14 @@ export class AccessoryLink {
       granted = await usbManager.requestAccessoryRight(accessory);
     } catch (error) {
       const failure = error as BusinessError;
-      this.publish('error', `requestAccessoryRight failed: ${failure.code}`);
+      this.fail(`requestAccessoryRight failed: ${failure.code}`);
       return;
     }
     if (this.disposed) {
       return;
     }
     if (!granted) {
-      this.publish('error', 'accessory permission denied');
+      this.fail('accessory permission denied');
       return;
     }
 
@@ -141,7 +176,7 @@ export class AccessoryLink {
       opened = usbManager.openAccessory(accessory);
     } catch (error) {
       const failure = error as BusinessError;
-      this.publish('error', `openAccessory failed: ${failure.code}`);
+      this.fail(`openAccessory failed: ${failure.code}`);
       return;
     }
     if (opened.accessoryFd <= 0) {
@@ -152,7 +187,7 @@ export class AccessoryLink {
         hilog.error(DOMAIN, TAG, 'close rejected open: %{public}s',
           `${failure.code}`);
       }
-      this.publish('error', `invalid accessoryFd=${opened.accessoryFd}`);
+      this.fail(`invalid accessoryFd=${opened.accessoryFd}`);
       return;
     }
     if (this.disposed) {
@@ -164,7 +199,7 @@ export class AccessoryLink {
     const started: boolean = native.startSession(opened.accessoryFd);
     if (!started) {
       this.closeAccessory();
-      this.publish('error', 'native session rejected the descriptor');
+      this.fail('native session rejected the descriptor');
       return;
     }
     this.publish('connected', `accessory fd=${opened.accessoryFd}`);

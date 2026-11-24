@@ -1,5 +1,6 @@
 #include "deskmate/recovery.hpp"
 
+#include <algorithm>
 #include <cstddef>
 #include <limits>
 
@@ -54,6 +55,14 @@ std::optional<std::uint32_t> DeviceRecoveryGate::retry_if_due() {
   }
   next_retry_ns_ = saturating_add(clock_.now_ns(), config_.retry_ns);
   return recovery_id_;
+}
+
+void DeviceRecoveryGate::accept_unsolicited_recovery(
+    std::uint32_t recovery_id) noexcept {
+  gated_ = false;
+  last_recovery_id_ = std::max(last_recovery_id_, recovery_id);
+  recovery_id_.reset();
+  next_retry_ns_.reset();
 }
 
 void DeviceRecoveryGate::reset() noexcept {
