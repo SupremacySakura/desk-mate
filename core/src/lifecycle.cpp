@@ -192,45 +192,25 @@ bool SurfaceOwner::can_render(std::uint64_t generation) const noexcept {
   return state_->available && state_->generation == generation;
 }
 
-AccessoryFdOwner::AccessoryFdOwner(int descriptor,
-                                   AccessoryFdCloser& closer) noexcept
-    : descriptor_(descriptor), closer_(&closer), closed_(descriptor < 0) {}
+BorrowedAccessoryFd::BorrowedAccessoryFd(int descriptor) noexcept
+    : descriptor_(descriptor) {}
 
-AccessoryFdOwner::~AccessoryFdOwner() { close(); }
-
-AccessoryFdOwner::AccessoryFdOwner(AccessoryFdOwner&& other) noexcept
-    : descriptor_(other.descriptor_),
-      closer_(other.closer_),
-      closed_(other.closed_) {
+BorrowedAccessoryFd::BorrowedAccessoryFd(BorrowedAccessoryFd&& other) noexcept
+    : descriptor_(other.descriptor_) {
   other.descriptor_ = -1;
-  other.closer_ = nullptr;
-  other.closed_ = true;
 }
 
-AccessoryFdOwner& AccessoryFdOwner::operator=(AccessoryFdOwner&& other) noexcept {
+BorrowedAccessoryFd& BorrowedAccessoryFd::operator=(
+    BorrowedAccessoryFd&& other) noexcept {
   if (this == &other) {
     return *this;
   }
-  close();
   descriptor_ = other.descriptor_;
-  closer_ = other.closer_;
-  closed_ = other.closed_;
   other.descriptor_ = -1;
-  other.closer_ = nullptr;
-  other.closed_ = true;
   return *this;
 }
 
-void AccessoryFdOwner::close() noexcept {
-  if (closed_) {
-    return;
-  }
-  closed_ = true;
-  if (descriptor_ >= 0 && closer_ != nullptr) {
-    closer_->close_fd(descriptor_);
-  }
-  descriptor_ = -1;
-}
+void BorrowedAccessoryFd::invalidate() noexcept { descriptor_ = -1; }
 
 Result<std::vector<std::uint8_t>> encode_clock_message(
     const ClockMessage& message) {

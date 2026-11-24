@@ -311,8 +311,10 @@ name | expectation | expected-payload-hex | packet-hex
   高负载下的表现。
 - Pause/resume、心跳、重配与系统事件只验证 Session 状态机和资源契约，不证明真实
   `accessoryFd` 可被唤醒、后台心跳可维持或 AVCodec 的 Flush/Reconfigure 行为。
-- `SurfaceOwner`/`SurfaceLease` 与 `AccessoryFdOwner` 是可注入的资源边界桩；
-  HarmonyOS NativeWindow 引用和真实 USB 句柄生命周期仍由 Gate 1/3 验证。
+- `SurfaceOwner`/`SurfaceLease` 与 `BorrowedAccessoryFd` 是可注入的资源边界桩；
+  `BorrowedAccessoryFd` 只借出 fd，不提供任何关闭路径（ArkTS 独占
+  `USBAccessoryHandle`）。HarmonyOS NativeWindow 引用和真实 USB 句柄生命周期
+  仍由 Gate 1/3 验证。
 - Device 是否能在 Gate 3 条件下保留旧流、恢复旧配置或无损切换 Surface 尚未实证；
   本实现的回退仅是控制面契约，回滚后仍要求旧流重新提供 IDR。
 - 重配最终确认与初始确认共用 `STREAM_COMMITTED` opcode，靠 body 长度区分：4 字节

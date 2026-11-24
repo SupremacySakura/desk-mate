@@ -134,34 +134,25 @@ class SurfaceOwner {
   std::shared_ptr<State> state_;
 };
 
-class AccessoryFdCloser {
+// ArkTS owns the USBAccessoryHandle; C++ only borrows the descriptor for the
+// lifetime of a session and must never close it (ADR 0004). This type therefore
+// has no close path: it can be invalidated but never releases the descriptor.
+class BorrowedAccessoryFd {
  public:
-  AccessoryFdCloser() = default;
-  AccessoryFdCloser(const AccessoryFdCloser&) = delete;
-  AccessoryFdCloser& operator=(const AccessoryFdCloser&) = delete;
-  virtual ~AccessoryFdCloser() = default;
-  virtual void close_fd(int descriptor) noexcept = 0;
-};
+  explicit BorrowedAccessoryFd(int descriptor) noexcept;
+  ~BorrowedAccessoryFd() = default;
+  BorrowedAccessoryFd(const BorrowedAccessoryFd&) = delete;
+  BorrowedAccessoryFd& operator=(const BorrowedAccessoryFd&) = delete;
+  BorrowedAccessoryFd(BorrowedAccessoryFd&& other) noexcept;
+  BorrowedAccessoryFd& operator=(BorrowedAccessoryFd&& other) noexcept;
 
-class AccessoryFdOwner {
- public:
-  AccessoryFdOwner(int descriptor, AccessoryFdCloser& closer) noexcept;
-  ~AccessoryFdOwner();
-  AccessoryFdOwner(const AccessoryFdOwner&) = delete;
-  AccessoryFdOwner& operator=(const AccessoryFdOwner&) = delete;
-  AccessoryFdOwner(AccessoryFdOwner&& other) noexcept;
-  AccessoryFdOwner& operator=(AccessoryFdOwner&& other) noexcept;
-
-  void close() noexcept;
+  // Stops lending the descriptor without closing it; the owner is untouched.
+  void invalidate() noexcept;
   [[nodiscard]] int borrow_fd() const noexcept { return descriptor_; }
-  [[nodiscard]] bool valid() const noexcept {
-    return descriptor_ >= 0 && !closed_;
-  }
+  [[nodiscard]] bool valid() const noexcept { return descriptor_ >= 0; }
 
  private:
   int descriptor_{-1};
-  AccessoryFdCloser* closer_{};
-  bool closed_{};
 };
 
 enum class SessionState {

@@ -54,7 +54,7 @@ using deskmate::protocol::DeviceSession;
 using deskmate::protocol::DeviceSessionConfig;
 using deskmate::protocol::DisplayResolution;
 using deskmate::protocol::BoundaryResult;
-using deskmate::protocol::AccessoryFdOwner;
+using deskmate::protocol::BorrowedAccessoryFd;
 using deskmate::protocol::DeviceBoundary;
 using deskmate::protocol::Header;
 using deskmate::protocol::HostSession;
@@ -2698,16 +2698,6 @@ class RecordingSurfaceOps final : public SurfaceReferenceOps {
   int remove_calls{};
 };
 
-class RecordingFdCloser final : public deskmate::protocol::AccessoryFdCloser {
- public:
-  void close_fd(int descriptor) noexcept override {
-    ++close_calls;
-    last_fd = descriptor;
-  }
-  int close_calls{};
-  int last_fd{-1};
-};
-
 void test_surface_lease_tracks_generation_references_and_destruction() {
   RecordingSurfaceOps ops;
   SurfaceOwner owner(&ops);
@@ -2787,21 +2777,19 @@ void test_surface_lease_invalidates_raw_ops_when_owner_is_destroyed() {
   CHECK_EQ(ops.remove_calls, 1);
 }
 
-void test_accessory_fd_has_exactly_one_owner_and_closes_once() {
-  RecordingFdCloser closer;
+void test_borrowed_accessory_fd_never_closes_on_destruction() {
   {
-    AccessoryFdOwner owner(9, closer);
+    BorrowedAccessoryFd owner(9);
     CHECK(owner.valid());
     CHECK_EQ(owner.borrow_fd(), 9);
-    AccessoryFdOwner moved(std::move(owner));
+    BorrowedAccessoryFd moved(std::move(owner));
     CHECK(!owner.valid());
     CHECK(moved.valid());
-    moved.close();
-    moved.close();
+    CHECK_EQ(moved.borrow_fd(), 9);
+    moved.invalidate();
     CHECK(!moved.valid());
+    CHECK_EQ(moved.borrow_fd(), -1);
   }
-  CHECK_EQ(closer.close_calls, 1);
-  CHECK_EQ(closer.last_fd, 9);
 }
 
 void test_device_stops_output_after_surface_destroy_and_uses_new_generation() {
@@ -2954,13 +2942,12 @@ void test_sleep_uses_stop_order_and_never_closes_borrowed_fd() {
   std::vector<std::string> events;
   RecordingBoundary boundary;
   RecordingHostBoundary host_boundary;
-  RecordingFdCloser closer;
   boundary.events = &events;
   host_boundary.events = &events;
   SessionPair pair(default_host_config(), default_device_config(), &boundary,
                    &host_boundary, nullptr, &events);
   drive_to_streaming_with_first_idr(pair);
-  AccessoryFdOwner fd_owner(11, closer);
+  BorrowedAccessoryFd fd_owner(11);
   events.clear();
 
   CHECK_EQ(pair.host.handle_host_event(HostEvent::WillSleep),
@@ -2975,10 +2962,8 @@ void test_sleep_uses_stop_order_and_never_closes_borrowed_fd() {
            static_cast<int>(HostInputState::Sleeping));
   CHECK_EQ(host_boundary.display_destroy_calls, 1);
   CHECK_EQ(host_boundary.drain_calls, 1);
-  CHECK_EQ(closer.close_calls, 0);
-
-  fd_owner.close();
-  CHECK_EQ(closer.close_calls, 1);
+  CHECK(fd_owner.valid());
+  CHECK_EQ(fd_owner.borrow_fd(), 11);
 }
 
 void test_heartbeat_timeout_releases_established_session_resources() {
@@ -3607,8 +3592,8 @@ int main() {
        test_surface_lease_outlives_owner_with_shared_reference_ops},
       {"surface lease invalidates raw ops when owner is destroyed",
        test_surface_lease_invalidates_raw_ops_when_owner_is_destroyed},
-      {"accessory fd has exactly one owner and closes once",
-       test_accessory_fd_has_exactly_one_owner_and_closes_once},
+      {"borrowed accessory fd never closes on destruction",
+       test_borrowed_accessory_fd_never_closes_on_destruction},
       {"device stops output after surface destroy and uses new generation",
        test_device_stops_output_after_surface_destroy_and_uses_new_generation},
       {"stopping rejects work then cancels drains and releases in order",
