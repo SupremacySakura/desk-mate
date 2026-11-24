@@ -116,6 +116,7 @@ class SurfaceLease {
 class SurfaceOwner {
  public:
   explicit SurfaceOwner(SurfaceReferenceOps* reference_ops = nullptr);
+  explicit SurfaceOwner(std::shared_ptr<SurfaceReferenceOps> reference_ops);
   ~SurfaceOwner();
   SurfaceOwner(const SurfaceOwner&) = delete;
   SurfaceOwner& operator=(const SurfaceOwner&) = delete;

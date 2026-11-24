@@ -43,6 +43,11 @@ scan_forbidden \
 scan_required "ArkTS accessory authorization" 'requestAccessoryRight' "$ARKTS_ROOT"
 scan_required "ArkTS official openAccessory" '\bopenAccessory[[:space:]]*\(' "$ARKTS_ROOT"
 scan_required "ArkTS official closeAccessory" '\bcloseAccessory[[:space:]]*\(' "$ARKTS_ROOT"
+scan_required "single-flight accessory open" '\bopeningPromise\b' "$ARKTS_ROOT"
+scan_required "ability destruction invalidation token" \
+  '\baccessoryGeneration\b' "$ARKTS_ROOT"
+scan_required "ability onCreate resets accessory state" \
+  '\bresetForAbility[[:space:]]*\(' "$ARKTS_ROOT"
 scan_required "poll-based worker" '\bpoll[[:space:]]*\(' "$CPP_ROOT"
 scan_required "eventfd stop path" '\beventfd[[:space:]]*\(' "$CPP_ROOT"
 scan_required "targeted pthread_kill" '\bpthread_kill[[:space:]]*\(' "$CPP_ROOT"
@@ -59,6 +64,18 @@ owner_sequence="$(
 )"
 if [[ "$owner_sequence" -lt 3 ]]; then
   echo "MISSING: owner-close A/B/C sequence in ArkTS" >&2
+  status=1
+fi
+
+if ! grep -A8 'onDestroy[[:space:]]*(' \
+    "$ARKTS_ROOT/entryability/EntryAbility.ets" | grep -q 'shutdownForDestroy'; then
+  echo "MISSING: onDestroy must stop/join the worker and close the ArkTS-owned handle" >&2
+  status=1
+fi
+
+if ! grep -A8 'onCreate[[:space:]]*(' \
+    "$ARKTS_ROOT/entryability/EntryAbility.ets" | grep -q 'resetForAbility'; then
+  echo "MISSING: onCreate must reset the ArkTS accessory lifecycle token" >&2
   status=1
 fi
 

@@ -14,6 +14,7 @@ add_library(entry SHARED
     probe_engine.cpp
     ${GATE3_CORE}/src/annexb.cpp
     ${GATE3_CORE}/src/lifecycle_controller.cpp
+    ${GATE3_CORE}/src/probe_cleanup.cpp
     ${GATE3_CORE}/src/recovery_output.cpp
     ${GATE3_CORE}/src/surface_lease.cpp
 )

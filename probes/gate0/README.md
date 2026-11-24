@@ -40,6 +40,7 @@ make dry-run
 - Reference Host 使用实际检测值对照；
 - Developer ID 脚本默认不执行签名/公证，并拒绝非 Developer ID 身份；
 - 二进制不静态导入私有 `CGVirtualDisplay` 类符号，所需 rotation selector 仍会被探测。
+- VideoToolbox callback context 由 encoder 持有并在 finish/deinit 排空后才失效。
 
 ## 当前本地记录
 

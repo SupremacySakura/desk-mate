@@ -1,7 +1,9 @@
 #include "gate3/recovery_output.hpp"
 
+#include <atomic>
 #include <cstdint>
 #include <cstdio>
+#include <functional>
 #include <thread>
 #include <vector>
 
@@ -28,11 +30,15 @@ public:
     bool RenderOutput(deskmate::gate3::DecoderInstanceId, std::uint32_t index) override
     {
         rendered.push_back(index);
+        if (on_render) {
+            return on_render();
+        }
         return render_result;
     }
 
     std::vector<std::uint32_t> freed;
     std::vector<std::uint32_t> rendered;
+    std::function<bool()> on_render;
     bool free_result = true;
     bool render_result = true;
 };
@@ -166,6 +172,96 @@ void LifecycleCommandsRejectCallbackThreads()
     Expect(router.current_decoder() == 1, "rejected commands do not replace decoder");
 }
 
+void DrainReportsNativeOperationFailures()
+{
+    {
+        RecordingOutputOps ops;
+        deskmate::gate3::RecoveryOutputRouter router(ops);
+        router.BindControlThread();
+        Expect(router.StartDecoder(1), "start decoder before free failure");
+        router.SetSurfaceRenderable(true);
+        router.PostOutputBuffer(1, 50);
+        ops.render_result = false;
+        Expect(!router.Drain(), "render failure makes Drain fail");
+        Expect(router.stats().render_failures == 1, "render failure is counted");
+        Expect(!router.last_good_frame_visible(),
+               "failed render does not publish a Last Good Frame");
+    }
+    {
+        RecordingOutputOps ops;
+        deskmate::gate3::RecoveryOutputRouter router(ops);
+        router.BindControlThread();
+        Expect(router.StartDecoder(2), "start decoder before free failure");
+        router.SetSurfaceRenderable(true);
+        Expect(router.BeginRecovery(2), "close output before stale callback");
+        router.PostOutputBuffer(2, 51);
+        ops.free_result = false;
+        Expect(!router.Drain(), "free failure makes Drain fail");
+        Expect(router.stats().free_failures == 1, "free failure is counted");
+    }
+}
+
+void SurfaceLossDuringRenderFreesTheRejectedOutput()
+{
+    RecordingOutputOps ops;
+    deskmate::gate3::RecoveryOutputRouter router(ops);
+    router.BindControlThread();
+    Expect(router.StartDecoder(9), "start decoder before in-gate Surface loss");
+    router.SetSurfaceRenderable(true);
+    router.PostOutputBuffer(9, 60);
+
+    std::atomic<bool> render_started{false};
+    ops.on_render = [&] {
+        render_started.store(true, std::memory_order_release);
+        while (router.surface_renderable()) {
+            std::this_thread::yield();
+        }
+        return false;
+    };
+    std::thread surface_callback([&] {
+        while (!render_started.load(std::memory_order_acquire)) {
+            std::this_thread::yield();
+        }
+        router.InvalidateSurfaceFromCallback();
+    });
+
+    Expect(router.Drain(), "in-gate Surface loss is cleaned up");
+    surface_callback.join();
+    Expect(ops.rendered == std::vector<std::uint32_t>{60}, "render was attempted before loss");
+    Expect(ops.freed == std::vector<std::uint32_t>{60},
+           "failed output is freed after the render gate");
+    Expect(router.stats().freed_surface_invalid == 1,
+           "only the completed Surface-invalid free is counted");
+    Expect(router.stats().render_failures == 0,
+           "Surface-invalid output is not reported as a render failure");
+}
+
+void FailedFreeRemainsPendingForTheNextDrain()
+{
+    RecordingOutputOps ops;
+    deskmate::gate3::RecoveryOutputRouter router(ops);
+    router.BindControlThread();
+    Expect(router.StartDecoder(10), "start decoder before retryable free");
+    router.SetSurfaceRenderable(true);
+    router.PostOutputBuffer(10, 70);
+    router.SetSurfaceRenderable(false);
+
+    ops.free_result = false;
+    Expect(!router.Drain(), "failed free keeps Drain failed");
+    Expect(router.stats().free_failures == 1, "failed free is counted");
+    Expect(router.stats().freed_surface_invalid == 0,
+           "failed free is not reported as a completed release");
+    Expect(router.stats().pending_free_buffers == 1, "failed output is retained in the retry queue");
+
+    ops.free_result = true;
+    Expect(router.Drain(), "retry succeeds after the native free recovers");
+    Expect(ops.freed == (std::vector<std::uint32_t>{70, 70}),
+           "the failed output is retried instead of being lost");
+    Expect(router.stats().freed_surface_invalid == 1,
+           "retry counts the release only after it succeeds");
+    Expect(router.stats().pending_free_buffers == 0, "successful retry drains the pending queue");
+}
+
 } // namespace
 
 int main()
@@ -176,6 +272,9 @@ int main()
     SurfaceLossStopsRenderingImmediately();
     SurfaceCallbackInvalidatesEpochWithoutRunningCleanup();
     LifecycleCommandsRejectCallbackThreads();
+    DrainReportsNativeOperationFailures();
+    SurfaceLossDuringRenderFreesTheRejectedOutput();
+    FailedFreeRemainsPendingForTheNextDrain();
     if (failures == 0) {
         std::puts("recovery output tests: PASS");
         return 0;

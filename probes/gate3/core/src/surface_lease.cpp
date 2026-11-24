@@ -7,10 +7,7 @@ namespace deskmate::gate3 {
 
 SurfaceLeaseCoordinator::SurfaceLeaseCoordinator(NativeSurfaceOps &operations) : operations_(operations) {}
 
-SurfaceLeaseCoordinator::~SurfaceLeaseCoordinator()
-{
-    Shutdown();
-}
+SurfaceLeaseCoordinator::~SurfaceLeaseCoordinator() = default;
 
 SurfaceGeneration SurfaceLeaseCoordinator::OnSurfaceCreated(void *native_window)
 {
@@ -77,8 +74,11 @@ bool SurfaceLeaseCoordinator::Release(SurfaceLeaseId lease_id)
     }
 
     void *const native_window = lease->native_window;
+    if (operations_.Unreference(native_window) != 0) {
+        return false;
+    }
     leases_.erase(lease);
-    return operations_.Unreference(native_window) == 0;
+    return true;
 }
 
 bool SurfaceLeaseCoordinator::CollectRetiredSurface(SurfaceGeneration generation)
@@ -100,8 +100,11 @@ bool SurfaceLeaseCoordinator::CollectRetiredSurface(SurfaceGeneration generation
     }
 
     void *const native_window = owner->native_window;
+    if (operations_.Unreference(native_window) != 0) {
+        return false;
+    }
     owner_references_.erase(owner);
-    return operations_.Unreference(native_window) == 0;
+    return true;
 }
 
 bool SurfaceLeaseCoordinator::CanRender(SurfaceGeneration generation) const
@@ -121,22 +124,31 @@ bool SurfaceLeaseCoordinator::CanRender(const SurfaceLease &lease) const
     });
 }
 
-void SurfaceLeaseCoordinator::Shutdown()
+bool SurfaceLeaseCoordinator::Shutdown()
 {
     std::lock_guard lock(mutex_);
-    if (shutdown_) {
-        return;
-    }
     shutdown_ = true;
     active_surface_valid_ = false;
-    for (const auto &lease : leases_) {
-        (void)operations_.Unreference(lease.native_window);
+    bool all_released = true;
+    auto lease = leases_.begin();
+    while (lease != leases_.end()) {
+        if (operations_.Unreference(lease->native_window) == 0) {
+            lease = leases_.erase(lease);
+        } else {
+            all_released = false;
+            ++lease;
+        }
     }
-    for (const auto &owner : owner_references_) {
-        (void)operations_.Unreference(owner.native_window);
+    auto owner = owner_references_.begin();
+    while (owner != owner_references_.end()) {
+        if (operations_.Unreference(owner->native_window) == 0) {
+            owner = owner_references_.erase(owner);
+        } else {
+            all_released = false;
+            ++owner;
+        }
     }
-    leases_.clear();
-    owner_references_.clear();
+    return all_released;
 }
 
 SurfaceGeneration SurfaceLeaseCoordinator::active_generation() const

@@ -21,6 +21,13 @@ Plan B 产品通道，不接收或注入 Reverse Input，也不从 AOA 结果推
 7. 在 Reference Link 上完成 ping 与双向 iperf3，并保留原始日志；
 8. 报告通过 `validate-report`。
 
+`validate-report` 会打开报告引用的 artifacts 与测量原始文件并重新计算 SHA-256；
+绝对路径、`..`、指向 evidence root 外的 symlink、文件缺失、内容被改动或占位
+哈希都不会通过。`passed` 报告还必须从 `raw/host.json`、`raw/device.json`、
+`raw/ioreg-*.txt`、ping 与双向 iperf3 原始输出重新解析并逐项核对拓扑、驱动、
+计数、RTT、抖动与吞吐；只用真实哈希包装伪造数值不会通过。手动入口证据必须
+以 evidence root 相对路径归档在 `artifacts` 中并匹配其 SHA-256。
+
 任何 RNDIS 接口都直接失败，即使它已经有 IP 或能传输数据。第三方 NCM/ECM
 驱动、未关联的 USB 网卡、Hub 路径和 Wi-Fi 都不能算 Gate 2A 证据。
 
@@ -59,8 +66,10 @@ python3 gate2a.py compose \
   --output evidence/<run>/report.json
 ```
 
-`device-entry.json` 与 `measurement` 仅在真实人工核验和真实 Reference Link
-测量完成后提供。
+`device-entry.json`、其入口截图与 `measurement` 必须位于同一个
+`evidence/<run>/` 下；报告和测量里的文件路径均相对该目录。`compose` 会把
+measurement 引用的 ping/iperf3 原始文件以及手动入口证据一并加入 `artifacts`。
+这些输入仅在真实人工核验和真实 Reference Link 测量完成后提供。
 
 ## 关键文件
 

@@ -23,9 +23,9 @@
   "checks": [
     {
       "id": "surface-lease-pairing-and-serialization",
-      "contract": "Owner/lease references are paired, destroyed surfaces stop rendering, stale generations cannot render, and native reference calls never overlap.",
+      "contract": "Owner/lease references are paired, destroyed surfaces stop rendering, stale generations cannot render, native reference calls never overlap, and failed Release/CollectRetiredSurface/Shutdown operations retain ownership for retry.",
       "state": "passed",
-      "observed": "surface lease tests: PASS"
+      "observed": "surface lease tests: PASS (failed release, retired-surface collection, and shutdown retries included)"
     },
     {
       "id": "surface-callback-invalidation",
@@ -35,9 +35,21 @@
     },
     {
       "id": "recovery-epoch-output-routing",
-      "contract": "Decoder callbacks only queue generation-tagged commands; old-epoch, surface-invalid, and residual destroyed-decoder outputs are freed without reaching the new native instance.",
+      "contract": "Decoder callbacks only queue generation-tagged commands; old-epoch, surface-invalid, and residual destroyed-decoder outputs are freed without reaching the new native instance, and Drain returns failure when a native render or free fails.",
       "state": "passed",
-      "observed": "recovery output tests: PASS"
+      "observed": "recovery output tests: PASS (render and free failure returns checked)"
+    },
+    {
+      "id": "cleanup-failure-propagation",
+      "contract": "The device probe checks Drain, Surface, decoder Stop/Destroy, and Shutdown results; a cleanup failure makes suite verification failed and is reported with its stage.",
+      "state": "passed",
+      "observed": "probe cleanup tests: PASS; probe engine cleanup contract: PASS; ignored Drain/decoder/Surface cleanup calls: 0"
+    },
+    {
+      "id": "retryable-output-and-surface-cleanup",
+      "contract": "Failed output frees remain queued for a later Drain; failed Surface Lease releases retain their lease ID for each worker tick, and decoder Destroy must succeed before Shutdown or native Surface release.",
+      "state": "passed",
+      "observed": "recovery output tests: PASS (retryable free); probe cleanup tests: PASS (failed Stop/Destroy and release retries)"
     },
     {
       "id": "lifecycle-sequences",
@@ -70,6 +82,48 @@
       "red": "Annex-B tests failed with 'test stream exists' when run from probes/gate3",
       "green": "Embedded GATE3_TESTDATA at compile time; annex-b tests: PASS",
       "refactor": "Removed cwd dependence from the host harness."
+    },
+    {
+      "seam": "SurfaceLeaseCoordinator retryable native cleanup",
+      "red": "surface-lease tests failed: failed release kept a removed lease, and a failed Shutdown/collection discarded the native reference record",
+      "green": "Lease and owner records are removed only after successful Unreference; Shutdown returns bool and retains failed records; surface-lease tests: PASS",
+      "refactor": "ProbeEngine checks every Release, CollectRetiredSurface, Shutdown, and Drain result."
+    },
+    {
+      "seam": "RecoveryOutputRouter Drain result",
+      "red": "recovery output tests failed: native render/free failures were counted but Drain returned true",
+      "green": "Drain returns false on native render or free failure; recovery output tests: PASS",
+      "refactor": "ProbeEngine records drain failures and excludes them from suite success."
+    },
+    {
+      "seam": "Gate 3 cleanup call-site audit",
+      "red": "probe engine cleanup contract reported 16 discarded Drain/Surface cleanup results",
+      "green": "All cleanup call sites are checked; probe engine cleanup contract: PASS",
+      "refactor": "Added a host-checked source contract for cleanup failure propagation."
+    },
+    {
+      "seam": "RecoveryOutputRouter in-gate Surface invalidation",
+      "red": "recovery output tests failed: in-gate Surface loss incremented freed_surface_invalid without freeing, Drain returned true, and the buffer was lost",
+      "green": "Rejected output is freed after the gate and only successful frees are counted; recovery output tests: PASS",
+      "refactor": "Free failures enter a pending queue retried by the next Drain."
+    },
+    {
+      "seam": "RecoveryOutputRouter retryable free queue",
+      "red": "recovery output tests failed: a failed FreeOutput was dequeued permanently, so a second Drain returned true without freeing",
+      "green": "Failed frees remain pending and succeed on the next Drain; recovery output tests: PASS",
+      "refactor": "The report exposes pending_free_buffers."
+    },
+    {
+      "seam": "ProbeCleanupCoordinator verification and Surface retry",
+      "red": "probe cleanup tests failed to compile before the coordinator existed; later ShutdownRetryDoesNotReleaseTheSameLeaseTwice failed because a retried lease was released again",
+      "green": "Cleanup failures force failed verification, failed release IDs stay pending, and shutdown retries complete; probe cleanup tests: PASS",
+      "refactor": "ProbeEngine clears current_lease_ only after a successful release and reports pending releases."
+    },
+    {
+      "seam": "Decoder Stop/Destroy shutdown gate",
+      "red": "probe cleanup tests failed to compile before Shutdown existed; the test now drives failed Stop then failed Destroy",
+      "green": "Failed Stop/Destroy retains the Surface lease and blocks Shutdown; retry order is Stop, Destroy, release, Shutdown; probe cleanup tests: PASS",
+      "refactor": "SurfaceLeaseCoordinator destruction no longer bypasses explicit checked Shutdown."
     }
   ],
   "annexb_host_sample_interop": {

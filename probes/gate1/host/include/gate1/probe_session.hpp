@@ -38,6 +38,7 @@ struct ProbeOptions {
     int zlp_every_frames = 128;
     int lost_after_ms = 3000;
     int cancel_timeout_ms = 5000;
+    int handshake_initial_delay_ms = 0;
     int handshake_timeout_ms = 30000;
     int handshake_retry_ms = 1000;
 };

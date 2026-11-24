@@ -33,6 +33,9 @@ public:
     int32_t Unreference(void *object) override
     {
         ++unreference_calls;
+        if (unreference_result != 0) {
+            return unreference_result;
+        }
         if (object == expected_object && expected_references > 0) {
             --expected_references;
         }
@@ -43,6 +46,7 @@ public:
     int reference_calls = 0;
     int unreference_calls = 0;
     int expected_references = 0;
+    int32_t unreference_result = 0;
 };
 
 void SurfaceReferenceIsPairedAndDestroyStopsRendering()
@@ -113,6 +117,80 @@ void DestroyedSurfaceReferenceIsCollectedAfterLeaseDrain()
     Expect(ops.expected_references == 0, "replacement references remain paired");
 }
 
+void FailedReleaseRetainsLeaseForRetry()
+{
+    RecordingSurfaceOps ops;
+    deskmate::gate3::SurfaceLeaseCoordinator coordinator(ops);
+    const auto generation = coordinator.OnSurfaceCreated(ops.expected_object);
+    const auto lease = coordinator.Acquire(generation);
+    Expect(lease.has_value(), "surface can be leased before failed release");
+
+    ops.unreference_result = -1;
+    Expect(!coordinator.Release(lease->id), "failed native unreference is reported");
+    Expect(coordinator.CanRender(*lease), "failed release keeps the lease owned");
+    Expect(ops.expected_references == 2, "failed release keeps the native reference");
+
+    ops.unreference_result = 0;
+    Expect(coordinator.Release(lease->id), "lease release can be retried");
+    Expect(!coordinator.CanRender(*lease), "successful retry retires the lease");
+    Expect(ops.expected_references == 1, "successful retry drops the native reference");
+    coordinator.Shutdown();
+}
+
+void FailedRetiredSurfaceCollectionCanBeRetried()
+{
+    RecordingSurfaceOps ops;
+    deskmate::gate3::SurfaceLeaseCoordinator coordinator(ops);
+    const auto generation = coordinator.OnSurfaceCreated(ops.expected_object);
+    const auto lease = coordinator.Acquire(generation);
+    coordinator.OnSurfaceDestroyed(generation);
+    Expect(coordinator.Release(lease->id), "lease releases before owner collection");
+
+    ops.unreference_result = -1;
+    Expect(!coordinator.CollectRetiredSurface(generation),
+           "failed owner unreference is reported");
+    Expect(ops.expected_references == 1,
+           "failed owner collection retains the native reference");
+
+    ops.unreference_result = 0;
+    Expect(coordinator.CollectRetiredSurface(generation),
+           "retired owner collection can be retried");
+    Expect(ops.expected_references == 0,
+           "successful retry returns the owner reference");
+    coordinator.Shutdown();
+}
+
+void FailedShutdownRetainsReferencesForRetry()
+{
+    RecordingSurfaceOps ops;
+    deskmate::gate3::SurfaceLeaseCoordinator coordinator(ops);
+    const auto generation = coordinator.OnSurfaceCreated(ops.expected_object);
+    const auto lease = coordinator.Acquire(generation);
+    Expect(lease.has_value(), "surface can be leased before shutdown");
+    Expect(ops.expected_references == 2, "lease and owner references are held");
+
+    ops.unreference_result = -1;
+    Expect(!coordinator.Shutdown(), "shutdown reports native unreference failure");
+    Expect(ops.expected_references == 2, "failed shutdown retains every reference");
+
+    ops.unreference_result = 0;
+    Expect(coordinator.Shutdown(), "shutdown can be retried after native recovery");
+    Expect(ops.expected_references == 0, "successful shutdown returns every reference");
+}
+
+void DestructorDoesNotBypassExplicitShutdown()
+{
+    RecordingSurfaceOps ops;
+    {
+        deskmate::gate3::SurfaceLeaseCoordinator coordinator(ops);
+        const auto generation = coordinator.OnSurfaceCreated(ops.expected_object);
+        Expect(coordinator.Acquire(generation).has_value(), "surface is leased before destruction");
+        Expect(ops.expected_references == 2, "destruction starts with lease and owner references");
+    }
+    Expect(ops.expected_references == 2,
+           "implicit destruction does not release references after an unproven cleanup order");
+}
+
 class SerializedSurfaceOps final : public deskmate::gate3::NativeSurfaceOps {
 public:
     int32_t Reference(void *) override
@@ -179,6 +257,10 @@ int main()
     SurfaceReferenceIsPairedAndDestroyStopsRendering();
     StaleLeaseCannotRenderOnReplacementSurface();
     DestroyedSurfaceReferenceIsCollectedAfterLeaseDrain();
+    FailedReleaseRetainsLeaseForRetry();
+    FailedRetiredSurfaceCollectionCanBeRetried();
+    FailedShutdownRetainsReferencesForRetry();
+    DestructorDoesNotBypassExplicitShutdown();
     SurfaceReferenceOperationsAreSerialized();
     if (failures == 0) {
         std::puts("surface lease tests: PASS");

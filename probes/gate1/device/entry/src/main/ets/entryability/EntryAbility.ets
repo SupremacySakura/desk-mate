@@ -2,6 +2,7 @@ import { AbilityConstant, ConfigurationConstant, UIAbility, Want } from '@kit.Ab
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { window } from '@kit.ArkUI';
 import probe from 'libgate1_probe.so';
+import { gate1Probe } from '../probe/AccessoryProbe';
 
 const DOMAIN: number = 0x3201;
 const TAG: string = 'Gate1Device';
@@ -9,6 +10,7 @@ const TAG: string = 'Gate1Device';
 export default class EntryAbility extends UIAbility {
   onCreate(want: Want, launchParam: AbilityConstant.LaunchParam): void {
     hilog.info(DOMAIN, TAG, 'Ability onCreate');
+    gate1Probe.resetForAbility();
     this.context.getApplicationContext().setColorMode(
       ConfigurationConstant.ColorMode.COLOR_MODE_NOT_SET);
   }
@@ -34,6 +36,7 @@ export default class EntryAbility extends UIAbility {
   }
 
   onDestroy(): void {
-    hilog.info(DOMAIN, TAG, 'onDestroy');
+    const result: string = gate1Probe.shutdownForDestroy();
+    hilog.info(DOMAIN, TAG, 'onDestroy cleanup: %{public}s', result);
   }
 }

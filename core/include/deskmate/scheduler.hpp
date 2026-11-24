@@ -46,6 +46,7 @@ struct ScheduledVideoFrame {
   std::vector<std::vector<std::uint8_t>> fragments;
   bool keyframe{};
   std::optional<std::uint32_t> recovery_id;
+  std::uint32_t video_stream_id{};
 };
 
 class HostSendScheduler {
@@ -68,9 +69,14 @@ class HostSendScheduler {
 
   void pump();
   void pump_priority();
+  void discard_pending_video_frames() noexcept;
+  void discard_unstarted_video_frames() noexcept;
+  void clear_started_video_streams() noexcept;
   void begin_stopping() noexcept;
 
   [[nodiscard]] bool stopping() const noexcept { return stopping_; }
+  [[nodiscard]] bool has_started_video_stream(
+      std::uint32_t video_stream_id) const noexcept;
   [[nodiscard]] bool idle() const noexcept;
   [[nodiscard]] std::size_t pending_video_bytes() const noexcept;
   [[nodiscard]] const std::optional<SchedulerIdrRequest>& idr_request() const {
@@ -82,6 +88,9 @@ class HostSendScheduler {
     std::vector<std::vector<std::uint8_t>> fragments;
     std::size_t next_fragment{};
     std::uint64_t enqueue_ns{};
+    bool keyframe{};
+    std::optional<std::uint32_t> recovery_id;
+    std::uint32_t video_stream_id{};
   };
 
   [[nodiscard]] bool has_pending_output() const noexcept;
@@ -90,6 +99,7 @@ class HostSendScheduler {
   void queue_video_frame(ScheduledVideoFrame frame);
   [[nodiscard]] std::optional<std::vector<std::uint8_t>> next_video_fragment();
   void drop_unstarted_video_frames();
+  void mark_queued_recovery_keyframe();
   void check_oldest_unsent_frame_age();
   void request_recovery(IdrRequestReason reason);
   void write_active();
@@ -103,6 +113,7 @@ class HostSendScheduler {
   std::size_t active_offset_{};
   std::optional<SchedulerIdrRequest> idr_request_;
   std::uint32_t last_recovery_id_{};
+  std::vector<std::uint32_t> started_video_streams_;
   bool stopping_{};
 };
 

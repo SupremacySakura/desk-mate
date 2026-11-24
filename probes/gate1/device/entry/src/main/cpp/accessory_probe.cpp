@@ -4,6 +4,7 @@
 #include "accessory_probe.hpp"
 
 #include "probe_protocol.hpp"
+#include "probe_status.hpp"
 
 #include <hilog/log.h>
 
@@ -129,6 +130,8 @@ std::string AccessoryProbe::start(int accessory_fd, const std::string& mode)
     stop_requested_ns_.store(0);
     wake_observed_ns_.store(0);
     worker_exit_ns_.store(0);
+    last_read_errno_.store(0);
+    last_poll_revents_.store(0);
     {
         std::lock_guard<std::mutex> status_lock(status_mutex_);
         exit_reason_ = "running";
@@ -292,6 +295,7 @@ void AccessoryProbe::worker_main()
 
         const int poll_result = poll(fds.data(), count, 250);
         if (poll_result < 0) {
+            const int poll_errno = errno;
             if (errno == EINTR) {
                 if (stop_requested_.load() && mode_ == WakeMode::kSignal) {
                     record_wake("signal");
@@ -306,10 +310,16 @@ void AccessoryProbe::worker_main()
                 break;
             }
             read_errors_.fetch_add(1);
+            last_read_errno_.store(poll_errno);
+            last_poll_revents_.store(0);
             OH_LOG_ERROR(
                 LOG_APP,
                 "poll failed: %{public}s",
-                errno_text(errno));
+                probe_error_context(
+                    poll_errno,
+                    accessory_fd_,
+                    0,
+                    mode_name(mode_)).c_str());
             exit_reason = "poll-error";
             break;
         }
@@ -333,11 +343,21 @@ void AccessoryProbe::worker_main()
 
         const short errors = static_cast<short>(POLLERR | POLLHUP | POLLNVAL);
         if ((fds[0].revents & errors) != 0) {
+            last_poll_revents_.store(fds[0].revents);
+            last_read_errno_.store(0);
             if (stop_requested_.load() && mode_ == WakeMode::kOwnerClose) {
                 record_wake("owner-close");
                 exit_reason = "owner-close";
             } else {
                 read_errors_.fetch_add(1);
+                OH_LOG_ERROR(
+                    LOG_APP,
+                    "accessory poll error: %{public}s",
+                    probe_error_context(
+                        0,
+                        accessory_fd_,
+                        fds[0].revents,
+                        mode_name(mode_)).c_str());
                 exit_reason = "accessory-error";
             }
             break;
@@ -357,6 +377,8 @@ void AccessoryProbe::worker_main()
                 continue;
             }
             const int read_errno = errno;
+            last_read_errno_.store(read_errno);
+            last_poll_revents_.store(fds[0].revents);
             if (read_errno == EINTR) {
                 if (stop_requested_.load() && mode_ == WakeMode::kSignal) {
                     record_wake("signal");
@@ -376,7 +398,11 @@ void AccessoryProbe::worker_main()
                 OH_LOG_ERROR(
                     LOG_APP,
                     "read failed: %{public}s",
-                    errno_text(read_errno));
+                    probe_error_context(
+                        read_errno,
+                        accessory_fd_,
+                        fds[0].revents,
+                        mode_name(mode_)).c_str());
                 exit_reason = "read-error";
             }
             break;
@@ -578,6 +604,14 @@ std::string AccessoryProbe::status_json(bool ok, const std::string& message)
     const std::int64_t stop_ns = stop_requested_ns_.load();
     const std::int64_t wake_ns = wake_observed_ns_.load();
     const std::int64_t exit_ns = worker_exit_ns_.load();
+    bool worker_done = false;
+    {
+        std::lock_guard<std::mutex> lock(join_mutex_);
+        worker_done = worker_done_;
+    }
+    const bool worker_exited = worker_done || exit_ns > 0;
+    const bool reported_running =
+        probe_reports_running(running_.load(), worker_exited);
     std::string exit_reason;
     std::string wake_reason;
     {
@@ -589,11 +623,13 @@ std::string AccessoryProbe::status_json(bool ok, const std::string& message)
     json << "{\"ok\":" << (ok ? "true" : "false")
          << ",\"message\":\"" << message << "\""
          << ",\"mode\":\"" << mode_name(mode_) << "\""
-         << ",\"running\":" << (running_.load() ? "true" : "false")
+         << ",\"running\":" << (reported_running ? "true" : "false")
          << ",\"stop_to_wake_us\":"
          << (stop_ns > 0 && wake_ns >= stop_ns ? (wake_ns - stop_ns) / 1000 : -1)
          << ",\"stop_to_worker_exit_ms\":"
          << (stop_ns > 0 && exit_ns >= stop_ns ? (exit_ns - stop_ns) / 1000000 : -1)
+         << ",\"last_read_errno\":" << last_read_errno_.load()
+         << ",\"last_poll_revents\":" << last_poll_revents_.load()
          << ",\"wake_reason\":\"" << wake_reason << "\""
          << ",\"exit_reason\":\"" << exit_reason << "\""
          << ",\"zero_reads\":" << zero_reads_.load()
@@ -620,9 +656,17 @@ std::string AccessoryProbe::stats_json()
     const std::int64_t stop_ns = stop_requested_ns_.load();
     const std::int64_t wake_ns = wake_observed_ns_.load();
     const std::int64_t exit_ns = worker_exit_ns_.load();
+    bool worker_done = false;
+    {
+        std::lock_guard<std::mutex> lock(join_mutex_);
+        worker_done = worker_done_;
+    }
+    const bool worker_exited = worker_done || exit_ns > 0;
+    const bool reported_running =
+        probe_reports_running(running_.load(), worker_exited);
     std::ostringstream json;
-    json << "{\"running\":" << (running_.load() ? "true" : "false")
-         << ",\"worker_exited\":" << (worker_exit_ns_.load() > 0 ? "true" : "false")
+    json << "{\"running\":" << (reported_running ? "true" : "false")
+         << ",\"worker_exited\":" << (worker_exited ? "true" : "false")
          << ",\"mode\":\"" << mode_name(mode_) << "\""
          << ",\"wake_reason\":\"" << wake_reason << "\""
          << ",\"exit_reason\":\"" << exit_reason << "\""
@@ -630,6 +674,8 @@ std::string AccessoryProbe::stats_json()
          << (stop_ns > 0 && wake_ns >= stop_ns ? (wake_ns - stop_ns) / 1000 : -1)
          << ",\"stop_to_worker_exit_ms\":"
          << (stop_ns > 0 && exit_ns >= stop_ns ? (exit_ns - stop_ns) / 1000000 : -1)
+         << ",\"last_read_errno\":" << last_read_errno_.load()
+         << ",\"last_poll_revents\":" << last_poll_revents_.load()
          << ",\"zero_reads\":" << zero_reads_.load()
          << ",\"poll_wakeups\":" << poll_wakeups_.load()
          << ",\"bytes_read\":" << bytes_read_.load()
@@ -663,7 +709,9 @@ void AccessoryProbe::note_lifecycle(const std::string& event)
 bool AccessoryProbe::running() const
 {
     std::lock_guard<std::mutex> lock(join_mutex_);
-    return running_.load() && !worker_done_;
+    return probe_reports_running(
+        running_.load(),
+        worker_done_ || worker_exit_ns_.load() > 0);
 }
 
 } // namespace gate1

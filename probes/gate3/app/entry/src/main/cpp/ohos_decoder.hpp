@@ -48,6 +48,8 @@ public:
 class OhosDecoder final : public DecoderLifecycleOps, public DecoderOutputOps {
 public:
     OhosDecoder();
+    // Explicit Destroy() on the control thread is required before returning
+    // the native Surface references; the destructor performs no native teardown.
     ~OhosDecoder() override;
 
     OhosDecoder(const OhosDecoder &) = delete;

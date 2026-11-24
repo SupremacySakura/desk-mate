@@ -28,6 +28,8 @@ struct SurfaceLease {
 class SurfaceLeaseCoordinator {
 public:
     explicit SurfaceLeaseCoordinator(NativeSurfaceOps &operations);
+    // Native references are returned only through an explicitly checked
+    // Shutdown call after decoder teardown succeeds.
     ~SurfaceLeaseCoordinator();
 
     SurfaceLeaseCoordinator(const SurfaceLeaseCoordinator &) = delete;
@@ -50,8 +52,9 @@ public:
     bool CanRender(const SurfaceLease &lease) const;
 
     // Safe point after decoder output is drained. Returns all outstanding native
-    // references exactly once.
-    void Shutdown();
+    // references exactly once. Returns false and retains failed records when a
+    // native unreference fails, so the control thread can retry.
+    bool Shutdown();
 
     SurfaceGeneration active_generation() const;
 
