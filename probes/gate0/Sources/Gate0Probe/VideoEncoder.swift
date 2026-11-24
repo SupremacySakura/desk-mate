@@ -84,10 +84,46 @@ struct EncodedArtifactMetadata: Codable {
     let audioRequested: Bool
 }
 
+private final class Gate0CallbackContext {
+    weak var encoder: Gate0Encoder?
+    private let condition = NSCondition()
+    private var callbacksInFlight = 0
+    private var stopping = false
+
+    func beginCallback() -> Gate0Encoder? {
+        condition.lock()
+        defer { condition.unlock() }
+        guard !stopping else { return nil }
+        callbacksInFlight += 1
+        return encoder
+    }
+
+    func endCallback() {
+        condition.lock()
+        callbacksInFlight -= 1
+        if callbacksInFlight == 0 {
+            condition.broadcast()
+        }
+        condition.unlock()
+    }
+
+    func stopAndWait() {
+        condition.lock()
+        stopping = true
+        while callbacksInFlight > 0 {
+            condition.wait()
+        }
+        condition.unlock()
+    }
+}
+
 private let gate0VTCompressionOutputCallback: VTCompressionOutputCallback = {
     refcon, _, status, infoFlags, sampleBuffer in
     guard let refcon else { return }
-    let encoder = Unmanaged<Gate0Encoder>.fromOpaque(refcon).takeUnretainedValue()
+    let context = Unmanaged<Gate0CallbackContext>.fromOpaque(refcon)
+        .takeUnretainedValue()
+    guard let encoder = context.beginCallback() else { return }
+    defer { context.endCallback() }
     encoder.handleOutput(status: status, infoFlags: infoFlags, sampleBuffer: sampleBuffer)
 }
 
@@ -102,7 +138,10 @@ final class Gate0Encoder {
 
     private let lock = NSLock()
     private let fileHandle: FileHandle
+    private let callbackContext = Gate0CallbackContext()
+    private var retainedCallbackContext: Unmanaged<Gate0CallbackContext>?
     private var session: VTCompressionSession?
+    private var fileClosed = false
     private var failure: String?
     private var parameterSetsWritten = false
     private var parameterSetMetadata: [ParameterSetMetadata] = []
@@ -160,9 +199,18 @@ final class Gate0Encoder {
 
     deinit {
         if let session {
+            VTCompressionSessionCompleteFrames(
+                session,
+                untilPresentationTimeStamp: .invalid
+            )
+            callbackContext.stopAndWait()
             VTCompressionSessionInvalidate(session)
+        } else {
+            callbackContext.stopAndWait()
         }
-        try? fileHandle.close()
+        callbackContext.encoder = nil
+        releaseCallbackContext()
+        closeFileIfOpen()
     }
 
     func encode(pixelBuffer: CVPixelBuffer, presentationTime: CMTime, duration: CMTime, forceKeyFrame: Bool) throws {
@@ -232,22 +280,18 @@ final class Gate0Encoder {
                 activeSession,
                 key: kVTCompressionPropertyKey_ProfileLevel
             )
+            callbackContext.stopAndWait()
             VTCompressionSessionInvalidate(activeSession)
+        } else {
+            callbackContext.stopAndWait()
         }
 
         lock.lock()
         session = nil
         lock.unlock()
-        do {
-            try fileHandle.synchronize()
-        } catch {
-            recordFailure("bitstream synchronize failed: \(error.localizedDescription)")
-        }
-        do {
-            try fileHandle.close()
-        } catch {
-            recordFailure("bitstream close failed: \(error.localizedDescription)")
-        }
+        callbackContext.encoder = nil
+        releaseCallbackContext()
+        closeFileIfOpen()
 
         lock.lock()
         let capturedFrames = frames
@@ -412,6 +456,8 @@ final class Gate0Encoder {
         ]
 
         var createdSession: VTCompressionSession?
+        callbackContext.encoder = self
+        let retainedContext = Unmanaged.passRetained(callbackContext)
         let status = VTCompressionSessionCreate(
             allocator: kCFAllocatorDefault,
             width: Int32(width),
@@ -421,12 +467,14 @@ final class Gate0Encoder {
             imageBufferAttributes: sourceAttributes as CFDictionary,
             compressedDataAllocator: kCFAllocatorDefault,
             outputCallback: gate0VTCompressionOutputCallback,
-            refcon: Unmanaged.passUnretained(self).toOpaque(),
+            refcon: retainedContext.toOpaque(),
             compressionSessionOut: &createdSession
         )
         guard status == noErr, let createdSession else {
+            retainedContext.release()
             throw Gate0EncoderError.sessionCreation(status)
         }
+        retainedCallbackContext = retainedContext
 
         for (key, value) in properties {
             let propertyStatus = VTSessionSetProperty(
@@ -436,6 +484,9 @@ final class Gate0Encoder {
             )
             guard propertyStatus == noErr else {
                 VTCompressionSessionInvalidate(createdSession)
+                callbackContext.stopAndWait()
+                callbackContext.encoder = nil
+                releaseCallbackContext()
                 throw Gate0EncoderError.sessionProperty(key: key, status: propertyStatus)
             }
         }
@@ -443,6 +494,9 @@ final class Gate0Encoder {
         let prepareStatus = VTCompressionSessionPrepareToEncodeFrames(createdSession)
         guard prepareStatus == noErr else {
             VTCompressionSessionInvalidate(createdSession)
+            callbackContext.stopAndWait()
+            callbackContext.encoder = nil
+            releaseCallbackContext()
             throw Gate0EncoderError.sessionPreparation(prepareStatus)
         }
 
@@ -455,6 +509,26 @@ final class Gate0Encoder {
             key: kVTCompressionPropertyKey_ProfileLevel
         )
         session = createdSession
+    }
+
+    private func releaseCallbackContext() {
+        retainedCallbackContext?.release()
+        retainedCallbackContext = nil
+    }
+
+    private func closeFileIfOpen() {
+        guard !fileClosed else { return }
+        fileClosed = true
+        do {
+            try fileHandle.synchronize()
+        } catch {
+            recordFailure("bitstream synchronize failed: \(error.localizedDescription)")
+        }
+        do {
+            try fileHandle.close()
+        } catch {
+            recordFailure("bitstream close failed: \(error.localizedDescription)")
+        }
     }
 
     private func append(sampleBuffer: CMSampleBuffer) throws {

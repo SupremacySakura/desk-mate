@@ -2,6 +2,7 @@
 
 #include "gate3/annexb.hpp"
 #include "gate3/lifecycle_controller.hpp"
+#include "gate3/probe_cleanup.hpp"
 #include "gate3/recovery_output.hpp"
 #include "gate3/surface_lease.hpp"
 #include "ohos_decoder.hpp"
@@ -62,6 +63,11 @@ private:
     void HandleSurfaceRebuild(const SurfaceLease &lease, SurfaceGeneration previous_generation);
     void SetStage(std::string stage);
     void SetTerminalFailure(std::string failure);
+    bool DrainOutputs(const char *failure_context);
+    void RecordSurfaceCleanupFailure(const char *failure_context);
+    bool ReleaseSurfaceLease(const SurfaceLease &lease, const char *failure_context);
+    void RetryPendingSurfaceReleases();
+    void ForgetSurfaceLease(SurfaceLeaseId lease_id, SurfaceGeneration generation);
     void CleanupSurfaceIfInvalid();
     std::optional<SurfaceLease> CurrentLease() const;
     std::string BuildReportJson() const;
@@ -124,6 +130,7 @@ private:
     SurfaceLeaseCoordinator surfaces_;
     OhosDecoder decoder_;
     RecoveryOutputRouter router_;
+    ProbeCleanupCoordinator cleanup_;
     RecoveryLifecycleController lifecycle_;
 
     mutable std::mutex snapshot_mutex_;

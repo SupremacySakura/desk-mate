@@ -63,6 +63,8 @@ private:
     std::atomic<std::int64_t> stop_requested_ns_{0};
     std::atomic<std::int64_t> wake_observed_ns_{0};
     std::atomic<std::int64_t> worker_exit_ns_{0};
+    std::atomic<int> last_read_errno_{0};
+    std::atomic<int> last_poll_revents_{0};
 
     std::atomic<std::uint64_t> zero_reads_{0};
     std::atomic<std::uint64_t> poll_wakeups_{0};

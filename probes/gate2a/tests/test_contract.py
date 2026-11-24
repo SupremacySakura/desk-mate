@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 
+import hashlib
 import json
 import subprocess
 import sys
@@ -256,31 +257,31 @@ def valid_passed_report():
         "interface": "en7",
         "target": "192.0.2.2",
         "ping": {
-            "raw_path": "raw/ping.txt",
-            "sha256": "1" * 64,
-            "packets_transmitted": 120,
-            "packets_received": 120,
+            "raw_path": "measurement/ping.txt",
+            "sha256": None,
+            "packets_transmitted": 4,
+            "packets_received": 4,
             "packet_loss_percent": 0.0,
             "rtt_ms": {
-                "min": 0.8,
-                "avg": 1.0,
-                "max": 1.4,
-                "stddev": 0.1,
+                "min": 1.0,
+                "avg": 2.75,
+                "max": 5.0,
+                "stddev": 1.479,
             },
-            "jitter_ms": 0.1,
+            "jitter_ms": 4.0 / 3.0,
         },
         "throughput": {
             "runs": [
                 {
                     "direction": "host_to_device",
-                    "raw_path": "raw/iperf-host-to-device.json",
-                    "sha256": "2" * 64,
+                    "raw_path": "measurement/iperf-host-to-device.json",
+                    "sha256": None,
                     "bits_per_second": 900000000.0,
                 },
                 {
                     "direction": "device_to_host",
-                    "raw_path": "raw/iperf-device-to-host.json",
-                    "sha256": "3" * 64,
+                    "raw_path": "measurement/iperf-device-to-host.json",
+                    "sha256": None,
                     "bits_per_second": 850000000.0,
                 },
             ]
@@ -307,12 +308,303 @@ def valid_passed_report():
         "status": "passed",
         "reasons": ["all Gate 2A contract requirements are satisfied"],
     }
-    report["artifacts"] = [
-        {"path": "raw/ping.txt", "sha256": "1" * 64},
-        {"path": "raw/iperf-host-to-device.json", "sha256": "2" * 64},
-        {"path": "raw/iperf-device-to-host.json", "sha256": "3" * 64},
-    ]
+    report["artifacts"] = []
     return report
+
+
+def archive_passed_evidence(report, directory):
+    directory = Path(directory)
+    raw_dir = directory / "raw"
+    measurement_dir = directory / "measurement"
+    raw_dir.mkdir(parents=True, exist_ok=True)
+    measurement_dir.mkdir(parents=True, exist_ok=True)
+    evidence = {
+        "raw/host.json": json.dumps(
+            {
+                "model": "Mac16,12",
+                "chip": "Apple M4",
+                "memory_bytes": 17179869184,
+                "os_version": "27.3",
+                "os_build": "26C5047e",
+                "architecture": "arm64",
+            }
+        ),
+        "raw/device.json": json.dumps(
+            {
+                "model": "MRDI-W00",
+                "product_name": "HUAWEI MatePad Pro",
+                "serial": "59GYD25716204513",
+                "software_version": "MRDIL-W00 7.0.0.111(SP8C00E111R6P3)",
+                "os_version": "7.0.0",
+                "api_version": "26",
+                "interface_names": ["lo", "en7"],
+            }
+        ),
+        "raw/ioreg-usb.txt": ioreg_direct_ncm_usb_fixture(),
+        "raw/ioreg-interfaces.txt": "",
+        "raw/ioreg-ncm.txt": ioreg_direct_ncm_fixture(),
+        "raw/ioreg-ecm.txt": "",
+        "raw/networksetup-hardware-ports.txt": (
+            "Hardware Port: USB NCM\n"
+            "Device: en7\n"
+        ),
+        "raw/networksetup-services.txt": "USB NCM\n",
+        "raw/ifconfig.txt": (
+            "en7: flags=8863<UP,BROADCAST,RUNNING> mtu 1500\n"
+            "\tinet <redacted> netmask <redacted>\n"
+            "\tstatus: active\n"
+        ),
+        "measurement/ping.txt": (
+            "PING 192.0.2.2 (192.0.2.2): 56 data bytes\n"
+            "64 bytes from 192.0.2.2: icmp_seq=0 ttl=64 time=1.000 ms\n"
+            "64 bytes from 192.0.2.2: icmp_seq=1 ttl=64 time=2.000 ms\n"
+            "64 bytes from 192.0.2.2: icmp_seq=2 ttl=64 time=3.000 ms\n"
+            "64 bytes from 192.0.2.2: icmp_seq=3 ttl=64 time=5.000 ms\n\n"
+            "--- 192.0.2.2 ping statistics ---\n"
+            "4 packets transmitted, 4 packets received, 0.0% packet loss\n"
+            "round-trip min/avg/max/stddev = 1.000/2.750/5.000/1.479 ms\n"
+        ),
+        "measurement/iperf-host-to-device.json": json.dumps(
+            {
+                "start": {
+                    "connecting_to": {"host": "192.0.2.2", "port": 5201},
+                    "test_start": {"protocol": "TCP", "reverse": 0},
+                },
+                "end": {
+                    "sum_sent": {"bits_per_second": 950000000.0},
+                    "sum_received": {"bits_per_second": 900000000.0},
+                },
+            }
+        ),
+        "measurement/iperf-device-to-host.json": json.dumps(
+            {
+                "start": {
+                    "connecting_to": {"host": "192.0.2.2", "port": 5201},
+                    "test_start": {"protocol": "TCP", "reverse": 1},
+                },
+                "end": {"sum_received": {"bits_per_second": 850000000.0}},
+            }
+        ),
+        "device-entry.json": json.dumps(
+            {
+                "status": "verified",
+                "device_serial": "59GYD25716204513",
+                "observed_at_utc": "2026-11-24T00:00:00Z",
+                "operator": "operator",
+                "user_operable": True,
+                "developer_mode_required": False,
+                "path": "Settings > Connected devices > USB network sharing",
+                "steps": ["Open the documented Device setting"],
+                "evidence": ["device-entry.png"],
+                "notes": "User-operable entry verified without Developer Mode.",
+            }
+        ),
+    }
+    digests = {}
+    for relative_path, contents in evidence.items():
+        path = directory / relative_path
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(contents, encoding="utf-8")
+        digests[relative_path] = hashlib.sha256(path.read_bytes()).hexdigest()
+
+    screenshot_path = directory / "device-entry.png"
+    screenshot_path.write_bytes(
+        bytes.fromhex(
+            "89504e470d0a1a0a0000000d494844520000000100000001"
+            "08060000001f15c4890000000d49444154789c6360000000"
+            "020001e221bc330000000049454e44ae426082"
+        )
+    )
+    digests["device-entry.png"] = hashlib.sha256(
+        screenshot_path.read_bytes()
+    ).hexdigest()
+
+    report["usb_topology"] = reported_topology(
+        gate2a.discover_topology(
+            evidence["raw/ioreg-usb.txt"],
+            "59GYD25716204513",
+        )
+    )
+    network_inventory = gate2a.build_network_inventory(
+        evidence["raw/ioreg-usb.txt"],
+        [
+            ("ncm", evidence["raw/ioreg-ncm.txt"]),
+            ("ecm", evidence["raw/ioreg-ecm.txt"]),
+        ],
+        "59GYD25716204513",
+    )
+    target = report["usb_topology"]["target_device"]
+    classification = gate2a.classify(
+        {
+            "usb_device": {
+                "name": target["name"],
+                "serial": target["serial"],
+                "vendor": target["vendor"],
+                "product": target["product"],
+                "id_vendor": target["id_vendor"],
+                "id_product": target["id_product"],
+                "link_speed_mbps": target["link_speed_mbps"],
+                "interfaces": target["interfaces"],
+                "ancestors": report["usb_topology"]["ancestors"],
+                "hubs": report["usb_topology"]["hubs"],
+            },
+            "network_interfaces": network_inventory["interfaces"],
+            "device_entry": json.loads(evidence["device-entry.json"]),
+        }
+    )
+    host_network = gate2a.build_host_network(raw_dir, network_inventory)
+    associated = next(
+        (
+            interface
+            for interface in network_inventory["interfaces"]
+            if interface.get("name") == classification.get("interface")
+        ),
+        None,
+    )
+    report["host_network"] = host_network
+    report["device_network"] = {
+        "interface": classification.get("interface"),
+        "driver_family": classification["driver_family"],
+        "network_driver_class": classification.get("network_driver_class"),
+        "network_driver_bundle_id": classification.get("network_driver_bundle_id"),
+        "native_bundled_driver": classification["native_bundled_driver"],
+        "rndis_detected": classification["rndis_detected"],
+        "eligible": classification["eligible"],
+        "reason": network_inventory["reason"],
+    }
+    if associated:
+        report["device_network"]["macos_hardware_port"] = associated.get(
+            "macos_hardware_port"
+        )
+        report["device_network"]["macos_network_service"] = associated.get(
+            "macos_network_service"
+        )
+
+    ping = report["measurements"]["ping"]
+    ping["raw_path"] = "measurement/ping.txt"
+    ping["sha256"] = digests["measurement/ping.txt"]
+    ping["packets_transmitted"] = 4
+    ping["packets_received"] = 4
+    ping["packet_loss_percent"] = 0.0
+    ping["rtt_ms"] = {
+        "min": 1.0,
+        "avg": 2.75,
+        "max": 5.0,
+        "stddev": 1.479,
+    }
+    ping["jitter_ms"] = 4.0 / 3.0
+    for run in report["measurements"]["throughput"]["runs"]:
+        relative_path = (
+            "measurement/iperf-host-to-device.json"
+            if run["direction"] == "host_to_device"
+            else "measurement/iperf-device-to-host.json"
+        )
+        run["raw_path"] = relative_path
+        run["sha256"] = digests[relative_path]
+    report["device_entry"] = json.loads(evidence["device-entry.json"])
+
+    measurement_document = {
+        "status": report["measurements"]["status"],
+        "reference_link": report["measurements"]["reference_link"],
+        "reason": report["measurements"]["reason"],
+        "interface": report["measurements"]["interface"],
+        "target": report["measurements"]["target"],
+        "ping": ping,
+        "throughput": report["measurements"]["throughput"],
+        "commands": report["measurements"]["commands"],
+    }
+    write_test_json(
+        directory / "measurement" / "link-measurement.json",
+        measurement_document,
+    )
+    digests["measurement/link-measurement.json"] = hashlib.sha256(
+        (directory / "measurement" / "link-measurement.json").read_bytes()
+    ).hexdigest()
+    report["artifacts"] = sorted(
+        (
+            {"path": relative_path, "sha256": digest}
+            for relative_path, digest in digests.items()
+        ),
+        key=lambda artifact: artifact["path"],
+    )
+    return report
+
+
+def write_test_json(path, value):
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+
+
+def reported_topology(topology):
+    return {
+        "target_device": topology["target_device"],
+        "ancestors": topology["ancestors"],
+        "hubs": topology["hubs"],
+        "observed_hubs": topology["observed_hubs"],
+        "hub_count": topology["hub_count"],
+        "link_speed_mbps": topology["negotiated_speed_mbps"],
+        "direct_to_host": topology["direct_to_host"],
+        "reference_link": topology["reference_link"],
+        "reason": topology["reason"],
+    }
+
+
+def ioreg_direct_ncm_usb_fixture():
+    return """+-o Root  <class IORegistryEntry, id 0x1, retain 32>
+  +-o AppleT8132USBXHCI@00000000  <class AppleT8132USBXHCI, id 0x2, retain 20>
+    +-o "MatePad Composite"@01100000  <class IOUSBHostDevice, id 0x3, retain 38>
+      | {
+      |   "kUSBSerialNumberString" = "59GYD25716204513"
+      |   "USB Serial Number" = "59GYD25716204513"
+      |   "USB Vendor Name" = "HISILICON"
+      |   "USB Product Name" = "MatePad"
+      |   "UsbLinkSpeed" = 5000000000
+      |   "UsbExclusiveOwner" = "AppleUSBNCMControl"
+      |   "idVendor" = 4817
+      |   "idProduct" = 20480
+      | }
+      |
+      +-o NCM Control@0  <class IOUSBHostInterface, id 0x4, retain 11>
+        | {
+        |   "bInterfaceClass" = 2
+        |   "bInterfaceSubClass" = 13
+        |   "bInterfaceProtocol" = 0
+        |   "kUSBString" = "NCM Control"
+        | }
+        |
+        +-o AppleUSBNCMControl  <class AppleUSBNCMControl, id 0x5, retain 8>
+          {
+            "CFBundleIdentifier" = "com.apple.driver.usb.cdc.ncm"
+          }
+"""
+
+
+def ioreg_direct_ncm_fixture():
+    return """+-o AppleUSBNCMControl  <class AppleUSBNCMControl, id 0x1, retain 8>
+  | {
+  |   "CFBundleIdentifier" = "com.apple.driver.usb.cdc.ncm"
+  |   "bInterfaceClass" = 2
+  |   "bInterfaceSubClass" = 13
+  |   "bInterfaceProtocol" = "*"
+  | }
+  |
+  +-o AppleUSBNCMData  <class AppleUSBNCMData, id 0x2, retain 7>
+    | {
+    |   "CFBundleIdentifier" = "com.apple.driver.usb.cdc.ncm"
+    |   "idVendor" = 4817
+    |   "idProduct" = 20480
+    | }
+    |
+    +-o en7  <class IOEthernetInterface, id 0x3, retain 11>
+      | {
+      |   "BSD Name" = "en7"
+      |   "IOInterfaceUnit" = 7
+      | }
+"""
 
 
 def ioreg_usb_fixture(include_interface=True):
@@ -763,12 +1055,455 @@ round-trip min/avg/max/stddev = 1.000/2.750/5.000/1.479 ms
     def test_report_validation_accepts_a_complete_passed_report(self):
         report = valid_passed_report()
         with tempfile.TemporaryDirectory() as directory:
-            report_path = Path(directory) / "report.json"
+            directory = Path(directory)
+            archive_passed_evidence(report, directory)
+            report_path = directory / "report.json"
             report_path.write_text(json.dumps(report), encoding="utf-8")
 
             result = run_cli("validate-report", "--report", report_path)
 
             self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_report_validation_rejects_forged_metrics_with_real_artifact_hashes(self):
+        report = valid_passed_report()
+        with tempfile.TemporaryDirectory() as directory:
+            directory = Path(directory)
+            archive_passed_evidence(report, directory)
+            report["measurements"]["ping"].update(
+                {
+                    "packets_transmitted": 120,
+                    "packets_received": 120,
+                    "packet_loss_percent": 0.0,
+                    "rtt_ms": {
+                        "min": 0.8,
+                        "avg": 1.0,
+                        "max": 1.4,
+                        "stddev": 0.1,
+                    },
+                    "jitter_ms": 0.1,
+                }
+            )
+            report["measurements"]["throughput"]["runs"][0][
+                "bits_per_second"
+            ] = 123456789.0
+            report_path = directory / "report.json"
+            report_path.write_text(json.dumps(report), encoding="utf-8")
+
+            result = run_cli("validate-report", "--report", report_path)
+
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("measurements.ping", result.stderr)
+            self.assertIn("bits_per_second", result.stderr)
+
+    def test_report_validation_rejects_absolute_and_parent_path_escapes(self):
+        for escaped_path in (
+            "/tmp/ping.txt",
+            "../outside/ping.txt",
+            "measurement/../raw/host.json",
+        ):
+            with self.subTest(escaped_path=escaped_path):
+                report = valid_passed_report()
+                with tempfile.TemporaryDirectory() as directory:
+                    directory = Path(directory)
+                    archive_passed_evidence(report, directory)
+                    report["measurements"]["ping"]["raw_path"] = escaped_path
+                    report_path = directory / "report.json"
+                    report_path.write_text(json.dumps(report), encoding="utf-8")
+
+                    result = run_cli(
+                        "validate-report",
+                        "--report",
+                        report_path,
+                    )
+
+                    self.assertNotEqual(result.returncode, 0)
+                    if escaped_path.startswith("/"):
+                        self.assertIn("must be relative", result.stderr)
+                    else:
+                        self.assertIn("must not contain '..'", result.stderr)
+
+    def test_report_validation_rejects_artifact_path_escapes(self):
+        for escaped_path in (
+            "/tmp/measurement/ping.txt",
+            "measurement/../raw/ping.txt",
+        ):
+            with self.subTest(escaped_path=escaped_path):
+                report = valid_passed_report()
+                with tempfile.TemporaryDirectory() as directory:
+                    directory = Path(directory)
+                    archive_passed_evidence(report, directory)
+                    artifact = next(
+                        artifact
+                        for artifact in report["artifacts"]
+                        if artifact["path"] == "measurement/ping.txt"
+                    )
+                    artifact["path"] = escaped_path
+                    report_path = directory / "report.json"
+                    report_path.write_text(json.dumps(report), encoding="utf-8")
+
+                    result = run_cli(
+                        "validate-report",
+                        "--report",
+                        report_path,
+                    )
+
+                    self.assertNotEqual(result.returncode, 0)
+                    if escaped_path.startswith("/"):
+                        self.assertIn("must be relative", result.stderr)
+                    else:
+                        self.assertIn("must not contain '..'", result.stderr)
+
+    def test_report_validation_rejects_symlink_escape_from_evidence_root(self):
+        report = valid_passed_report()
+        with tempfile.TemporaryDirectory() as directory:
+            directory = Path(directory)
+            archive_passed_evidence(report, directory)
+            outside = Path(directory).parent / f"{Path(directory).name}-outside-ping.txt"
+            outside.write_text(
+                (directory / "measurement" / "ping.txt").read_text(
+                    encoding="utf-8"
+                ),
+                encoding="utf-8",
+            )
+            try:
+                (directory / "measurement" / "ping.txt").unlink()
+                (directory / "measurement" / "ping.txt").symlink_to(outside)
+                report_path = directory / "report.json"
+                report_path.write_text(json.dumps(report), encoding="utf-8")
+
+                result = run_cli("validate-report", "--report", report_path)
+
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("escapes the evidence root", result.stderr)
+            finally:
+                outside.unlink(missing_ok=True)
+
+    def test_report_validation_rejects_one_file_impersonating_all_measurements(self):
+        report = valid_passed_report()
+        with tempfile.TemporaryDirectory() as directory:
+            directory = Path(directory)
+            archive_passed_evidence(report, directory)
+            ping = report["measurements"]["ping"]
+            for run in report["measurements"]["throughput"]["runs"]:
+                run["raw_path"] = ping["raw_path"]
+                run["sha256"] = ping["sha256"]
+            report_path = directory / "report.json"
+            report_path.write_text(json.dumps(report), encoding="utf-8")
+
+            result = run_cli("validate-report", "--report", report_path)
+
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("distinct evidence files", result.stderr)
+
+    def test_report_validation_requires_canonical_passed_evidence_roles(self):
+        report = valid_passed_report()
+        with tempfile.TemporaryDirectory() as directory:
+            directory = Path(directory)
+            archive_passed_evidence(report, directory)
+            missing_paths = {
+                "raw/host.json",
+                "raw/device.json",
+                "raw/ioreg-usb.txt",
+            }
+            report["artifacts"] = [
+                artifact
+                for artifact in report["artifacts"]
+                if artifact["path"] not in missing_paths
+            ]
+            report_path = directory / "report.json"
+            report_path.write_text(json.dumps(report), encoding="utf-8")
+
+            result = run_cli("validate-report", "--report", report_path)
+
+            self.assertNotEqual(result.returncode, 0)
+            for role in ("host", "device", "usb_topology"):
+                self.assertIn(f"missing canonical {role} evidence", result.stderr)
+
+    def test_report_validation_requires_canonical_measurement_roles(self):
+        report = valid_passed_report()
+        with tempfile.TemporaryDirectory() as directory:
+            directory = Path(directory)
+            archive_passed_evidence(report, directory)
+            relocated = {
+                "measurement/ping.txt": "raw/ping.txt",
+                "measurement/iperf-host-to-device.json": (
+                    "raw/iperf-host-to-device.json"
+                ),
+                "measurement/iperf-device-to-host.json": (
+                    "raw/iperf-device-to-host.json"
+                ),
+            }
+            for original, replacement in relocated.items():
+                (directory / original).rename(directory / replacement)
+                artifact = next(
+                    artifact
+                    for artifact in report["artifacts"]
+                    if artifact["path"] == original
+                )
+                artifact["path"] = replacement
+            report["measurements"]["ping"]["raw_path"] = relocated[
+                "measurement/ping.txt"
+            ]
+            for run in report["measurements"]["throughput"]["runs"]:
+                original = (
+                    "measurement/iperf-host-to-device.json"
+                    if run["direction"] == "host_to_device"
+                    else "measurement/iperf-device-to-host.json"
+                )
+                run["raw_path"] = relocated[original]
+            report_path = directory / "report.json"
+            report_path.write_text(json.dumps(report), encoding="utf-8")
+
+            result = run_cli("validate-report", "--report", report_path)
+
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("missing canonical ping evidence", result.stderr)
+            self.assertIn(
+                "missing canonical host_to_device evidence",
+                result.stderr,
+            )
+            self.assertIn(
+                "missing canonical device_to_host evidence",
+                result.stderr,
+            )
+
+    def test_report_validation_rejects_non_finite_measurements(self):
+        report = valid_passed_report()
+        with tempfile.TemporaryDirectory() as directory:
+            directory = Path(directory)
+            archive_passed_evidence(report, directory)
+            report["measurements"]["throughput"]["runs"][0][
+                "bits_per_second"
+            ] = float("nan")
+            report_path = directory / "report.json"
+            report_path.write_text(json.dumps(report), encoding="utf-8")
+
+            result = run_cli("validate-report", "--report", report_path)
+
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("non-finite JSON number", result.stderr)
+
+    def test_report_validation_rejects_inconsistent_ping_counts_in_raw(self):
+        report = valid_passed_report()
+        with tempfile.TemporaryDirectory() as directory:
+            directory = Path(directory)
+            archive_passed_evidence(report, directory)
+            ping_path = directory / "measurement" / "ping.txt"
+            ping_path.write_text(
+                "PING 192.0.2.2 (192.0.2.2): 56 data bytes\n"
+                "64 bytes from 192.0.2.2: icmp_seq=0 ttl=64 time=1.000 ms\n"
+                "64 bytes from 192.0.2.2: icmp_seq=1 ttl=64 time=2.000 ms\n\n"
+                "--- 192.0.2.2 ping statistics ---\n"
+                "4 packets transmitted, 4 packets received, 0.0% packet loss\n"
+                "round-trip min/avg/max/stddev = 1.000/1.500/2.000/0.500 ms\n",
+                encoding="utf-8",
+            )
+            new_digest = hashlib.sha256(ping_path.read_bytes()).hexdigest()
+            report["measurements"]["ping"]["sha256"] = new_digest
+            artifact = next(
+                artifact
+                for artifact in report["artifacts"]
+                if artifact["path"] == "measurement/ping.txt"
+            )
+            artifact["sha256"] = new_digest
+            report_path = directory / "report.json"
+            report_path.write_text(json.dumps(report), encoding="utf-8")
+
+            result = run_cli("validate-report", "--report", report_path)
+
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("sample count", result.stderr)
+
+    def test_report_validation_recomputes_topology_and_driver_fields(self):
+        report = valid_passed_report()
+        with tempfile.TemporaryDirectory() as directory:
+            directory = Path(directory)
+            archive_passed_evidence(report, directory)
+            report["usb_topology"]["link_speed_mbps"] = 480
+            report["device_network"]["network_driver_class"] = "FakeNCMControl"
+            report_path = directory / "report.json"
+            report_path.write_text(json.dumps(report), encoding="utf-8")
+
+            result = run_cli("validate-report", "--report", report_path)
+
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("usb_topology.link_speed_mbps", result.stderr)
+            self.assertIn("device_network.network_driver_class", result.stderr)
+
+    def test_report_validation_recomputes_iperf_target(self):
+        report = valid_passed_report()
+        with tempfile.TemporaryDirectory() as directory:
+            directory = Path(directory)
+            archive_passed_evidence(report, directory)
+            report["measurements"]["target"] = "192.0.2.99"
+            report_path = directory / "report.json"
+            report_path.write_text(json.dumps(report), encoding="utf-8")
+
+            result = run_cli("validate-report", "--report", report_path)
+
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("throughput.runs[0].target", result.stderr)
+
+    def test_report_validation_recomputes_iperf_direction_from_raw(self):
+        report = valid_passed_report()
+        with tempfile.TemporaryDirectory() as directory:
+            directory = Path(directory)
+            archive_passed_evidence(report, directory)
+            iperf_path = (
+                directory / "measurement" / "iperf-host-to-device.json"
+            )
+            iperf = json.loads(iperf_path.read_text(encoding="utf-8"))
+            iperf["start"]["test_start"]["reverse"] = 1
+            write_test_json(iperf_path, iperf)
+            new_digest = hashlib.sha256(iperf_path.read_bytes()).hexdigest()
+            report["measurements"]["throughput"]["runs"][0][
+                "sha256"
+            ] = new_digest
+            artifact = next(
+                artifact
+                for artifact in report["artifacts"]
+                if artifact["path"] == "measurement/iperf-host-to-device.json"
+            )
+            artifact["sha256"] = new_digest
+            report_path = directory / "report.json"
+            report_path.write_text(json.dumps(report), encoding="utf-8")
+
+            result = run_cli("validate-report", "--report", report_path)
+
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("throughput.runs[0].direction", result.stderr)
+
+    def test_report_validation_binds_device_entry_evidence_to_artifacts(self):
+        report = valid_passed_report()
+        with tempfile.TemporaryDirectory() as directory:
+            directory = Path(directory)
+            archive_passed_evidence(report, directory)
+            report["artifacts"] = [
+                artifact
+                for artifact in report["artifacts"]
+                if artifact["path"] != "device-entry.png"
+            ]
+            report_path = directory / "report.json"
+            report_path.write_text(json.dumps(report), encoding="utf-8")
+
+            result = run_cli("validate-report", "--report", report_path)
+
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn(
+                "device_entry.evidence[0]: must identify an archived artifact",
+                result.stderr,
+            )
+
+    def test_report_validation_rejects_manual_evidence_hash_disagreement(self):
+        report = valid_passed_report()
+        with tempfile.TemporaryDirectory() as directory:
+            directory = Path(directory)
+            archive_passed_evidence(report, directory)
+            artifact = next(
+                artifact
+                for artifact in report["artifacts"]
+                if artifact["path"] == "device-entry.png"
+            )
+            artifact["sha256"] = "f" * 64
+            report_path = directory / "report.json"
+            report_path.write_text(json.dumps(report), encoding="utf-8")
+
+            result = run_cli("validate-report", "--report", report_path)
+
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("SHA-256 mismatch", result.stderr)
+
+    def test_report_validation_rejects_tampered_archived_measurement(self):
+        report = valid_passed_report()
+        with tempfile.TemporaryDirectory() as directory:
+            directory = Path(directory)
+            archive_passed_evidence(report, directory)
+            measurement_path = directory / "measurement" / "link-measurement.json"
+            measurement = json.loads(measurement_path.read_text(encoding="utf-8"))
+            measurement["ping"]["packets_received"] = 3
+            write_test_json(measurement_path, measurement)
+            new_digest = hashlib.sha256(measurement_path.read_bytes()).hexdigest()
+            artifact = next(
+                artifact
+                for artifact in report["artifacts"]
+                if artifact["path"] == "measurement/link-measurement.json"
+            )
+            artifact["sha256"] = new_digest
+            report_path = directory / "report.json"
+            report_path.write_text(json.dumps(report), encoding="utf-8")
+
+            result = run_cli("validate-report", "--report", report_path)
+
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("measurements.ping.packets_received", result.stderr)
+
+    def test_report_validation_rejects_missing_artifact_files(self):
+        report = valid_passed_report()
+        with tempfile.TemporaryDirectory() as directory:
+            directory = Path(directory)
+            archive_passed_evidence(report, directory)
+            (directory / "measurement" / "ping.txt").unlink()
+            report_path = directory / "report.json"
+            report_path.write_text(json.dumps(report), encoding="utf-8")
+
+            result = run_cli("validate-report", "--report", report_path)
+
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("file does not exist", result.stderr)
+
+    def test_report_validation_recomputes_artifact_hashes(self):
+        report = valid_passed_report()
+        with tempfile.TemporaryDirectory() as directory:
+            directory = Path(directory)
+            archive_passed_evidence(report, directory)
+            (directory / "measurement" / "ping.txt").write_text(
+                "tampered evidence\n", encoding="utf-8"
+            )
+            report_path = directory / "report.json"
+            report_path.write_text(json.dumps(report), encoding="utf-8")
+
+            result = run_cli("validate-report", "--report", report_path)
+
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("SHA-256 mismatch", result.stderr)
+
+    def test_report_validation_rejects_placeholder_artifact_hash(self):
+        report = valid_passed_report()
+        with tempfile.TemporaryDirectory() as directory:
+            directory = Path(directory)
+            archive_passed_evidence(report, directory)
+            artifact = next(
+                artifact
+                for artifact in report["artifacts"]
+                if artifact["path"] == "measurement/ping.txt"
+            )
+            artifact["sha256"] = "1" * 64
+            report_path = directory / "report.json"
+            report_path.write_text(json.dumps(report), encoding="utf-8")
+
+            result = run_cli("validate-report", "--report", report_path)
+
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("SHA-256 mismatch", result.stderr)
+
+    def test_report_validation_rejects_missing_artifact_hash(self):
+        report = valid_passed_report()
+        with tempfile.TemporaryDirectory() as directory:
+            directory = Path(directory)
+            archive_passed_evidence(report, directory)
+            artifact = next(
+                artifact
+                for artifact in report["artifacts"]
+                if artifact["path"] == "measurement/ping.txt"
+            )
+            artifact["sha256"] = None
+            report_path = directory / "report.json"
+            report_path.write_text(json.dumps(report), encoding="utf-8")
+
+            result = run_cli("validate-report", "--report", report_path)
+
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("sha256", result.stderr.lower())
 
     def test_report_validation_rejects_incomplete_passed_evidence(self):
         report = valid_passed_report()
@@ -804,9 +1539,11 @@ round-trip min/avg/max/stddev = 1.000/2.750/5.000/1.479 ms
 
     def test_report_validation_rejects_unarchived_measurement_evidence(self):
         report = valid_passed_report()
-        report["artifacts"] = report["artifacts"][:1]
         with tempfile.TemporaryDirectory() as directory:
-            report_path = Path(directory) / "report.json"
+            directory = Path(directory)
+            archive_passed_evidence(report, directory)
+            report["artifacts"] = report["artifacts"][:1]
+            report_path = directory / "report.json"
             report_path.write_text(json.dumps(report), encoding="utf-8")
 
             result = run_cli("validate-report", "--report", report_path)
@@ -969,6 +1706,161 @@ round-trip min/avg/max/stddev = 1.000/2.750/5.000/1.479 ms
             self.assertNotEqual(inconsistent.returncode, 0)
             self.assertIn("Reference Link", inconsistent.stderr)
             self.assertFalse(invalid_output.exists())
+
+    def test_compose_runbook_layout_archives_referenced_raw_and_manual_evidence(self):
+        with tempfile.TemporaryDirectory() as directory:
+            run_dir = Path(directory) / "evidence" / "reference-run"
+            report = valid_passed_report()
+            archive_passed_evidence(report, run_dir)
+
+            measurement_path = run_dir / "measurement" / "link-measurement.json"
+            measurement = json.loads(measurement_path.read_text(encoding="utf-8"))
+            measurement["ping"]["raw_path"] = "ping.txt"
+            for run in measurement["throughput"]["runs"]:
+                run["raw_path"] = Path(run["raw_path"]).name
+            write_test_json(measurement_path, measurement)
+
+            output_path = run_dir / "report.json"
+            result = run_cli(
+                "compose",
+                "--raw-dir",
+                run_dir / "raw",
+                "--device-serial",
+                "59GYD25716204513",
+                "--device-entry",
+                run_dir / "device-entry.json",
+                "--measurement",
+                measurement_path,
+                "--output",
+                output_path,
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            composed = json.loads(output_path.read_text(encoding="utf-8"))
+            self.assertEqual(composed["decision"]["status"], "passed")
+            self.assertEqual(
+                composed["measurements"]["ping"]["raw_path"],
+                "measurement/ping.txt",
+            )
+            for run in composed["measurements"]["throughput"]["runs"]:
+                expected = (
+                    "measurement/iperf-host-to-device.json"
+                    if run["direction"] == "host_to_device"
+                    else "measurement/iperf-device-to-host.json"
+                )
+                self.assertEqual(run["raw_path"], expected)
+            artifact_paths = {
+                artifact["path"] for artifact in composed["artifacts"]
+            }
+            self.assertTrue(
+                {
+                    "raw/host.json",
+                    "raw/device.json",
+                    "raw/ioreg-usb.txt",
+                    "measurement/ping.txt",
+                    "measurement/iperf-host-to-device.json",
+                    "measurement/iperf-device-to-host.json",
+                    "device-entry.png",
+                }
+                <= artifact_paths
+            )
+
+            validation = run_cli(
+                "validate-report",
+                "--report",
+                output_path,
+            )
+            self.assertEqual(validation.returncode, 0, validation.stderr)
+
+    def test_compose_rejects_measurement_raw_hash_mismatch(self):
+        with tempfile.TemporaryDirectory() as directory:
+            run_dir = Path(directory) / "evidence" / "reference-run"
+            report = valid_passed_report()
+            archive_passed_evidence(report, run_dir)
+            measurement_path = run_dir / "measurement" / "link-measurement.json"
+            measurement = json.loads(measurement_path.read_text(encoding="utf-8"))
+            measurement["ping"]["raw_path"] = "ping.txt"
+            for run in measurement["throughput"]["runs"]:
+                run["raw_path"] = Path(run["raw_path"]).name
+            write_test_json(measurement_path, measurement)
+            (run_dir / "measurement" / "ping.txt").write_text(
+                "tampered after measurement\n",
+                encoding="utf-8",
+            )
+            output_path = run_dir / "report.json"
+
+            result = run_cli(
+                "compose",
+                "--raw-dir",
+                run_dir / "raw",
+                "--device-serial",
+                "59GYD25716204513",
+                "--device-entry",
+                run_dir / "device-entry.json",
+                "--measurement",
+                measurement_path,
+                "--output",
+                output_path,
+            )
+
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("does not match measurement raw", result.stderr)
+            self.assertFalse(output_path.exists())
+
+    def test_compose_rejects_measurement_and_manual_evidence_path_escape(self):
+        with tempfile.TemporaryDirectory() as directory:
+            run_dir = Path(directory) / "evidence" / "reference-run"
+            report = valid_passed_report()
+            archive_passed_evidence(report, run_dir)
+            measurement_path = run_dir / "measurement" / "link-measurement.json"
+            measurement = json.loads(measurement_path.read_text(encoding="utf-8"))
+            measurement["ping"]["raw_path"] = "../raw/host.json"
+            write_test_json(measurement_path, measurement)
+            output_path = run_dir / "report.json"
+
+            result = run_cli(
+                "compose",
+                "--raw-dir",
+                run_dir / "raw",
+                "--device-serial",
+                "59GYD25716204513",
+                "--device-entry",
+                run_dir / "device-entry.json",
+                "--measurement",
+                measurement_path,
+                "--output",
+                output_path,
+            )
+
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("must not contain '..'", result.stderr)
+            self.assertFalse(output_path.exists())
+
+            entry_path = run_dir / "device-entry.json"
+            entry = json.loads(entry_path.read_text(encoding="utf-8"))
+            entry["evidence"] = ["../outside.png"]
+            write_test_json(entry_path, entry)
+            measurement["ping"]["raw_path"] = "ping.txt"
+            write_test_json(measurement_path, measurement)
+            escaped_entry_output = run_dir / "escaped-entry-report.json"
+
+            second = run_cli(
+                "compose",
+                "--raw-dir",
+                run_dir / "raw",
+                "--device-serial",
+                "59GYD25716204513",
+                "--device-entry",
+                entry_path,
+                "--measurement",
+                measurement_path,
+                "--output",
+                escaped_entry_output,
+            )
+
+            self.assertNotEqual(second.returncode, 0)
+            self.assertIn("must not contain '..'", second.stderr)
+            self.assertFalse(escaped_entry_output.exists())
 
     def test_measure_refuses_to_run_on_a_pending_non_reference_report(self):
         report = valid_pending_report()

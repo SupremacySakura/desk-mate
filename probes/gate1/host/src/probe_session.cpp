@@ -1,5 +1,6 @@
 #include "gate1/probe_session.hpp"
 
+#include "gate1/handshake.hpp"
 #include "gate1/protocol.hpp"
 #include "gate1/transfer_set.hpp"
 
@@ -8,7 +9,9 @@
 #include <chrono>
 #include <cstring>
 #include <limits>
+#include <optional>
 #include <ostream>
+#include <thread>
 #include <unordered_map>
 #include <utility>
 
@@ -151,6 +154,8 @@ private:
             fail("heartbeat interval must be positive");
         } else if (options_.cancel_timeout_ms <= 0) {
             fail("cancel timeout must be positive");
+        } else if (options_.handshake_initial_delay_ms < 0) {
+            fail("handshake initial delay must not be negative");
         } else if (options_.handshake_timeout_ms <= 0) {
             fail("handshake timeout must be positive");
         } else if (options_.handshake_retry_ms <= 0) {
@@ -186,78 +191,131 @@ private:
         claimed_ = false;
     }
 
-    bool bulk_write(const std::vector<std::uint8_t>& data, unsigned timeout_ms)
+    HandshakeWriteAttempt write_hello_once(
+        const std::uint8_t* data,
+        std::size_t size,
+        unsigned timeout_ms)
     {
-        std::size_t offset = 0;
-        do {
-            int transferred = 0;
-            std::uint8_t empty = 0;
-            unsigned char* pointer = data.empty()
-                ? &empty
-                : const_cast<unsigned char*>(data.data() + offset);
-            const int remaining = static_cast<int>(data.size() - offset);
-            const int rc = libusb_bulk_transfer(
-                handle_,
-                endpoint_out_,
-                pointer,
-                remaining,
-                &transferred,
-                timeout_ms);
-            if (rc != LIBUSB_SUCCESS) {
-                fail(std::string("handshake OUT failed: ") + libusb_error_name(rc));
-                return false;
-            }
-            if (transferred < 0 || transferred > remaining) {
-                fail("handshake OUT returned an invalid transferred length");
-                return false;
-            }
-            result_.out_bytes += static_cast<std::uint64_t>(transferred);
-            offset += static_cast<std::size_t>(transferred);
-            if (remaining > 0 && transferred == 0) {
-                fail("handshake OUT made no progress");
-                return false;
-            }
-            if (data.empty()) {
-                break;
-            }
-        } while (offset < data.size());
-        return true;
+        int transferred = 0;
+        unsigned char* pointer = const_cast<unsigned char*>(data);
+        const int rc = libusb_bulk_transfer(
+            handle_,
+            endpoint_out_,
+            pointer,
+            static_cast<int>(size),
+            &transferred,
+            timeout_ms);
+        if (transferred < 0 ||
+            static_cast<std::size_t>(transferred) > size) {
+            return HandshakeWriteAttempt{
+                HandshakeWriteState::kFailed,
+                0,
+                "handshake OUT returned an invalid transferred length"};
+        }
+        result_.out_bytes += static_cast<std::uint64_t>(transferred);
+        if (rc == LIBUSB_ERROR_TIMEOUT) {
+            return HandshakeWriteAttempt{
+                HandshakeWriteState::kTimedOut,
+                static_cast<std::size_t>(transferred),
+                {}};
+        }
+        if (rc != LIBUSB_SUCCESS) {
+            return HandshakeWriteAttempt{
+                HandshakeWriteState::kFailed,
+                static_cast<std::size_t>(transferred),
+                libusb_error_name(rc)};
+        }
+        return HandshakeWriteAttempt{
+            HandshakeWriteState::kCompleted,
+            static_cast<std::size_t>(transferred),
+            {}};
     }
 
     bool handshake()
     {
+        const Clock::time_point claimed_at = Clock::now();
+        if (options_.handshake_initial_delay_ms > 0) {
+            log_ << "[handshake] waiting "
+                 << options_.handshake_initial_delay_ms
+                 << " ms after claim before first HELLO; open Accessory and "
+                    "start the Device worker now\n";
+            while (!handshake_initial_delay_elapsed(
+                claimed_at,
+                Clock::now(),
+                std::chrono::milliseconds(
+                    options_.handshake_initial_delay_ms))) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(50));
+            }
+            log_ << "[handshake] initial delay elapsed; starting HELLO\n";
+        }
         const Clock::time_point deadline =
             Clock::now() + std::chrono::milliseconds(options_.handshake_timeout_ms);
         Clock::time_point next_hello = Clock::now();
-        unsigned hello_attempts = 0;
+        std::optional<HandshakeHelloSender> hello_sender;
+        std::size_t hello_frames_sent = 0;
         std::vector<Frame> frames;
         while (Clock::now() < deadline) {
             const Clock::time_point now = Clock::now();
-            if (now >= next_hello) {
+            if (!hello_sender.has_value() ||
+                (hello_sender->complete() && now >= next_hello)) {
                 const std::vector<std::uint8_t> hello = encode_frame(
                     FrameType::kHello,
                     1,
                     next_seq(),
                     {0x44, 0x4D, 0x47, 0x31});
-                if (hello.empty() ||
-                    !bulk_write(hello, kHandshakeTransferTimeoutMs)) {
+                if (hello.empty()) {
+                    fail("handshake HELLO encoding failed");
                     return false;
                 }
-                ++hello_attempts;
-                if (hello_attempts == 1) {
+                hello_sender.emplace(hello);
+            }
+
+            if (!hello_sender->complete() &&
+                now >= hello_sender->next_attempt()) {
+                const HandshakeSendOutcome outcome = hello_sender->attempt(
+                    now,
+                    deadline,
+                    std::chrono::milliseconds(kHandshakeTransferTimeoutMs),
+                    std::chrono::milliseconds(options_.handshake_retry_ms),
+                    [this](
+                        const std::uint8_t* data,
+                        std::size_t size,
+                        unsigned timeout_ms) {
+                        return write_hello_once(data, size, timeout_ms);
+                    });
+                if (outcome.state == HandshakeSendState::kFatal) {
+                    fail("handshake OUT failed: " + outcome.error);
+                    return false;
+                }
+                if (outcome.state == HandshakeSendState::kComplete) {
+                    ++hello_frames_sent;
+                    next_hello = now + std::chrono::milliseconds(
+                        options_.handshake_retry_ms);
+                }
+                if (hello_frames_sent == 1 &&
+                    outcome.state == HandshakeSendState::kComplete) {
                     log_ << "[handshake] HELLO sent; waiting up to "
                          << options_.handshake_timeout_ms
                          << " ms for Device authorization/native start\n";
+                } else if (outcome.state == HandshakeSendState::kComplete) {
+                    log_ << "[handshake] HELLO retry " << hello_frames_sent
+                         << "\n";
+                } else if (outcome.bytes_transferred > 0) {
+                    log_ << "[handshake] HELLO OUT timed out after "
+                         << outcome.bytes_transferred
+                         << " byte(s); retrying remaining bytes\n";
                 } else {
-                    log_ << "[handshake] HELLO retry " << hello_attempts << "\n";
+                    log_ << "[handshake] HELLO OUT timed out; retrying\n";
                 }
-                next_hello = now + std::chrono::milliseconds(
-                    options_.handshake_retry_ms);
             }
 
             int transferred = 0;
+            const Clock::time_point hello_wake =
+                hello_sender->complete()
+                    ? next_hello
+                    : hello_sender->next_attempt();
             const Clock::time_point wake_at =
-                std::min(next_hello, deadline);
+                std::min(hello_wake, deadline);
             const auto remaining_ms = std::max<long long>(
                 0,
                 std::chrono::duration_cast<std::chrono::milliseconds>(

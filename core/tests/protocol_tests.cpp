@@ -519,6 +519,50 @@ void test_video_sequence_gap_is_detected() {
   CHECK_EQ(static_cast<int>(events[1].kind), static_cast<int>(StreamEventKind::VideoFrame));
 }
 
+void test_retarget_video_stream_drains_partial_candidate_packet() {
+  constexpr std::uint32_t kSession = 0x22223333;
+  constexpr std::uint32_t kOldStream = 0x44445555;
+  constexpr std::uint32_t kNewStream = 0x66667777;
+  MessageStreamDecoder decoder(StreamDecoderConfig{kSession, kNewStream});
+
+  const auto candidate_fragment = encode_or_fail(
+      make_packet(MessageType::Video, kSession, kNewStream, 20, {0x70, 0x71}, 0,
+                  1, deskmate::protocol::kFlagKeyFrame, 200));
+  const auto old_fragment = encode_or_fail(
+      make_packet(MessageType::Video, kSession, kOldStream, 21, {0x72}, 0, 1,
+                  deskmate::protocol::kFlagKeyFrame, 300));
+  const auto old_next_fragment = encode_or_fail(
+      make_packet(MessageType::Video, kSession, kOldStream, 22, {0x73}, 0, 1,
+                  deskmate::protocol::kFlagKeyFrame, 400));
+
+  auto events = decoder.feed(std::span<const std::uint8_t>(candidate_fragment)
+                                 .first(16));
+  CHECK(events.empty());
+  CHECK(!decoder.failed());
+
+  // The candidate is abandoned while only part of its header has arrived. Its
+  // remaining bytes never come; the next bytes on the wire already belong to
+  // the old stream. The decoder must resynchronize instead of splicing the
+  // leftover candidate header onto the old keyframe.
+  decoder.retarget_video_stream(kOldStream);
+  events = decoder.feed(old_fragment);
+
+  CHECK(!decoder.failed());
+  CHECK_EQ(events.size(), 1U);
+  CHECK_EQ(events[0].kind, StreamEventKind::VideoFrame);
+  CHECK_EQ(events[0].header.video_stream_id, kOldStream);
+  CHECK_EQ(events[0].header.seq, 21U);
+  CHECK_EQ(events[0].header.timestamp_us, 300U);
+  CHECK_EQ(events[0].payload, std::vector<std::uint8_t>({0x72}));
+
+  events = decoder.feed(old_next_fragment);
+  CHECK(!decoder.failed());
+  CHECK_EQ(events.size(), 1U);
+  CHECK_EQ(events[0].kind, StreamEventKind::VideoFrame);
+  CHECK_EQ(events[0].header.seq, 22U);
+  CHECK_EQ(events[0].payload, std::vector<std::uint8_t>({0x73}));
+}
+
 void test_host_and_device_exchange_control_echo_over_fragmented_byte_io() {
   constexpr std::uint32_t kSession = 0xA1B2C3D4;
   constexpr std::uint32_t kStream = 0x01020304;
@@ -1161,6 +1205,8 @@ int main(int argc, char** argv) {
        test_invalid_header_is_rejected_before_payload_arrives},
       {"video fragments reassemble out of order", test_video_fragments_reassemble_out_of_order},
       {"video sequence gap is detected", test_video_sequence_gap_is_detected},
+      {"retarget video stream drains partial candidate packet",
+       test_retarget_video_stream_drains_partial_candidate_packet},
       {"host and device exchange control echo over fragmented byte I/O",
        test_host_and_device_exchange_control_echo_over_fragmented_byte_io},
       {"test video payload is reassembled end to end",

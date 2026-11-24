@@ -66,6 +66,34 @@ void MessageStreamDecoder::reset(StreamDecoderConfig config) {
   failed_ = false;
   active_header_.reset();
   discard_remaining_ = 0;
+  resyncing_ = false;
+  video_header_.reset();
+  for (auto& fragment : video_fragments_) {
+    fragment.reset();
+  }
+  video_fragments_received_ = 0;
+  video_payload_bytes_ = 0;
+  last_completed_video_seq_.reset();
+  ignored_video_seq_.reset();
+}
+
+void MessageStreamDecoder::retarget_video_stream(
+    std::uint32_t video_stream_id) {
+  config_.expected_video_stream_id = video_stream_id;
+  if (active_header_.has_value()) {
+    // The remaining bytes of the abandoned candidate message are still in the
+    // buffer. Drop exactly that payload so the next message starts on a header
+    // boundary.
+    discard_remaining_ = active_header_->payload_len;
+  } else if (discard_remaining_ == 0 &&
+             pending_.size() - read_offset_ > 0) {
+    // Only a partial header (1..31 bytes) of the abandoned stream arrived. Its
+    // payload length is unknown, so resynchronize on the next structurally
+    // valid header instead of splicing the leftover bytes onto the next
+    // stream's header.
+    resyncing_ = true;
+  }
+  active_header_.reset();
   video_header_.reset();
   for (auto& fragment : video_fragments_) {
     fragment.reset();
@@ -79,6 +107,13 @@ void MessageStreamDecoder::reset(StreamDecoderConfig config) {
 void MessageStreamDecoder::drain(std::vector<StreamEvent>& events) {
   while (!failed_) {
     const std::size_t available = pending_.size() - read_offset_;
+
+    if (resyncing_) {
+      if (!resynchronize(events)) {
+        return;
+      }
+      continue;
+    }
 
     if (discard_remaining_ != 0) {
       if (available == 0) {
@@ -152,6 +187,42 @@ void MessageStreamDecoder::drain(std::vector<StreamEvent>& events) {
 
     active_header_ = header;
   }
+}
+
+bool MessageStreamDecoder::resynchronize(std::vector<StreamEvent>&) {
+  const std::size_t available = pending_.size() - read_offset_;
+  for (std::size_t offset = 0; offset + kWireHeaderSize <= available;
+       ++offset) {
+    const std::span<const std::uint8_t> candidate(
+        pending_.data() + read_offset_ + offset, kWireHeaderSize);
+    const auto decoded = decode_header(candidate);
+    if (!decoded) {
+      continue;
+    }
+    const Header& header = decoded.value();
+    if (!is_supported_message_type(header.type)) {
+      continue;
+    }
+    if (config_.expected_session_nonce != 0 &&
+        header.session_nonce != config_.expected_session_nonce) {
+      continue;
+    }
+    const bool carries_stream =
+        header.type == static_cast<std::uint8_t>(MessageType::Video) ||
+        header.type == static_cast<std::uint8_t>(MessageType::Input);
+    if (carries_stream && config_.expected_video_stream_id != 0 &&
+        header.video_stream_id != config_.expected_video_stream_id) {
+      continue;
+    }
+    read_offset_ += offset;
+    resyncing_ = false;
+    return true;
+  }
+  // No header start found yet. Keep a tail that could be a partial header and
+  // discard the rest.
+  const std::size_t keep = std::min(available, kWireHeaderSize - 1);
+  read_offset_ = pending_.size() - keep;
+  return false;
 }
 
 void MessageStreamDecoder::compact_pending() {

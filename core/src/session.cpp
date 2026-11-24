@@ -9,6 +9,7 @@
 #include <deque>
 #include <limits>
 #include <optional>
+#include <set>
 #include <span>
 #include <utility>
 #include <vector>
@@ -18,6 +19,7 @@ namespace {
 
 constexpr std::uint8_t kCapabilityEncodingVersion = 1;
 constexpr std::uint8_t kProfileEncodingVersion = 1;
+constexpr std::uint8_t kCommitAckFirstIdrStage = 2;
 
 std::vector<std::uint8_t> write_u32(std::uint32_t value) {
   std::vector<std::uint8_t> bytes(4);
@@ -135,6 +137,27 @@ std::optional<std::uint32_t> decode_stream_id_body(
   return value;
 }
 
+std::optional<std::uint32_t> decode_stream_id_prefix(
+    const std::vector<std::uint8_t>& body) {
+  if (body.size() != 4 && body.size() != 5) {
+    return std::nullopt;
+  }
+  const std::uint32_t value = read_u32(body, 0);
+  if (value == 0) {
+    return std::nullopt;
+  }
+  return value;
+}
+
+std::vector<std::uint8_t> commit_ack_body(std::uint32_t video_stream_id,
+                                          bool first_idr_confirmed) {
+  auto body = write_u32(video_stream_id);
+  if (first_idr_confirmed) {
+    body.push_back(kCommitAckFirstIdrStage);
+  }
+  return body;
+}
+
 std::uint64_t saturating_add(std::uint64_t left, std::uint64_t right) {
   if (right > std::numeric_limits<std::uint64_t>::max() - left) {
     return std::numeric_limits<std::uint64_t>::max();
@@ -159,10 +182,15 @@ class EndpointCore {
     if (!started_ && state_ == SessionState::Idle) {
       return;
     }
+    if (state_ == SessionState::Failed || state_ == SessionState::Stopping ||
+        state_ == SessionState::Stopped) {
+      clear_outbound();
+      return;
+    }
     flush_outbound();
     if (state_ == SessionState::Failed || state_ == SessionState::Stopping ||
         state_ == SessionState::Stopped) {
-      flush_outbound();
+      clear_outbound();
       return;
     }
     if (deadline_ns_.has_value() && clock_.now_ns() >= *deadline_ns_) {
@@ -174,7 +202,6 @@ class EndpointCore {
         clock_.now_ns() >=
             saturating_add(last_valid_message_ns_, kPeerSilenceTimeoutNs)) {
       fail_with(SessionFailure::HeartbeatTimeout, false);
-      flush();
       return;
     }
     maybe_send_heartbeat();
@@ -204,6 +231,11 @@ class EndpointCore {
       }
     }
     finish_receive_cycle();
+    if (state_ == SessionState::Failed || state_ == SessionState::Stopping ||
+        state_ == SessionState::Stopped) {
+      clear_outbound();
+      return;
+    }
     flush_outbound();
   }
 
@@ -258,6 +290,11 @@ class EndpointCore {
 
   void cancel_pending_io() { io_.cancel(); }
 
+  void clear_outbound() noexcept {
+    outbound_.clear();
+    write_offset_ = 0;
+  }
+
   void record_failure(SessionFailure failure) { failure_ = failure; }
 
   void set_session_nonce(std::uint32_t nonce, std::uint32_t video_stream_id = 0) {
@@ -269,12 +306,17 @@ class EndpointCore {
     decoder_.reset(StreamDecoderConfig{session_nonce_, video_stream_id});
   }
 
+  void retarget_decoder_stream(std::uint32_t video_stream_id) {
+    decoder_.retarget_video_stream(video_stream_id);
+  }
+
   void set_negotiated_stream(NegotiatedStream stream) {
     negotiated_ = std::move(stream);
   }
 
   void fail_with(SessionFailure failure, bool send_wire_error) {
-    if (state_ == SessionState::Failed) {
+    if (is_terminal() || state_ == SessionState::Stopping) {
+      clear_outbound();
       return;
     }
     state_ = SessionState::Failed;
@@ -283,7 +325,10 @@ class EndpointCore {
     if (send_wire_error && session_nonce_ != 0) {
       queue_control(ControlOpcode::ProtocolError, 0, 0,
                     {static_cast<std::uint8_t>(failure)}, 0);
+      flush_outbound();
     }
+    on_terminal_begin();
+    cancel_pending_io();
     on_terminal_failure();
   }
 
@@ -366,6 +411,7 @@ class EndpointCore {
   virtual void process_video(const Header& header,
                              std::vector<std::uint8_t> payload,
                              std::optional<std::uint32_t> recovery_id) = 0;
+  virtual void on_terminal_begin() {}
   virtual void on_terminal_failure() {}
 
   virtual void handle_stage_timeout() {
@@ -422,6 +468,11 @@ class EndpointCore {
 
     const auto decoded = decode_control_payload(event.payload);
     if (!decoded) {
+      if (decoded.error().code == ErrorCode::UnsupportedControlOpcode &&
+          decoded.error().action == ErrorAction::DiscardMessage) {
+        mark_valid_message();
+        return;
+      }
       fail_with(SessionFailure::MalformedControlMessage, true);
       return;
     }
@@ -453,11 +504,8 @@ class EndpointCore {
       }
       if (result.status != IoStatus::Ok || result.bytes == 0 ||
           result.bytes > remaining.size()) {
-        state_ = SessionState::Failed;
-        failure_ = SessionFailure::IoError;
-        disarm_timeout();
-        outbound_.clear();
-        write_offset_ = 0;
+        clear_outbound();
+        fail_with(SessionFailure::IoError, false);
         return;
       }
       write_offset_ += result.bytes;
@@ -785,12 +833,16 @@ struct HostSession::Impl final : EndpointCore {
       expire_pause_grace();
       return;
     }
+    retry_reconfiguration_commit_if_due();
     EndpointCore::pump();
     if (is_terminal() || state() == SessionState::Stopping ||
         state() == SessionState::Stopped) {
       scheduler_.begin_stopping();
     } else {
       scheduler_.pump();
+      if (scheduler_.stopping()) {
+        fail_with(SessionFailure::IoError, false);
+      }
     }
   }
 
@@ -807,6 +859,10 @@ struct HostSession::Impl final : EndpointCore {
         fail_with(SessionFailure::MalformedControlMessage, false);
       } else if (state() == SessionState::Reconfiguring) {
         abort_reconfiguration(*failure, false);
+      } else if (reconfiguration_.has_value() &&
+                 reconfiguration_->phase == ReconfigurationPhase::Failed &&
+                 message.config_id == reconfiguration_->config_id) {
+        return;
       } else {
         fail_with(*failure, false);
       }
@@ -836,6 +892,29 @@ struct HostSession::Impl final : EndpointCore {
         return;
       }
       scheduler_.request_idr_from_peer(recovery_id.value());
+      return;
+    }
+    if (message.opcode == ControlOpcode::StreamCommitted &&
+        negotiated_stream().has_value() &&
+        message.config_id == negotiated_stream()->config_id &&
+        header.video_stream_id == negotiated_stream()->video_stream_id) {
+      const auto duplicate_stream_id = decode_stream_id_prefix(message.body);
+      if (duplicate_stream_id.has_value() &&
+          *duplicate_stream_id == negotiated_stream()->video_stream_id) {
+        return;
+      }
+    }
+    if (reconfiguration_.has_value() &&
+        reconfiguration_->phase == ReconfigurationPhase::Failed &&
+        message.config_id == reconfiguration_->config_id &&
+        (message.opcode == ControlOpcode::StreamReady ||
+         message.opcode == ControlOpcode::StreamCommitted)) {
+      return;
+    }
+    if (reconfiguration_.has_value() &&
+        reconfiguration_->phase == ReconfigurationPhase::Completed &&
+        message.config_id == reconfiguration_->config_id &&
+        message.opcode == ControlOpcode::StreamReady) {
       return;
     }
 
@@ -919,7 +998,11 @@ struct HostSession::Impl final : EndpointCore {
     if (state() == SessionState::Paused) {
       return VideoSendStatus::Paused;
     }
-    if (state() == SessionState::Reconfiguring && resuming_) {
+    if (pause_after_reconfiguration_) {
+      return VideoSendStatus::Paused;
+    }
+    if (state() == SessionState::Reconfiguring && resuming_ &&
+        !pending_committed_stream_.has_value()) {
       return VideoSendStatus::Paused;
     }
     if ((state() != SessionState::Streaming &&
@@ -936,7 +1019,10 @@ struct HostSession::Impl final : EndpointCore {
 
     VideoFrameToSend frame;
     frame.session_nonce = session_nonce();
-    frame.video_stream_id = negotiated_stream()->video_stream_id;
+    frame.video_stream_id =
+        pending_committed_stream_.has_value()
+            ? pending_committed_stream_->video_stream_id
+            : negotiated_stream()->video_stream_id;
     frame.seq = next_video_seq();
     frame.timestamp_us = timestamp_us;
     frame.flags = keyframe ? kFlagKeyFrame : 0;
@@ -992,6 +1078,7 @@ struct HostSession::Impl final : EndpointCore {
       return SessionCommandStatus::InvalidState;
     }
     if (display_error_ ||
+        screen_locked_ ||
         video_state_ == HostVideoState::RecordingPermissionRevoked ||
         video_state_ == HostVideoState::Sleeping) {
       return SessionCommandStatus::DisplayUnavailable;
@@ -1006,9 +1093,12 @@ struct HostSession::Impl final : EndpointCore {
     pending_profile_ = profile;
     pending_config_id_ = config_id;
     pending_video_stream_id_ = video_stream_id;
+    scheduler_.clear_started_video_streams();
+    reconfiguration_ack_retry_ns_.reset();
     last_attempt_profile_ = profile;
     last_attempt_video_stream_id_ = video_stream_id;
     resuming_ = true;
+    pause_after_reconfiguration_ = false;
     reconfiguration_return_state_ = SessionState::Paused;
     pause_acknowledged_ = false;
     highest_config_id_ = config_id;
@@ -1034,9 +1124,9 @@ struct HostSession::Impl final : EndpointCore {
         }
         screen_locked_ = true;
         pause_deadline_ns_.reset();
-        if (state() == SessionState::Streaming) {
-          begin_pause(false);
-        }
+        set_capture_intent(false);
+        set_input_intent(false);
+        begin_pause(false);
         refresh_states();
         return SessionCommandStatus::Ok;
       case HostEvent::ScreenUnlocked:
@@ -1075,7 +1165,13 @@ struct HostSession::Impl final : EndpointCore {
         if (state() == SessionState::Streaming ||
             state() == SessionState::Reconfiguring) {
           if (state() == SessionState::Reconfiguring) {
-            abort_reconfiguration(SessionFailure::DisplayError, false);
+            if (can_defer_reconfiguration_pause()) {
+              pause_after_reconfiguration_ = true;
+              scheduler_.discard_unstarted_video_frames();
+              refresh_states();
+            } else {
+              abort_reconfiguration(SessionFailure::DisplayError, false);
+            }
           }
           if (state() == SessionState::Streaming && negotiated_stream().has_value()) {
             begin_pause(false);
@@ -1113,10 +1209,11 @@ struct HostSession::Impl final : EndpointCore {
     transition(SessionState::Stopping, std::nullopt);
     end_liveness();
     pause_deadline_ns_.reset();
+    reconfiguration_ack_retry_ns_.reset();
     set_capture_intent(false);
     set_input_intent(false);
-    cancel_pending_io();
     scheduler_.begin_stopping();
+    cancel_pending_io();
     refresh_states();
   }
 
@@ -1136,6 +1233,7 @@ struct HostSession::Impl final : EndpointCore {
       pending_profile_.reset();
       resuming_ = false;
     }
+    reconfiguration_ack_retry_ns_.reset();
     destroy_extended_display();
     transition(SessionState::Stopped, std::nullopt);
     refresh_states();
@@ -1179,9 +1277,12 @@ struct HostSession::Impl final : EndpointCore {
     pending_profile_ = profile;
     pending_config_id_ = config_id;
     pending_video_stream_id_ = video_stream_id;
+    scheduler_.clear_started_video_streams();
+    reconfiguration_ack_retry_ns_.reset();
     last_attempt_profile_ = profile;
     last_attempt_video_stream_id_ = video_stream_id;
     resuming_ = false;
+    pause_after_reconfiguration_ = false;
     reconfiguration_return_state_ = SessionState::Streaming;
     highest_config_id_ = config_id;
     reconfiguration_ = ReconfigurationStatus{
@@ -1302,18 +1403,35 @@ struct HostSession::Impl final : EndpointCore {
     reset_decoder_stream(config_.video_stream_id);
     transition(SessionState::Streaming, std::nullopt);
     begin_liveness();
-    set_capture_intent(!screen_recording_revoked_ && !display_error_);
-    set_input_intent(!accessibility_revoked_ && !display_error_);
     pause_deadline_ns_.reset();
     resume_required_ = false;
-    refresh_states();
+    if (screen_locked_) {
+      begin_pause(false);
+    } else {
+      set_capture_intent(!screen_recording_revoked_ && !display_error_);
+      set_input_intent(!accessibility_revoked_ && !display_error_);
+      refresh_states();
+    }
   }
 
   void handle_reconfiguration_ready(const Header& header,
                                     const ControlMessage& message) {
+    if (message.opcode == ControlOpcode::StreamReady &&
+        reconfiguration_.has_value() &&
+        reconfiguration_->config_id == message.config_id &&
+        (reconfiguration_->phase == ReconfigurationPhase::AwaitingFirstIdr ||
+         reconfiguration_->phase == ReconfigurationPhase::Completed)) {
+      // A retransmitted STREAM_READY for a configuration that already advanced
+      // past AwaitingCommitted is stale; ignore it instead of regressing the
+      // Host state machine back to AwaitingCommitted.
+      return;
+    }
     if (message.opcode != ControlOpcode::StreamReady ||
         header.video_stream_id != 0 || !pending_config_id_.has_value() ||
         message.config_id != *pending_config_id_ || !pending_profile_.has_value()) {
+      if (retired_config_ids_.count(message.config_id) != 0) {
+        return;
+      }
       fail_with(SessionFailure::UnexpectedMessage, true);
       return;
     }
@@ -1327,44 +1445,108 @@ struct HostSession::Impl final : EndpointCore {
     queue_control(ControlOpcode::StreamCommit, 0, *pending_config_id_,
                   write_u32(*pending_video_stream_id_),
                   *pending_video_stream_id_);
+    schedule_reconfiguration_commit_retry();
   }
 
   void handle_reconfiguration_committed(const Header& header,
                                         const ControlMessage& message) {
-    const auto stream_id = decode_stream_id_body(message.body);
+    const auto stream_id = decode_stream_id_prefix(message.body);
+    if (retired_config_ids_.count(message.config_id) != 0) {
+      return;
+    }
     if (message.opcode != ControlOpcode::StreamCommitted ||
         !pending_config_id_.has_value() ||
         !pending_video_stream_id_.has_value() ||
         !pending_profile_.has_value() ||
+        !reconfiguration_.has_value() ||
         message.config_id != *pending_config_id_ ||
         header.video_stream_id != *pending_video_stream_id_ ||
         !stream_id.has_value() || *stream_id != *pending_video_stream_id_) {
       fail_with(SessionFailure::UnexpectedMessage, true);
       return;
     }
-    set_negotiated_stream(NegotiatedStream{*pending_profile_, *pending_config_id_,
-                                           *pending_video_stream_id_});
-    reset_decoder_stream(*pending_video_stream_id_);
-    transition(SessionState::Streaming, std::nullopt);
-    begin_liveness();
-    set_capture_intent(!screen_recording_revoked_ && !display_error_);
-    set_input_intent(!accessibility_revoked_ && !display_error_);
-    pause_deadline_ns_.reset();
-    resume_required_ = false;
-    refresh_states();
-    const bool was_resuming = resuming_;
-    reconfiguration_ = ReconfigurationStatus{
-        *pending_config_id_, ReconfigurationPhase::Completed, std::nullopt,
-        was_resuming};
-    resuming_ = false;
-    highest_config_id_ = *pending_config_id_;
-    pending_config_id_.reset();
-    pending_video_stream_id_.reset();
-    pending_profile_.reset();
+    if (reconfiguration_->phase == ReconfigurationPhase::AwaitingFirstIdr) {
+      if (message.body.size() == 4) {
+        return;
+      }
+      if (message.body.size() != 5 ||
+          message.body[4] != kCommitAckFirstIdrStage) {
+        fail_with(SessionFailure::UnexpectedMessage, true);
+        return;
+      }
+      const bool pause_after =
+          std::exchange(pause_after_reconfiguration_, false);
+      set_negotiated_stream(*pending_committed_stream_);
+      reset_decoder_stream(*pending_video_stream_id_);
+      transition(SessionState::Streaming, std::nullopt);
+      begin_liveness();
+      pause_deadline_ns_.reset();
+      resume_required_ = false;
+      if (screen_locked_ || pause_after) {
+        begin_pause(false);
+      } else {
+        set_capture_intent(!screen_recording_revoked_ && !display_error_);
+        set_input_intent(!accessibility_revoked_ && !display_error_);
+        refresh_states();
+      }
+      const bool was_resuming = resuming_;
+      reconfiguration_ = ReconfigurationStatus{
+          *pending_config_id_, ReconfigurationPhase::Completed, std::nullopt,
+          was_resuming};
+      resuming_ = false;
+      highest_config_id_ = *pending_config_id_;
+      pending_config_id_.reset();
+      pending_video_stream_id_.reset();
+      pending_profile_.reset();
+      pending_committed_stream_.reset();
+      reconfiguration_ack_retry_ns_.reset();
+      return;
+    }
+    if (reconfiguration_->phase != ReconfigurationPhase::AwaitingCommitted ||
+        message.body.size() != 4) {
+      fail_with(SessionFailure::UnexpectedMessage, true);
+      return;
+    }
+
+    pending_committed_stream_ =
+        NegotiatedStream{*pending_profile_, *pending_config_id_,
+                         *pending_video_stream_id_};
+    reconfiguration_->phase = ReconfigurationPhase::AwaitingFirstIdr;
     sent_initial_idr_ = false;
+    transition(SessionState::Reconfiguring, std::nullopt);
+    schedule_reconfiguration_commit_retry();
+    refresh_states();
+  }
+
+  void schedule_reconfiguration_commit_retry() {
+    const std::uint64_t retry_ns =
+        std::max<std::uint64_t>(1, config_.scheduler.recovery_retry_ns);
+    reconfiguration_ack_retry_ns_ = saturating_add(now_ns(), retry_ns);
+  }
+
+  void retry_reconfiguration_commit_if_due() {
+    if (!reconfiguration_ack_retry_ns_.has_value() ||
+        state() != SessionState::Reconfiguring ||
+        !pending_config_id_.has_value() ||
+        !pending_video_stream_id_.has_value() ||
+        !reconfiguration_.has_value()) {
+      return;
+    }
+    if (reconfiguration_->phase != ReconfigurationPhase::AwaitingCommitted &&
+        reconfiguration_->phase != ReconfigurationPhase::AwaitingFirstIdr) {
+      return;
+    }
+    if (now_ns() < *reconfiguration_ack_retry_ns_) {
+      return;
+    }
+    queue_control(ControlOpcode::StreamCommit, 0, *pending_config_id_,
+                  write_u32(*pending_video_stream_id_),
+                  *pending_video_stream_id_);
+    schedule_reconfiguration_commit_retry();
   }
 
   void abort_reconfiguration(SessionFailure failure, bool notify_peer) {
+    reconfiguration_ack_retry_ns_.reset();
     if (!pending_config_id_.has_value()) {
       if (state() != SessionState::Failed) {
         fail_with(failure, false);
@@ -1373,13 +1555,21 @@ struct HostSession::Impl final : EndpointCore {
     }
     const std::uint32_t failed_config_id = *pending_config_id_;
     const auto failed_stream_id = pending_video_stream_id_;
+    retired_config_ids_.insert(failed_config_id);
     const bool was_resuming = resuming_;
+    const bool pause_after = std::exchange(pause_after_reconfiguration_, false);
     reconfiguration_ = ReconfigurationStatus{
         failed_config_id, ReconfigurationPhase::Failed, failure, was_resuming};
     resuming_ = false;
     pending_config_id_.reset();
     pending_video_stream_id_.reset();
     pending_profile_.reset();
+    pending_committed_stream_.reset();
+    scheduler_.discard_pending_video_frames();
+    if (negotiated_stream().has_value()) {
+      reset_decoder_stream(negotiated_stream()->video_stream_id);
+      sent_initial_idr_ = false;
+    }
     transition(reconfiguration_return_state_, std::nullopt);
     if (reconfiguration_return_state_ == SessionState::Paused) {
       set_capture_intent(false);
@@ -1389,6 +1579,10 @@ struct HostSession::Impl final : EndpointCore {
     if (notify_peer) {
       queue_control(ControlOpcode::ProtocolError, 0, failed_config_id,
                     {static_cast<std::uint8_t>(failure)}, 0);
+    }
+    if (state() == SessionState::Streaming &&
+        (screen_locked_ || pause_after)) {
+      begin_pause(false);
     }
     (void)failed_stream_id;
   }
@@ -1403,11 +1597,16 @@ struct HostSession::Impl final : EndpointCore {
     EndpointCore::handle_stage_timeout();
   }
 
-  void on_terminal_failure() override {
+  void on_terminal_begin() override {
     end_liveness();
     pause_deadline_ns_.reset();
+    reconfiguration_ack_retry_ns_.reset();
     set_capture_intent(false);
     set_input_intent(false);
+    scheduler_.begin_stopping();
+  }
+
+  void on_terminal_failure() override {
     if (boundary_ != nullptr) {
       boundary_->drain_callbacks();
     }
@@ -1417,7 +1616,15 @@ struct HostSession::Impl final : EndpointCore {
 
   void begin_pause(bool with_grace) {
     if (state() == SessionState::Reconfiguring) {
-      abort_reconfiguration(SessionFailure::UnexpectedMessage, false);
+      if (can_defer_reconfiguration_pause()) {
+        pause_after_reconfiguration_ = true;
+        set_capture_intent(false);
+        set_input_intent(false);
+        scheduler_.discard_unstarted_video_frames();
+        refresh_states();
+        return;
+      }
+      abort_reconfiguration(SessionFailure::UnexpectedMessage, true);
     }
     if (state() != SessionState::Streaming || !negotiated_stream().has_value()) {
       return;
@@ -1435,6 +1642,13 @@ struct HostSession::Impl final : EndpointCore {
       pause_deadline_ns_.reset();
     }
     refresh_states();
+  }
+
+  [[nodiscard]] bool can_defer_reconfiguration_pause() const {
+    return reconfiguration_.has_value() &&
+           reconfiguration_->phase == ReconfigurationPhase::AwaitingFirstIdr &&
+           pending_video_stream_id_.has_value() &&
+           scheduler_.has_started_video_stream(*pending_video_stream_id_);
   }
 
   void refresh_states() {
@@ -1517,6 +1731,7 @@ struct HostSession::Impl final : EndpointCore {
   }
 
   void set_capture_intent(bool enabled) {
+    enabled = enabled && !screen_locked_;
     if (capture_encoding_intent_ == enabled) {
       return;
     }
@@ -1527,6 +1742,7 @@ struct HostSession::Impl final : EndpointCore {
   }
 
   void set_input_intent(bool enabled) {
+    enabled = enabled && !screen_locked_;
     if (input_injection_intent_ == enabled) {
       return;
     }
@@ -1545,6 +1761,7 @@ struct HostSession::Impl final : EndpointCore {
   std::optional<StreamProfile> last_attempt_profile_;
   std::uint32_t last_attempt_video_stream_id_{};
   std::optional<ReconfigurationStatus> reconfiguration_;
+  std::optional<NegotiatedStream> pending_committed_stream_;
   struct PendingClockRequest {
     std::uint32_t seq{};
     std::uint64_t t0_ns{};
@@ -1569,6 +1786,9 @@ struct HostSession::Impl final : EndpointCore {
   bool display_error_{};
   bool sleeping_{};
   bool resume_required_{};
+  bool pause_after_reconfiguration_{};
+  std::optional<std::uint64_t> reconfiguration_ack_retry_ns_;
+  std::set<std::uint32_t> retired_config_ids_;
   HostSendScheduler scheduler_;
 };
 
@@ -1616,6 +1836,10 @@ struct DeviceSession::Impl final : EndpointCore {
                  (state() == SessionState::AwaitingFirstIdr &&
                   previous_stream_.has_value())) {
         abort_reconfiguration(*failure, false);
+      } else if (reconfiguration_.has_value() &&
+                 reconfiguration_->phase == ReconfigurationPhase::Failed &&
+                 message.config_id == reconfiguration_->config_id) {
+        return;
       } else {
         fail_with(*failure, false);
       }
@@ -1639,13 +1863,28 @@ struct DeviceSession::Impl final : EndpointCore {
     }
     if (message.opcode == ControlOpcode::StreamCommit) {
       const auto stream_id = decode_stream_id_body(message.body);
+      if (rolled_back_config_ids_.count(message.config_id) != 0) {
+        return;
+      }
       if (last_commit_succeeded_ &&
           last_committed_config_id_ == message.config_id &&
           stream_id.has_value() &&
           last_committed_stream_id_ == *stream_id) {
-        queue_control(ControlOpcode::StreamCommitted, 0,
-                      *last_committed_config_id_, write_u32(*stream_id),
-                      *stream_id);
+        if (header.video_stream_id != *stream_id ||
+            message.config_id < highest_config_id_) {
+          fail_with(SessionFailure::UnexpectedMessage, true);
+          return;
+        }
+        if (state() == SessionState::AwaitingFirstIdr) {
+          queue_commit_ack(*last_committed_config_id_, *stream_id, false);
+          return;
+        }
+        if (state() == SessionState::Streaming &&
+            last_commit_was_reconfiguration_) {
+          queue_commit_ack(*last_committed_config_id_, *stream_id, true);
+          return;
+        }
+        queue_commit_ack(*last_committed_config_id_, *stream_id, false);
         return;
       }
       if (state() != SessionState::AwaitingCommit &&
@@ -1739,6 +1978,12 @@ struct DeviceSession::Impl final : EndpointCore {
       }
       transition(SessionState::Streaming, std::nullopt);
       begin_liveness();
+      awaiting_rollback_idr_ = false;
+      if (awaiting_reconfiguration_idr_) {
+        awaiting_reconfiguration_idr_ = false;
+        queue_commit_ack(negotiated_stream()->config_id,
+                         negotiated_stream()->video_stream_id, true);
+      }
     } else if (state() == SessionState::Reconfiguring) {
       received_frames_.push_back(ReceivedVideoFrame{
           header, std::move(payload), surface_generation_, std::nullopt});
@@ -1747,6 +1992,12 @@ struct DeviceSession::Impl final : EndpointCore {
     } else if (state() != SessionState::Streaming) {
       fail_with(SessionFailure::UnexpectedMessage, true);
       return;
+    }
+    if (awaiting_rollback_idr_) {
+      if ((header.flags & kFlagKeyFrame) == 0) {
+        return;
+      }
+      awaiting_rollback_idr_ = false;
     }
     if (recovery_gate_.observe_frame(header.flags, recovery_id) ==
         RecoveryFrameAction::Drop) {
@@ -1923,6 +2174,31 @@ struct DeviceSession::Impl final : EndpointCore {
       queue_control(ControlOpcode::PauseAck, 0, message.config_id, {}, 0);
       return;
     }
+    if (state() == SessionState::Reconfiguring ||
+        (state() == SessionState::AwaitingFirstIdr &&
+         previous_stream_.has_value())) {
+      // The Host may pause before the candidate stream's first IDR (lock screen
+      // or display error). Roll the unconfirmed candidate back first, then
+      // honor the pause on the retained stream instead of failing the session.
+      abort_reconfiguration(SessionFailure::UnexpectedMessage, false);
+      if (is_terminal()) {
+        return;
+      }
+    }
+    if (state() == SessionState::AwaitingFirstIdr &&
+        !previous_stream_.has_value()) {
+      // The initial handshake committed but no IDR has arrived yet. Honor the
+      // pause instead of terminating the freshly established session.
+      if (!negotiated_stream().has_value() ||
+          message.config_id != negotiated_stream()->config_id) {
+        fail_with(SessionFailure::UnexpectedMessage, true);
+        return;
+      }
+      awaiting_reconfiguration_idr_ = false;
+      transition(SessionState::Paused, std::nullopt);
+      queue_control(ControlOpcode::PauseAck, 0, message.config_id, {}, 0);
+      return;
+    }
     if (state() != SessionState::Streaming || !negotiated_stream().has_value() ||
         message.config_id != negotiated_stream()->config_id) {
       fail_with(SessionFailure::UnexpectedMessage, true);
@@ -1980,13 +2256,15 @@ struct DeviceSession::Impl final : EndpointCore {
     const std::uint32_t committed_config_id = *prepared_config_id_;
     const StreamProfile committed_profile = *prepared_profile_;
     const bool had_active_stream = negotiated_stream().has_value();
+    last_commit_was_reconfiguration_ = had_active_stream;
     set_commit_history(committed_config_id, committed_profile, *stream_id);
     if (had_active_stream) {
       previous_stream_ = negotiated_stream();
       pending_committed_stream_ =
           NegotiatedStream{committed_profile, committed_config_id, *stream_id};
       released_previous_stream_ = false;
-      reset_decoder_stream(0);
+      awaiting_reconfiguration_idr_ = true;
+      reset_decoder_stream(*stream_id);
       reconfiguration_ = ReconfigurationStatus{
           committed_config_id, ReconfigurationPhase::AwaitingFirstIdr, std::nullopt,
           false};
@@ -2005,8 +2283,14 @@ struct DeviceSession::Impl final : EndpointCore {
     recovery_gate_.reset();
     requested_recovery_id_.reset();
     transition(SessionState::AwaitingFirstIdr, SessionFailure::InitialIdrTimeout);
-    queue_control(ControlOpcode::StreamCommitted, 0, committed_config_id,
-                  write_u32(*stream_id), *stream_id);
+    queue_commit_ack(committed_config_id, *stream_id, false);
+  }
+
+  void queue_commit_ack(std::uint32_t config_id, std::uint32_t video_stream_id,
+                        bool first_idr_confirmed) {
+    queue_control(ControlOpcode::StreamCommitted, 0, config_id,
+                  commit_ack_body(video_stream_id, first_idr_confirmed),
+                  video_stream_id);
   }
 
   void queue_profile_control(ControlOpcode opcode, std::uint32_t config_id,
@@ -2077,6 +2361,7 @@ struct DeviceSession::Impl final : EndpointCore {
     }
     transition(SessionState::Stopping, std::nullopt);
     end_liveness();
+    clear_outbound();
     cancel_pending_io();
   }
 
@@ -2158,12 +2443,20 @@ struct DeviceSession::Impl final : EndpointCore {
     prepared_config_id_.reset();
     prepared_profile_.reset();
     prepared_stream_id_.reset();
+    awaiting_reconfiguration_idr_ = false;
+    const SessionState rollback_state =
+        reconfiguration_previous_state_.value_or(SessionState::Streaming);
     if (previous_stream_.has_value()) {
-      committed_stream_id_ = previous_stream_->video_stream_id;
-      reset_decoder_stream(*committed_stream_id_);
-      transition(SessionState::Streaming, std::nullopt);
+      const std::uint32_t previous_stream_id =
+          previous_stream_->video_stream_id;
+      committed_stream_id_ = previous_stream_id;
+      if (commit_was_attempted) {
+        retarget_decoder_stream(previous_stream_id);
+        awaiting_rollback_idr_ = true;
+      }
+      transition(rollback_state, std::nullopt);
     } else {
-      transition(SessionState::Streaming, std::nullopt);
+      transition(rollback_state, std::nullopt);
     }
     if (notify_peer) {
       queue_control(ControlOpcode::ProtocolError, 0, config_id,
@@ -2189,9 +2482,14 @@ struct DeviceSession::Impl final : EndpointCore {
       reconfiguration_ = ReconfigurationStatus{
           failed_config_id, ReconfigurationPhase::Failed, failure, false};
       pending_committed_stream_.reset();
+      awaiting_reconfiguration_idr_ = false;
       committed_stream_id_ = previous_stream_->video_stream_id;
-      reset_decoder_stream(*committed_stream_id_);
-      transition(SessionState::Streaming, std::nullopt);
+      retarget_decoder_stream(*committed_stream_id_);
+      awaiting_rollback_idr_ = true;
+      rolled_back_config_ids_.insert(failed_config_id);
+      previous_stream_.reset();
+      transition(reconfiguration_previous_state_.value_or(SessionState::Streaming),
+                 std::nullopt);
       if (notify_peer) {
         queue_control(ControlOpcode::ProtocolError, 0, failed_config_id,
                       {static_cast<std::uint8_t>(failure)}, 0);
@@ -2256,10 +2554,14 @@ struct DeviceSession::Impl final : EndpointCore {
   SurfaceLease surface_lease_;
   std::uint64_t surface_generation_{};
   bool last_commit_succeeded_{};
+  bool last_commit_was_reconfiguration_{};
+  std::set<std::uint32_t> rolled_back_config_ids_;
   bool discard_called_{};
   bool rollback_called_{};
   bool released_previous_stream_{};
   bool active_stream_released_{};
+  bool awaiting_reconfiguration_idr_{};
+  bool awaiting_rollback_idr_{};
   std::vector<ReceivedVideoFrame> received_frames_;
   DeviceRecoveryGate recovery_gate_;
   std::optional<ReceivedVideoFrame> last_good_frame_;

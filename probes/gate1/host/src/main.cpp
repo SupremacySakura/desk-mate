@@ -1,4 +1,5 @@
 #include "gate1/aoa.hpp"
+#include "gate1/cleanup.hpp"
 #include "gate1/probe_session.hpp"
 
 #include <libusb-1.0/libusb.h>
@@ -110,6 +111,8 @@ void print_usage()
         << "  --zlp-every N          default 128 data frames; 0 disables\n"
         << "  --lost-after-ms N      default 3000\n"
         << "  --cancel-timeout-ms N  default 5000\n"
+        << "  --handshake-initial-delay-ms N\n"
+        << "                         wait after claim before first HELLO, default 0\n"
         << "  --handshake-timeout-ms N\n"
         << "                         wait for Device HELLO_ACK, default 30000\n"
         << "  --handshake-retry-ms N resend HELLO interval, default 1000\n"
@@ -187,6 +190,8 @@ bool parse_command_line(int argc, char** argv, CommandLine& parsed)
             ok = require_int(i, parsed.probe.lost_after_ms);
         } else if (argument == "--cancel-timeout-ms") {
             ok = require_int(i, parsed.probe.cancel_timeout_ms);
+        } else if (argument == "--handshake-initial-delay-ms") {
+            ok = require_int(i, parsed.probe.handshake_initial_delay_ms);
         } else if (argument == "--handshake-timeout-ms") {
             ok = require_int(i, parsed.probe.handshake_timeout_ms);
         } else if (argument == "--handshake-retry-ms") {
@@ -304,6 +309,8 @@ bool write_json(
            << "    \"zlp_every_frames\": " << options.zlp_every_frames << ",\n"
            << "    \"lost_after_ms\": " << options.lost_after_ms << ",\n"
            << "    \"cancel_timeout_ms\": " << options.cancel_timeout_ms << ",\n"
+           << "    \"handshake_initial_delay_ms\": "
+           << options.handshake_initial_delay_ms << ",\n"
            << "    \"handshake_timeout_ms\": " << options.handshake_timeout_ms << ",\n"
            << "    \"handshake_retry_ms\": " << options.handshake_retry_ms << "\n"
            << "  },\n"
@@ -423,11 +430,15 @@ int open_accessory(libusb_context* context, int timeout_ms, gate1::OpenedAccesso
     return EXIT_SUCCESS;
 }
 
-int probe_command(
+struct ProbeCommandOutcome {
+    int exit_code = EXIT_FAILURE;
+    bool cleanup_safe = false;
+};
+
+ProbeCommandOutcome probe_command(
     libusb_context* context,
     const CommandLine& options,
-    gate1::OpenedAccessory& accessory,
-    bool& safe_to_close)
+    gate1::OpenedAccessory& accessory)
 {
     const gate1::ProbeResult result = gate1::run_duplex_probe(
         context,
@@ -437,18 +448,22 @@ int probe_command(
         accessory.endpoint_out,
         options.probe,
         std::cout);
+    ProbeCommandOutcome outcome;
+    outcome.cleanup_safe = result.cleanup_safe;
     print_summary(result);
     if (!write_json(options.json_path, result, options.probe, accessory)) {
-        return EXIT_FAILURE;
+        outcome.exit_code = EXIT_FAILURE;
+        return outcome;
     }
-    safe_to_close = result.cleanup_safe;
     if (!result.cleanup_safe) {
         std::cerr << "cleanup unsafe: leaving handle/context open until process exit\n";
-        return EXIT_FAILURE;
+        outcome.exit_code = EXIT_FAILURE;
+        return outcome;
     }
-    return (result.handshake_ok && result.echo_ok && result.cancellation_ok)
+    outcome.exit_code = (result.handshake_ok && result.echo_ok && result.cancellation_ok)
         ? EXIT_SUCCESS
         : EXIT_FAILURE;
+    return outcome;
 }
 
 } // namespace
@@ -473,51 +488,55 @@ int main(int argc, char** argv)
     }
 
     int exit_code = EXIT_SUCCESS;
-    bool close_handle = true;
-    bool exit_context = true;
+    bool probe_cleanup_safe = true;
     gate1::OpenedAccessory accessory;
 
     if (parsed.command == "list") {
         exit_code = list_command(context);
-    } else {
-        if (parsed.command == "aoa" || parsed.command == "run") {
-            if (!gate1::selector_has_filter(parsed.selector)) {
-                std::cerr << "aoa/run requires --bus/--address or --vid/--pid\n";
+        libusb_exit(context);
+        return exit_code;
+    }
+
+    if (parsed.command == "aoa" || parsed.command == "run") {
+        if (!gate1::selector_has_filter(parsed.selector)) {
+            std::cerr << "aoa/run requires --bus/--address or --vid/--pid\n";
+            exit_code = EXIT_FAILURE;
+        } else {
+            std::string error;
+            std::cout << "[aoa] GET_PROTOCOL(51), SEND_STRING(52), START(53)\n";
+            if (!gate1::switch_to_accessory(
+                    context,
+                    parsed.selector,
+                    parsed.identity,
+                    static_cast<unsigned>(parsed.enumerate_timeout_ms),
+                    error)) {
+                std::cerr << "[aoa] " << error << "\n";
                 exit_code = EXIT_FAILURE;
             } else {
-                std::string error;
-                std::cout << "[aoa] GET_PROTOCOL(51), SEND_STRING(52), START(53)\n";
-                if (!gate1::switch_to_accessory(
-                        context,
-                        parsed.selector,
-                        parsed.identity,
-                        static_cast<unsigned>(parsed.enumerate_timeout_ms),
-                        error)) {
-                    std::cerr << "[aoa] " << error << "\n";
-                    exit_code = EXIT_FAILURE;
-                } else {
-                    std::cout << "[aoa] START accepted; device re-enumerated\n";
-                }
+                std::cout << "[aoa] START accepted; device re-enumerated\n";
             }
-        }
-
-        if (exit_code == EXIT_SUCCESS && parsed.command != "aoa") {
-            exit_code = open_accessory(context, parsed.enumerate_timeout_ms, accessory);
-            if (exit_code == EXIT_SUCCESS) {
-                exit_code = probe_command(context, parsed, accessory, close_handle);
-            }
-        } else if (exit_code == EXIT_SUCCESS && parsed.command == "aoa") {
-            exit_code = open_accessory(context, parsed.enumerate_timeout_ms, accessory);
-        }
-
-        if (accessory.handle != nullptr && close_handle) {
-            gate1::close_accessory(accessory);
-        } else if (accessory.handle != nullptr) {
-            exit_context = false;
         }
     }
 
-    if (exit_context) {
+    if (exit_code == EXIT_SUCCESS && parsed.command != "aoa") {
+        exit_code = open_accessory(context, parsed.enumerate_timeout_ms, accessory);
+        if (exit_code == EXIT_SUCCESS) {
+            const ProbeCommandOutcome outcome =
+                probe_command(context, parsed, accessory);
+            exit_code = outcome.exit_code;
+            probe_cleanup_safe = outcome.cleanup_safe;
+        }
+    } else if (exit_code == EXIT_SUCCESS && parsed.command == "aoa") {
+        exit_code = open_accessory(context, parsed.enumerate_timeout_ms, accessory);
+    }
+
+    const gate1::ResourceRelease release = gate1::resource_release(
+        accessory.handle != nullptr,
+        probe_cleanup_safe);
+    if (accessory.handle != nullptr && release.close_handle) {
+        gate1::close_accessory(accessory);
+    }
+    if (release.exit_context) {
         libusb_exit(context);
     }
     return exit_code;

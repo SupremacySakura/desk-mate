@@ -79,6 +79,23 @@
 
 2. Host 打印 51/52/53 与重枚举后，在 Device 上依次点：
    `1. 授权并打开`，然后 `启动 eventfd`。
+   若使用自动脚本，先把 `scripts/auto_device.sh` 推到 Device 并在 Host 启动 AOA
+   前执行；脚本会在 AOA 后重新 `aa start`，并在每次点击前 dump layout：
+
+   ```sh
+   HDC=.../hdc
+   "$HDC" file send probes/gate1/scripts/auto_device.sh /data/local/tmp/gate1_auto.sh
+   "$HDC" shell chmod 755 /data/local/tmp/gate1_auto.sh
+   "$HDC" shell sh /data/local/tmp/gate1_auto.sh
+   ```
+
+   执行前必须手动解锁 Device。开发者模式下 `aa start` 在锁屏时会返回
+   `Error Code:10106102` 但进程退出码仍为 0；脚本会检查输出文本，在
+   `/data/local/tmp/gate1_auto.log` 记录失败而不是误判为已在前台。
+
+   Host 同时使用 `--handshake-initial-delay-ms 10000` 等待 Device 完成
+   `openAccessory` 与 worker 启动，避免首个 `HELLO` 在 accessory 尚未就绪时打到
+   OUT endpoint。
 3. Host 每秒重发 HELLO；看到 `HELLO_ACK` 后进入双向传输。
 4. 记录 Host 每秒进度；至少确认：
    - `handshake_ok=true`；
@@ -89,6 +106,19 @@
    - 结束时 `active_on_release=0`、`cleanup_safe=true`。
 5. 一轮结束后在 Device 点 `停止并 join`，记录 native 返回 JSON 中的
    `stop_to_wake_us`、`stop_to_worker_exit_ms`、`wake_reason` 和错误计数。
+   自动脚本结束后取回：
+
+   ```sh
+   "$HDC" file recv /data/local/tmp/gate1_auto.log evidence/local/
+   "$HDC" file recv /data/local/tmp/gate1_auto_layout.json evidence/local/
+   "$HDC" file recv /data/local/tmp/gate1_auto_stats.json evidence/local/
+   "$HDC" file recv /data/local/tmp/gate1_auto_final.json evidence/local/
+   "$HDC" file recv /data/local/tmp/gate1_auto_hilog.log evidence/local/
+   ```
+
+   若 Device 首次 `read()` 失败，记录 `last_read_errno`、`last_poll_revents` 和
+   hilog 的 `read failed: errno=... fd=... mode=... revents=...`，不得只写
+   “read-error” 而省略 errno。
 
 ## 4. 三种唤醒分支
 

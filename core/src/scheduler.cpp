@@ -1,6 +1,7 @@
 #include "deskmate/scheduler.hpp"
 
 #include <algorithm>
+#include <array>
 #include <utility>
 
 namespace deskmate::protocol {
@@ -21,6 +22,73 @@ std::size_t encoded_video_bytes(std::size_t payload_bytes,
   const std::size_t fragment_count =
       (payload_bytes + fragment_payload - 1) / fragment_payload;
   return payload_bytes + fragment_count * kWireHeaderSize;
+}
+
+bool mark_recovery_fragments(ScheduledVideoFrame& frame,
+                             std::uint32_t recovery_id) {
+  if (frame.fragments.empty()) {
+    return false;
+  }
+
+  bool prefix_already_present = false;
+  for (std::size_t index = 0; index < frame.fragments.size(); ++index) {
+    auto& fragment = frame.fragments[index];
+    const auto decoded = decode_header(fragment);
+    if (!decoded) {
+      return false;
+    }
+    Header header = decoded.value();
+    if (header.type != static_cast<std::uint8_t>(MessageType::Video) ||
+        header.fragment_index != index ||
+        header.fragment_total != frame.fragments.size() ||
+        fragment.size() != kWireHeaderSize + header.payload_len) {
+      return false;
+    }
+    if (index == 0) {
+      if ((header.flags & kFlagRecoveryIdr) != 0) {
+        if (header.payload_len < 4) {
+          return false;
+        }
+        std::uint32_t encoded_id = 0;
+        for (std::size_t byte = 0; byte < 4; ++byte) {
+          encoded_id |=
+              static_cast<std::uint32_t>(fragment[kWireHeaderSize + byte])
+              << (byte * 8U);
+        }
+        if (encoded_id != recovery_id) {
+          return false;
+        }
+        prefix_already_present = true;
+      }
+      if (!prefix_already_present) {
+        if (header.payload_len > kMaxPacketPayload - 4U) {
+          return false;
+        }
+        header.payload_len += 4;
+      }
+    } else if ((header.flags & kFlagRecoveryIdr) == 0) {
+      if (prefix_already_present) {
+        return false;
+      }
+    } else if (!prefix_already_present) {
+      return false;
+    }
+    header.flags |= kFlagRecoveryIdr;
+    const auto encoded_header = encode_header(header);
+    std::copy(encoded_header.begin(), encoded_header.end(), fragment.begin());
+  }
+
+  if (!prefix_already_present) {
+    auto& first = frame.fragments.front();
+    const std::array<std::uint8_t, 4> prefix{
+        static_cast<std::uint8_t>(recovery_id & 0xFFU),
+        static_cast<std::uint8_t>((recovery_id >> 8U) & 0xFFU),
+        static_cast<std::uint8_t>((recovery_id >> 16U) & 0xFFU),
+        static_cast<std::uint8_t>((recovery_id >> 24U) & 0xFFU)};
+    first.insert(first.begin() + static_cast<std::ptrdiff_t>(kWireHeaderSize),
+                 prefix.begin(), prefix.end());
+  }
+  return true;
 }
 
 }  // namespace
@@ -52,6 +120,17 @@ SchedulerQueueStatus HostSendScheduler::enqueue_video_frame(
     return SchedulerQueueStatus::InvalidArgument;
   }
 
+  if (idr_request_.has_value() && frame.keyframe) {
+    if (frame.recovery_id.has_value() &&
+        *frame.recovery_id != idr_request_->recovery_id) {
+      return SchedulerQueueStatus::InvalidArgument;
+    }
+    frame.recovery_id = idr_request_->recovery_id;
+    if (!mark_recovery_fragments(frame, idr_request_->recovery_id)) {
+      return SchedulerQueueStatus::InvalidArgument;
+    }
+  }
+
   const std::size_t incoming_bytes = fragment_bytes(frame.fragments, 0);
   const SchedulerQueueStatus admitted =
       admit_video_frame(frame.keyframe, incoming_bytes);
@@ -59,12 +138,6 @@ SchedulerQueueStatus HostSendScheduler::enqueue_video_frame(
     return admitted;
   }
 
-  if (idr_request_.has_value() && frame.keyframe) {
-    if (!frame.recovery_id.has_value()) {
-      frame.recovery_id = idr_request_->recovery_id;
-    }
-    idr_request_.reset();
-  }
   queue_video_frame(std::move(frame));
   return SchedulerQueueStatus::Queued;
 }
@@ -78,8 +151,13 @@ SchedulerQueueStatus HostSendScheduler::enqueue_video_frame(
     return SchedulerQueueStatus::InvalidArgument;
   }
   const bool keyframe = (frame.flags & kFlagKeyFrame) != 0;
-  const bool will_recover = keyframe && idr_request_.has_value();
-  const std::size_t recovery_prefix = will_recover ? 4U : 0U;
+  if (keyframe && idr_request_.has_value() && frame.recovery_id.has_value() &&
+      *frame.recovery_id != idr_request_->recovery_id) {
+    return SchedulerQueueStatus::InvalidArgument;
+  }
+  const bool carries_recovery =
+      keyframe && (idr_request_.has_value() || frame.recovery_id.has_value());
+  const std::size_t recovery_prefix = carries_recovery ? 4U : 0U;
   const SchedulerQueueStatus admitted = admit_video_frame(
       keyframe, encoded_video_bytes(frame.payload.size() + recovery_prefix,
                                     fragment_payload));
@@ -87,12 +165,13 @@ SchedulerQueueStatus HostSendScheduler::enqueue_video_frame(
     return admitted;
   }
 
-  std::optional<std::uint32_t> expected_recovery_id;
   if (idr_request_.has_value() && keyframe) {
-    expected_recovery_id =
-        frame.recovery_id.value_or(idr_request_->recovery_id);
+    if (frame.recovery_id.has_value() &&
+        *frame.recovery_id != idr_request_->recovery_id) {
+      return SchedulerQueueStatus::InvalidArgument;
+    }
     frame.flags |= kFlagRecoveryIdr;
-    frame.recovery_id = expected_recovery_id;
+    frame.recovery_id = idr_request_->recovery_id;
   }
   auto fragments =
       encode_video_fragments(frame, fragment_payload);
@@ -104,11 +183,8 @@ SchedulerQueueStatus HostSendScheduler::enqueue_video_frame(
   scheduled.fragments = std::move(fragments.value());
   scheduled.keyframe = keyframe;
   scheduled.recovery_id = frame.recovery_id;
+  scheduled.video_stream_id = frame.video_stream_id;
   queue_video_frame(std::move(scheduled));
-  if (expected_recovery_id.has_value() && idr_request_.has_value() &&
-      idr_request_->recovery_id == *expected_recovery_id) {
-    idr_request_.reset();
-  }
   return SchedulerQueueStatus::Queued;
 }
 
@@ -129,8 +205,9 @@ SchedulerQueueStatus HostSendScheduler::admit_video_frame(
 }
 
 void HostSendScheduler::queue_video_frame(ScheduledVideoFrame frame) {
-  video_.push_back(
-      VideoFrame{std::move(frame.fragments), 0, clock_.now_ns()});
+  video_.push_back(VideoFrame{std::move(frame.fragments), 0, clock_.now_ns(),
+                              frame.keyframe, frame.recovery_id,
+                              frame.video_stream_id});
 }
 
 void HostSendScheduler::request_idr_from_peer(std::uint32_t recovery_id) {
@@ -140,6 +217,8 @@ void HostSendScheduler::request_idr_from_peer(std::uint32_t recovery_id) {
   last_recovery_id_ = std::max(last_recovery_id_, recovery_id);
   idr_request_ = SchedulerIdrRequest{
       recovery_id, IdrRequestReason::PeerRequest, clock_.now_ns()};
+  drop_unstarted_video_frames();
+  mark_queued_recovery_keyframe();
 }
 
 void HostSendScheduler::pump() {
@@ -192,6 +271,25 @@ void HostSendScheduler::pump_priority() {
   }
 }
 
+void HostSendScheduler::discard_pending_video_frames() noexcept {
+  video_.clear();
+}
+
+void HostSendScheduler::discard_unstarted_video_frames() noexcept {
+  auto frame = video_.begin();
+  while (frame != video_.end()) {
+    if (frame->next_fragment == 0) {
+      frame = video_.erase(frame);
+    } else {
+      ++frame;
+    }
+  }
+}
+
+void HostSendScheduler::clear_started_video_streams() noexcept {
+  started_video_streams_.clear();
+}
+
 void HostSendScheduler::begin_stopping() noexcept {
   stopping_ = true;
   priority_.clear();
@@ -199,6 +297,14 @@ void HostSendScheduler::begin_stopping() noexcept {
   active_.reset();
   active_offset_ = 0;
   idr_request_.reset();
+  started_video_streams_.clear();
+}
+
+bool HostSendScheduler::has_started_video_stream(
+    std::uint32_t video_stream_id) const noexcept {
+  return std::find(started_video_streams_.begin(),
+                   started_video_streams_.end(),
+                   video_stream_id) != started_video_streams_.end();
 }
 
 bool HostSendScheduler::idle() const noexcept {
@@ -217,14 +323,65 @@ std::size_t HostSendScheduler::pending_video_bytes() const noexcept {
 }
 
 void HostSendScheduler::drop_unstarted_video_frames() {
+  std::optional<std::size_t> keep_index;
+  for (std::size_t index = video_.size(); index > 0; --index) {
+    const VideoFrame& frame = video_[index - 1];
+    if (frame.next_fragment == 0 && frame.keyframe) {
+      keep_index = index - 1;
+      break;
+    }
+  }
+
   auto frame = video_.begin();
+  std::size_t index = 0;
   while (frame != video_.end()) {
-    if (frame->next_fragment != 0) {
+    const bool keep = frame->next_fragment != 0 ||
+                      (keep_index.has_value() && index == *keep_index);
+    if (keep) {
       ++frame;
+      ++index;
       continue;
     }
     frame = video_.erase(frame);
+    if (keep_index.has_value() && index < *keep_index) {
+      --*keep_index;
+    }
   }
+}
+
+void HostSendScheduler::mark_queued_recovery_keyframe() {
+  if (!idr_request_.has_value()) {
+    return;
+  }
+
+  auto keyframe = video_.end();
+  for (auto frame = video_.begin(); frame != video_.end(); ++frame) {
+    if (frame->next_fragment == 0 && frame->keyframe) {
+      keyframe = frame;
+    }
+  }
+  if (keyframe == video_.end()) {
+    return;
+  }
+
+  const std::uint32_t recovery_id = idr_request_->recovery_id;
+  if ((keyframe->recovery_id.has_value() &&
+       *keyframe->recovery_id != recovery_id)) {
+    video_.erase(keyframe);
+    return;
+  }
+
+  ScheduledVideoFrame marked{
+      .fragments = keyframe->fragments,
+      .keyframe = true,
+      .recovery_id = recovery_id,
+  };
+  if (!mark_recovery_fragments(marked, recovery_id)) {
+    video_.erase(keyframe);
+    return;
+  }
+  keyframe->fragments = std::move(marked.fragments);
+  keyframe->recovery_id = marked.recovery_id;
 }
 
 void HostSendScheduler::check_oldest_unsent_frame_age() {
@@ -253,6 +410,8 @@ void HostSendScheduler::request_recovery(IdrRequestReason reason) {
   }
   idr_request_ =
       SchedulerIdrRequest{last_recovery_id_, reason, clock_.now_ns()};
+  drop_unstarted_video_frames();
+  mark_queued_recovery_keyframe();
 }
 
 bool HostSendScheduler::has_pending_output() const noexcept {
@@ -264,6 +423,19 @@ HostSendScheduler::next_video_fragment() {
   while (!video_.empty()) {
     VideoFrame& frame = video_.front();
     if (frame.next_fragment < frame.fragments.size()) {
+      if (frame.next_fragment == 0) {
+        if (std::find(started_video_streams_.begin(),
+                      started_video_streams_.end(),
+                      frame.video_stream_id) ==
+            started_video_streams_.end()) {
+          started_video_streams_.push_back(frame.video_stream_id);
+        }
+      }
+      if (frame.next_fragment == 0 && frame.keyframe &&
+          frame.recovery_id.has_value() && idr_request_.has_value() &&
+          idr_request_->recovery_id == *frame.recovery_id) {
+        idr_request_.reset();
+      }
       return std::move(frame.fragments[frame.next_fragment++]);
     }
     video_.pop_front();

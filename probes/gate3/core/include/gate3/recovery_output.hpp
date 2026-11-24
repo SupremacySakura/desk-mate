@@ -26,6 +26,7 @@ struct OutputRouterStats {
     std::uint64_t residual_decoder_callbacks = 0;
     std::uint64_t free_failures = 0;
     std::uint64_t render_failures = 0;
+    std::uint64_t pending_free_buffers = 0;
 };
 
 class RecoveryOutputRouter {
@@ -58,6 +59,7 @@ public:
     RecoveryEpoch recovery_epoch() const;
     DecoderInstanceId current_decoder() const;
     bool output_open() const;
+    bool surface_renderable() const;
     bool last_good_frame_visible() const;
     OutputRouterStats stats() const;
 
@@ -69,11 +71,17 @@ private:
         bool accepted_when_posted = false;
     };
 
+    struct PendingFree {
+        Command command;
+        bool stale_epoch = false;
+    };
+
     bool IsControlThreadLocked() const;
 
     DecoderOutputOps &operations_;
     mutable std::mutex mutex_;
     std::deque<Command> commands_;
+    std::deque<PendingFree> pending_frees_;
     std::thread::id control_thread_;
     bool control_thread_bound_ = false;
     std::atomic<bool> surface_renderable_fast_{false};

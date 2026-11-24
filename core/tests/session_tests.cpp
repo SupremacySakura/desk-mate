@@ -8,6 +8,8 @@
 #include <cstddef>
 #include <cstdint>
 #include <iostream>
+#include <limits>
+#include <memory>
 #include <optional>
 #include <span>
 #include <string>
@@ -94,6 +96,15 @@ class BytePipe {
   }
 
   IoResult write(std::span<const std::uint8_t> source) {
+    if (fail_writes) {
+      return {IoStatus::Error, 0};
+    }
+    if (writes_until_block == 0) {
+      return {IoStatus::WouldBlock, 0};
+    }
+    if (writes_until_block != std::numeric_limits<std::size_t>::max()) {
+      --writes_until_block;
+    }
     const std::size_t amount = std::min(source.size(), write_chunk_size_);
     bytes_.insert(bytes_.end(), source.begin(),
                   source.begin() + static_cast<std::ptrdiff_t>(amount));
@@ -108,12 +119,17 @@ class BytePipe {
     bytes_.clear();
     read_offset_ = 0;
   }
+  void set_write_chunk_size(std::size_t size) { write_chunk_size_ = size; }
 
  private:
   std::vector<std::uint8_t> bytes_;
   std::size_t read_offset_{};
   std::size_t read_chunk_size_;
   std::size_t write_chunk_size_;
+
+ public:
+  bool fail_writes{};
+  std::size_t writes_until_block{std::numeric_limits<std::size_t>::max()};
 };
 
 class DirectedIo final : public deskmate::protocol::ByteIo {
@@ -190,6 +206,31 @@ std::vector<deskmate::protocol::MessageType> decode_message_types(const BytePipe
     types.push_back(static_cast<deskmate::protocol::MessageType>(header.value().type));
   }
   return types;
+}
+
+std::size_t count_video_packets_for_stream(const BytePipe& pipe,
+                                           std::uint32_t video_stream_id) {
+  std::size_t count = 0;
+  std::size_t offset = 0;
+  while (offset + deskmate::protocol::kWireHeaderSize <= pipe.bytes().size()) {
+    const auto header = deskmate::protocol::decode_header(
+        std::span<const std::uint8_t>(pipe.bytes()).subspan(offset));
+    if (!header) {
+      break;
+    }
+    offset += deskmate::protocol::kWireHeaderSize;
+    if (offset + header.value().payload_len > pipe.bytes().size()) {
+      break;
+    }
+    offset += header.value().payload_len;
+    if (header.value().type ==
+            static_cast<std::uint8_t>(
+                deskmate::protocol::MessageType::Video) &&
+        header.value().video_stream_id == video_stream_id) {
+      ++count;
+    }
+  }
+  return count;
 }
 
 CapabilitySet host_capabilities() {
@@ -636,6 +677,29 @@ void append_control(BytePipe& pipe, std::uint32_t session_nonce,
   }
 }
 
+std::vector<std::uint8_t> commit_ack_body(std::uint32_t video_stream_id,
+                                          bool final_ack) {
+  std::vector<std::uint8_t> body{
+      static_cast<std::uint8_t>(video_stream_id & 0xFFU),
+      static_cast<std::uint8_t>((video_stream_id >> 8U) & 0xFFU),
+      static_cast<std::uint8_t>((video_stream_id >> 16U) & 0xFFU),
+      static_cast<std::uint8_t>((video_stream_id >> 24U) & 0xFFU)};
+  if (final_ack) {
+    body.push_back(2);
+  }
+  return body;
+}
+
+void append_commit_ack(BytePipe& pipe, std::uint32_t session_nonce,
+                       std::uint32_t config_id, std::uint32_t video_stream_id,
+                       std::uint32_t seq, bool final_ack) {
+  ControlMessage ack;
+  ack.opcode = ControlOpcode::StreamCommitted;
+  ack.config_id = config_id;
+  ack.body = commit_ack_body(video_stream_id, final_ack);
+  append_control(pipe, session_nonce, video_stream_id, seq, ack);
+}
+
 void append_video(BytePipe& pipe, std::uint32_t session_nonce,
                   std::uint32_t video_stream_id, std::uint32_t seq,
                   std::vector<std::uint8_t> payload, std::uint16_t flags) {
@@ -945,8 +1009,8 @@ void test_host_recovery_idr_resumes_gated_device() {
   CHECK_EQ(pair.host.send_video_frame(std::vector<std::uint8_t>{0x40, 0x41}, 4,
                                       true),
            VideoSendStatus::Sent);
-  CHECK(!pair.host.pending_idr_request().has_value());
   pair.host.pump();
+  CHECK(!pair.host.pending_idr_request().has_value());
   pair.device.pump();
   const auto frames = pair.device.take_video_frames();
   CHECK_EQ(frames.size(), 1U);
@@ -1020,8 +1084,8 @@ void test_host_congestion_drops_unstarted_gop_and_recovers_with_new_idr() {
   CHECK_EQ(pair.host.send_video_frame(std::vector<std::uint8_t>{0x50, 0x51}, 5,
                                       true),
            VideoSendStatus::Sent);
-  CHECK(!pair.host.pending_idr_request().has_value());
   pair.host.pump();
+  CHECK(!pair.host.pending_idr_request().has_value());
   pair.host.pump();
   pair.host.pump();
   pair.device.pump();
@@ -1071,8 +1135,8 @@ void test_host_oldest_unsent_frame_age_triggers_recovery() {
   CHECK_EQ(pair.host.send_video_frame(std::vector<std::uint8_t>{0x40, 0x41}, 4,
                                       true),
            VideoSendStatus::Sent);
-  CHECK(!pair.host.pending_idr_request().has_value());
   pair.host.pump();
+  CHECK(!pair.host.pending_idr_request().has_value());
   pair.host.pump();
   pair.host.pump();
   pair.device.pump();
@@ -1260,14 +1324,13 @@ void test_pause_acks_immediately_stops_host_intent_and_resume_renegotiates() {
   pair.host.pump();
 
   CHECK_EQ(static_cast<int>(pair.host.state()),
-           static_cast<int>(SessionState::Streaming));
+           static_cast<int>(SessionState::Reconfiguring));
   CHECK_EQ(static_cast<int>(pair.device.state()),
            static_cast<int>(SessionState::AwaitingFirstIdr));
-  CHECK(host_boundary.capture_encoding_intent);
-  CHECK(host_boundary.input_injection_intent);
+  CHECK(!host_boundary.capture_encoding_intent);
+  CHECK(!host_boundary.input_injection_intent);
   CHECK(pair.host.negotiated_stream().has_value());
-  CHECK_EQ(pair.host.negotiated_stream()->config_id, 2U);
-  CHECK_EQ(pair.host.negotiated_stream()->video_stream_id, 0x99999999U);
+  CHECK_EQ(pair.host.negotiated_stream()->config_id, 1U);
 
   const auto host_controls = decode_controls(pair.host_to_device);
   CHECK(std::any_of(host_controls.begin(), host_controls.end(),
@@ -1283,6 +1346,13 @@ void test_pause_acks_immediately_stops_host_intent_and_resume_renegotiates() {
            VideoSendStatus::Sent);
   pair.host.pump();
   pair.device.pump();
+  pair.host.pump();
+  CHECK_EQ(static_cast<int>(pair.host.state()),
+           static_cast<int>(SessionState::Streaming));
+  CHECK(host_boundary.capture_encoding_intent);
+  CHECK(host_boundary.input_injection_intent);
+  CHECK_EQ(pair.host.negotiated_stream()->config_id, 2U);
+  CHECK_EQ(pair.host.negotiated_stream()->video_stream_id, 0x99999999U);
   CHECK_EQ(static_cast<int>(pair.device.state()),
            static_cast<int>(SessionState::Streaming));
   CHECK_EQ(pair.device.take_video_frames().size(), 1U);
@@ -1323,6 +1393,19 @@ void drive_to_streaming_with_first_idr(SessionPair& pair) {
   CHECK_EQ(pair.device.take_video_frames().size(), 1U);
 }
 
+void drive_to_reconfiguration_pending_idr(SessionPair& pair,
+                                          const StreamProfile& profile,
+                                          std::uint32_t config_id,
+                                          std::uint32_t video_stream_id) {
+  CHECK_EQ(pair.host.reconfigure(profile, config_id, video_stream_id),
+           SessionCommandStatus::Ok);
+  pair.host.pump();
+  pair.device.pump();
+  pair.host.pump();
+  pair.device.pump();
+  pair.host.pump();
+}
+
 void test_streaming_reconfiguration_keeps_old_until_committed_and_is_idempotent() {
   RecordingBoundary boundary;
   SessionPair pair(default_host_config(), default_device_config(), &boundary);
@@ -1356,9 +1439,9 @@ void test_streaming_reconfiguration_keeps_old_until_committed_and_is_idempotent(
   pair.device.pump();
   pair.host.pump();
   CHECK_EQ(static_cast<int>(pair.host.state()),
-           static_cast<int>(SessionState::Streaming));
-  CHECK_EQ(pair.host.negotiated_stream()->video_stream_id, 0xABCDEF01U);
-  CHECK_EQ(pair.host.negotiated_stream()->config_id, 2U);
+           static_cast<int>(SessionState::Reconfiguring));
+  CHECK_EQ(pair.host.negotiated_stream()->video_stream_id, old_stream.video_stream_id);
+  CHECK_EQ(pair.host.negotiated_stream()->config_id, old_stream.config_id);
   CHECK_EQ(static_cast<int>(pair.device.state()),
            static_cast<int>(SessionState::AwaitingFirstIdr));
   CHECK(pair.device.negotiated_stream().has_value());
@@ -1368,6 +1451,11 @@ void test_streaming_reconfiguration_keeps_old_until_committed_and_is_idempotent(
            VideoSendStatus::Sent);
   pair.host.pump();
   pair.device.pump();
+  pair.host.pump();
+  CHECK_EQ(static_cast<int>(pair.host.state()),
+           static_cast<int>(SessionState::Streaming));
+  CHECK_EQ(pair.host.negotiated_stream()->video_stream_id, 0xABCDEF01U);
+  CHECK_EQ(pair.host.negotiated_stream()->config_id, 2U);
   CHECK_EQ(static_cast<int>(pair.device.state()),
            static_cast<int>(SessionState::Streaming));
   CHECK_EQ(pair.device.negotiated_stream()->config_id, 2U);
@@ -1411,13 +1499,471 @@ void test_reconfiguration_failure_keeps_old_stream() {
   CHECK(pair.host.negotiated_stream().has_value());
   CHECK(*pair.host.negotiated_stream() == old_stream);
 
-  CHECK_EQ(pair.host.send_video_frame(std::vector<std::uint8_t>{0x04}, 4, false),
+  CHECK_EQ(pair.host.send_video_frame(std::vector<std::uint8_t>{0x04}, 4, true),
            VideoSendStatus::Sent);
   pair.host.pump();
   pair.device.pump();
   const auto frames = pair.device.take_video_frames();
   CHECK_EQ(frames.size(), 1U);
   CHECK_EQ(frames[0].header.video_stream_id, old_stream.video_stream_id);
+}
+
+void test_device_does_not_final_ack_a_rolled_back_candidate() {
+  SessionPair pair(default_host_config(), default_device_config());
+  drive_to_streaming_with_first_idr(pair);
+  const NegotiatedStream old_stream = *pair.host.negotiated_stream();
+  const StreamProfile replacement{
+      VideoEncoder::H264, PixelFormat::Nv12, DisplayResolution{1920, 1200, 60}};
+  constexpr std::uint32_t kCandidateConfigId = 2;
+  constexpr std::uint32_t kCandidateStreamId = 0x60000025;
+
+  drive_to_reconfiguration_pending_idr(pair, replacement, kCandidateConfigId,
+                                       kCandidateStreamId);
+  pair.clock.advance_ns(deskmate::protocol::kHandshakeStageTimeoutNs);
+  pair.device.pump();
+  CHECK_EQ(static_cast<int>(pair.device.state()),
+           static_cast<int>(SessionState::Streaming));
+  CHECK(*pair.device.negotiated_stream() == old_stream);
+
+  const auto final_ack_count = [&pair] {
+    const auto controls = decode_controls(pair.device_to_host);
+    return std::count_if(
+        controls.begin(), controls.end(),
+        [](const ControlMessage& control) {
+          return control.opcode == ControlOpcode::StreamCommitted &&
+                 control.config_id == 2U && control.body.size() == 5;
+        });
+  };
+  const auto before = final_ack_count();
+
+  // The Host retransmits the candidate commit after the Device already rolled
+  // back. The Device must not answer with a final (5-byte) ACK for a stream it
+  // is no longer switching to.
+  ControlMessage stale_commit;
+  stale_commit.opcode = ControlOpcode::StreamCommit;
+  stale_commit.config_id = kCandidateConfigId;
+  stale_commit.body = {0x25, 0x00, 0x00, 0x60};
+  append_control(pair.host_to_device, 0x88888888, kCandidateStreamId, 520,
+                 stale_commit);
+  pair.device.pump();
+  CHECK(!pair.device.is_terminal());
+  CHECK_EQ(final_ack_count(), before);
+}
+
+void test_device_initial_idr_timeout_rolls_back_without_terminating_host() {
+  SessionPair pair(default_host_config(), default_device_config());
+  drive_to_streaming_with_first_idr(pair);
+  const NegotiatedStream old_stream = *pair.host.negotiated_stream();
+  const StreamProfile replacement{
+      VideoEncoder::H264, PixelFormat::Nv12, DisplayResolution{1920, 1200, 60}};
+
+  drive_to_reconfiguration_pending_idr(pair, replacement, 2, 0x60000001);
+  CHECK_EQ(static_cast<int>(pair.device.state()),
+           static_cast<int>(SessionState::AwaitingFirstIdr));
+  CHECK_EQ(static_cast<int>(pair.host.state()),
+           static_cast<int>(SessionState::Reconfiguring));
+
+  pair.clock.advance_ns(deskmate::protocol::kHandshakeStageTimeoutNs);
+  pair.device.pump();
+  pair.host.pump();
+
+  CHECK(!pair.device.is_terminal());
+  CHECK(!pair.host.is_terminal());
+  CHECK_EQ(static_cast<int>(pair.device.state()),
+           static_cast<int>(SessionState::Streaming));
+  CHECK_EQ(static_cast<int>(pair.host.state()),
+           static_cast<int>(SessionState::Streaming));
+  CHECK(pair.device.negotiated_stream().has_value());
+  CHECK(pair.host.negotiated_stream().has_value());
+  CHECK(*pair.device.negotiated_stream() == old_stream);
+  CHECK(*pair.host.negotiated_stream() == old_stream);
+  CHECK(pair.host.reconfiguration().has_value());
+  CHECK_EQ(static_cast<int>(pair.host.reconfiguration()->phase),
+           static_cast<int>(ReconfigurationPhase::Failed));
+  CHECK_EQ(static_cast<int>(*pair.host.reconfiguration()->failure),
+           static_cast<int>(SessionFailure::InitialIdrTimeout));
+
+  CHECK_EQ(pair.host.send_video_frame(std::vector<std::uint8_t>{0x61}, 61, false),
+           VideoSendStatus::IdrRequired);
+  CHECK_EQ(pair.host.send_video_frame(std::vector<std::uint8_t>{0x61}, 61, true),
+           VideoSendStatus::Sent);
+  pair.host.pump();
+  pair.device.pump();
+  CHECK_EQ(static_cast<int>(pair.device.state()),
+           static_cast<int>(SessionState::Streaming));
+  CHECK(!pair.device.failure().has_value());
+  const auto frames = pair.device.take_video_frames();
+  CHECK_EQ(frames.size(), 1U);
+  CHECK_EQ(frames[0].header.video_stream_id, old_stream.video_stream_id);
+}
+
+void test_host_waits_for_device_idr_timeout_before_rollback() {
+  SessionPair pair(default_host_config(), default_device_config());
+  drive_to_streaming_with_first_idr(pair);
+  const NegotiatedStream old_stream = *pair.host.negotiated_stream();
+  const StreamProfile replacement{
+      VideoEncoder::H264, PixelFormat::Nv12, DisplayResolution{1920, 1200, 60}};
+
+  drive_to_reconfiguration_pending_idr(pair, replacement, 2, 0x60000002);
+  pair.clock.advance_ns(deskmate::protocol::kHandshakeStageTimeoutNs);
+  pair.host.pump();
+
+  CHECK(!pair.host.is_terminal());
+  CHECK_EQ(static_cast<int>(pair.host.state()),
+           static_cast<int>(SessionState::Reconfiguring));
+  CHECK(*pair.host.negotiated_stream() == old_stream);
+
+  pair.device.pump();
+  pair.host.pump();
+
+  CHECK(!pair.host.is_terminal());
+  CHECK(!pair.device.is_terminal());
+  CHECK_EQ(static_cast<int>(pair.host.state()),
+           static_cast<int>(SessionState::Streaming));
+  CHECK_EQ(static_cast<int>(pair.device.state()),
+           static_cast<int>(SessionState::Streaming));
+  CHECK(*pair.host.negotiated_stream() == old_stream);
+  CHECK(*pair.device.negotiated_stream() == old_stream);
+  CHECK_EQ(static_cast<int>(pair.host.reconfiguration()->phase),
+           static_cast<int>(ReconfigurationPhase::Failed));
+  CHECK_EQ(static_cast<int>(*pair.host.reconfiguration()->failure),
+           static_cast<int>(SessionFailure::InitialIdrTimeout));
+
+  CHECK_EQ(pair.host.send_video_frame(std::vector<std::uint8_t>{0x62}, 62, false),
+           VideoSendStatus::IdrRequired);
+  CHECK_EQ(pair.host.send_video_frame(std::vector<std::uint8_t>{0x62}, 62, true),
+           VideoSendStatus::Sent);
+  pair.host.pump();
+  pair.device.pump();
+  const auto frames = pair.device.take_video_frames();
+  CHECK_EQ(frames.size(), 1U);
+  CHECK_EQ(frames[0].header.video_stream_id, old_stream.video_stream_id);
+}
+
+void test_candidate_frames_are_discarded_when_reconfiguration_times_out() {
+  SessionPair pair(default_host_config(), default_device_config());
+  drive_to_streaming_with_first_idr(pair);
+  const NegotiatedStream old_stream = *pair.host.negotiated_stream();
+  const StreamProfile replacement{
+      VideoEncoder::H264, PixelFormat::Nv12, DisplayResolution{1920, 1200, 60}};
+
+  drive_to_reconfiguration_pending_idr(pair, replacement, 2, 0x60000005);
+  CHECK_EQ(pair.host.send_video_frame(std::vector<std::uint8_t>{0x63}, 63, true),
+           VideoSendStatus::Sent);
+  CHECK_EQ(count_video_packets_for_stream(pair.host_to_device, 0x60000005), 0U);
+
+  pair.clock.advance_ns(deskmate::protocol::kHandshakeStageTimeoutNs);
+  pair.device.pump();
+  pair.host.pump();
+
+  CHECK(!pair.host.is_terminal());
+  CHECK(!pair.device.is_terminal());
+  CHECK_EQ(count_video_packets_for_stream(pair.host_to_device, 0x60000005), 0U);
+  CHECK_EQ(pair.host.send_video_frame(std::vector<std::uint8_t>{0x64}, 64, false),
+           VideoSendStatus::IdrRequired);
+  CHECK_EQ(pair.host.send_video_frame(std::vector<std::uint8_t>{0x64}, 64, true),
+           VideoSendStatus::Sent);
+  pair.host.pump();
+  pair.device.pump();
+  const auto frames = pair.device.take_video_frames();
+  CHECK_EQ(frames.size(), 1U);
+  CHECK_EQ(frames[0].header.video_stream_id, old_stream.video_stream_id);
+}
+
+void test_duplicate_commit_before_first_idr_does_not_confirm_switch() {
+  SessionPair pair(default_host_config(), default_device_config());
+  drive_to_streaming_with_first_idr(pair);
+  const StreamProfile replacement{
+      VideoEncoder::H264, PixelFormat::Nv12, DisplayResolution{1920, 1200, 60}};
+  constexpr std::uint32_t kCandidateConfigId = 2;
+  constexpr std::uint32_t kCandidateStreamId = 0x60000006;
+
+  drive_to_reconfiguration_pending_idr(pair, replacement, kCandidateConfigId,
+                                       kCandidateStreamId);
+  CHECK_EQ(static_cast<int>(pair.host.state()),
+           static_cast<int>(SessionState::Reconfiguring));
+  CHECK_EQ(static_cast<int>(pair.device.state()),
+           static_cast<int>(SessionState::AwaitingFirstIdr));
+
+  ControlMessage duplicate_commit;
+  duplicate_commit.opcode = ControlOpcode::StreamCommit;
+  duplicate_commit.config_id = kCandidateConfigId;
+  duplicate_commit.body = {0x06, 0x00, 0x00, 0x60};
+  append_control(pair.host_to_device, 0x88888888, kCandidateStreamId, 401,
+                 duplicate_commit);
+  pair.device.pump();
+  pair.host.pump();
+
+  CHECK(!pair.host.is_terminal());
+  CHECK(!pair.device.is_terminal());
+  CHECK_EQ(static_cast<int>(pair.host.state()),
+           static_cast<int>(SessionState::Reconfiguring));
+  CHECK_EQ(static_cast<int>(pair.device.state()),
+           static_cast<int>(SessionState::AwaitingFirstIdr));
+  CHECK_EQ(pair.host.negotiated_stream()->config_id, 1U);
+
+  CHECK_EQ(pair.host.send_video_frame(std::vector<std::uint8_t>{0x65}, 65, true),
+           VideoSendStatus::Sent);
+  pair.host.pump();
+  pair.device.pump();
+  pair.host.pump();
+  CHECK_EQ(static_cast<int>(pair.host.state()),
+           static_cast<int>(SessionState::Streaming));
+  CHECK_EQ(pair.host.negotiated_stream()->config_id, kCandidateConfigId);
+  CHECK_EQ(pair.device.negotiated_stream()->video_stream_id, kCandidateStreamId);
+}
+
+void test_late_ack_from_failed_configuration_is_ignored() {
+  RecordingBoundary boundary;
+  SessionPair pair(default_host_config(), default_device_config(), &boundary);
+  drive_to_streaming_with_first_idr(pair);
+  const NegotiatedStream old_stream = *pair.host.negotiated_stream();
+  const StreamProfile replacement{
+      VideoEncoder::H264, PixelFormat::Nv12, DisplayResolution{1920, 1200, 60}};
+  constexpr std::uint32_t kFailedConfigId = 2;
+  constexpr std::uint32_t kFailedStreamId = 0x60000020;
+  constexpr std::uint32_t kNewConfigId = 3;
+  constexpr std::uint32_t kNewStreamId = 0x60000021;
+
+  boundary.prepare_result = BoundaryResult::Failed;
+  CHECK_EQ(pair.host.reconfigure(replacement, kFailedConfigId, kFailedStreamId),
+           SessionCommandStatus::Ok);
+  for (int cycle = 0; cycle < 3; ++cycle) {
+    pair.host.pump();
+    pair.device.pump();
+    pair.host.pump();
+  }
+  CHECK(!pair.host.is_terminal());
+  CHECK_EQ(static_cast<int>(pair.host.state()),
+           static_cast<int>(SessionState::Streaming));
+  CHECK(*pair.host.negotiated_stream() == old_stream);
+  CHECK_EQ(static_cast<int>(pair.host.reconfiguration()->phase),
+           static_cast<int>(ReconfigurationPhase::Failed));
+  CHECK_EQ(pair.host.reconfiguration()->config_id, kFailedConfigId);
+
+  boundary.prepare_result = BoundaryResult::Ok;
+  CHECK_EQ(pair.host.reconfigure(replacement, kNewConfigId, kNewStreamId),
+           SessionCommandStatus::Ok);
+  pair.host.pump();
+  pair.device.pump();
+  pair.host.pump();
+  pair.device.pump();
+  pair.host.pump();
+  CHECK_EQ(static_cast<int>(pair.host.reconfiguration()->config_id),
+           static_cast<int>(kNewConfigId));
+
+  // A stale ACK for the failed candidate must not be mistaken for the ACK of
+  // the running configuration.
+  append_commit_ack(pair.device_to_host, 0x88888888, kFailedConfigId,
+                    kFailedStreamId, 500, false);
+  append_commit_ack(pair.device_to_host, 0x88888888, kFailedConfigId,
+                    kFailedStreamId, 501, true);
+  pair.host.pump();
+  CHECK(!pair.host.is_terminal());
+  CHECK_EQ(static_cast<int>(pair.host.state()),
+           static_cast<int>(SessionState::Reconfiguring));
+  CHECK_EQ(static_cast<int>(pair.host.reconfiguration()->phase),
+           static_cast<int>(ReconfigurationPhase::AwaitingFirstIdr));
+  CHECK_EQ(pair.host.reconfiguration()->config_id, kNewConfigId);
+
+  CHECK_EQ(pair.host.send_video_frame(std::vector<std::uint8_t>{0x69}, 69, true),
+           VideoSendStatus::Sent);
+  pair.host.pump();
+  pair.device.pump();
+  pair.host.pump();
+  CHECK(!pair.host.is_terminal());
+  CHECK(!pair.device.is_terminal());
+  CHECK_EQ(static_cast<int>(pair.host.state()),
+           static_cast<int>(SessionState::Streaming));
+  CHECK_EQ(pair.host.negotiated_stream()->config_id, kNewConfigId);
+  CHECK_EQ(pair.host.negotiated_stream()->video_stream_id, kNewStreamId);
+}
+
+void test_duplicate_committed_after_switch_is_idempotent() {
+  SessionPair pair(default_host_config(), default_device_config());
+  drive_to_streaming_with_first_idr(pair);
+  const StreamProfile replacement{
+      VideoEncoder::H264, PixelFormat::Nv12, DisplayResolution{1920, 1200, 60}};
+  constexpr std::uint32_t kCandidateConfigId = 2;
+  constexpr std::uint32_t kCandidateStreamId = 0x60000007;
+
+  drive_to_reconfiguration_pending_idr(pair, replacement, kCandidateConfigId,
+                                       kCandidateStreamId);
+  CHECK_EQ(pair.host.send_video_frame(std::vector<std::uint8_t>{0x66}, 66, true),
+           VideoSendStatus::Sent);
+  pair.host.pump();
+  pair.device.pump();
+  pair.host.pump();
+  CHECK_EQ(static_cast<int>(pair.host.state()),
+           static_cast<int>(SessionState::Streaming));
+
+  ControlMessage duplicate_commit;
+  duplicate_commit.opcode = ControlOpcode::StreamCommit;
+  duplicate_commit.config_id = kCandidateConfigId;
+  duplicate_commit.body = {0x07, 0x00, 0x00, 0x60};
+  append_control(pair.host_to_device, 0x88888888, kCandidateStreamId, 402,
+                 duplicate_commit);
+  pair.device.pump();
+  pair.host.pump();
+
+  CHECK(!pair.host.is_terminal());
+  CHECK(!pair.device.is_terminal());
+  CHECK_EQ(static_cast<int>(pair.host.state()),
+           static_cast<int>(SessionState::Streaming));
+  CHECK_EQ(pair.host.negotiated_stream()->video_stream_id, kCandidateStreamId);
+}
+
+void test_duplicate_stream_ready_while_awaiting_first_idr_is_idempotent() {
+  SessionPair pair(default_host_config(), default_device_config());
+  drive_to_streaming_with_first_idr(pair);
+  const StreamProfile replacement{
+      VideoEncoder::H264, PixelFormat::Nv12, DisplayResolution{1920, 1200, 60}};
+  constexpr std::uint32_t kCandidateConfigId = 2;
+  constexpr std::uint32_t kCandidateStreamId = 0x60000022;
+
+  drive_to_reconfiguration_pending_idr(pair, replacement, kCandidateConfigId,
+                                       kCandidateStreamId);
+  CHECK_EQ(static_cast<int>(pair.host.reconfiguration()->phase),
+           static_cast<int>(ReconfigurationPhase::AwaitingFirstIdr));
+
+  // A duplicate STREAM_READY from the Device (e.g. a retransmission) must not
+  // push the Host back to AwaitingCommitted while the Device already accepted
+  // the commit.
+  ControlMessage duplicate_ready;
+  duplicate_ready.opcode = ControlOpcode::StreamReady;
+  duplicate_ready.proto_rev = deskmate::protocol::kProtocolRevision;
+  duplicate_ready.config_id = kCandidateConfigId;
+  const auto profile_body =
+      deskmate::protocol::encode_stream_profile(replacement);
+  CHECK(profile_body);
+  duplicate_ready.body = profile_body.value();
+  append_control(pair.device_to_host, 0x88888888, 0, 510, duplicate_ready);
+  pair.host.pump();
+
+  CHECK(!pair.host.is_terminal());
+  CHECK_EQ(static_cast<int>(pair.host.state()),
+           static_cast<int>(SessionState::Reconfiguring));
+  CHECK_EQ(static_cast<int>(pair.host.reconfiguration()->phase),
+           static_cast<int>(ReconfigurationPhase::AwaitingFirstIdr));
+
+  CHECK_EQ(pair.host.send_video_frame(std::vector<std::uint8_t>{0x6A}, 70, true),
+           VideoSendStatus::Sent);
+  pair.host.pump();
+  pair.device.pump();
+  pair.host.pump();
+  CHECK(!pair.host.is_terminal());
+  CHECK(!pair.device.is_terminal());
+  CHECK_EQ(static_cast<int>(pair.host.state()),
+           static_cast<int>(SessionState::Streaming));
+  CHECK_EQ(pair.host.negotiated_stream()->video_stream_id, kCandidateStreamId);
+}
+
+void test_duplicate_first_commit_ack_does_not_complete_reconfiguration() {
+  SessionPair pair(default_host_config(), default_device_config());
+  drive_to_streaming_with_first_idr(pair);
+  const NegotiatedStream old_stream = *pair.host.negotiated_stream();
+  const StreamProfile replacement{
+      VideoEncoder::H264, PixelFormat::Nv12, DisplayResolution{1920, 1200, 60}};
+  constexpr std::uint32_t kCandidateConfigId = 2;
+  constexpr std::uint32_t kCandidateStreamId = 0x60000009;
+
+  drive_to_reconfiguration_pending_idr(pair, replacement, kCandidateConfigId,
+                                       kCandidateStreamId);
+  CHECK_EQ(static_cast<int>(pair.host.state()),
+           static_cast<int>(SessionState::Reconfiguring));
+  CHECK_EQ(static_cast<int>(pair.host.reconfiguration()->phase),
+           static_cast<int>(ReconfigurationPhase::AwaitingFirstIdr));
+
+  append_commit_ack(pair.device_to_host, 0x88888888, kCandidateConfigId,
+                    kCandidateStreamId, 403, false);
+  pair.host.pump();
+
+  CHECK(!pair.host.is_terminal());
+  CHECK_EQ(static_cast<int>(pair.host.state()),
+           static_cast<int>(SessionState::Reconfiguring));
+  CHECK(*pair.host.negotiated_stream() == old_stream);
+
+  CHECK_EQ(pair.host.send_video_frame(std::vector<std::uint8_t>{0x68}, 68, true),
+           VideoSendStatus::Sent);
+  pair.host.pump();
+  pair.device.pump();
+  pair.host.pump();
+  CHECK_EQ(static_cast<int>(pair.host.state()),
+           static_cast<int>(SessionState::Streaming));
+  CHECK_EQ(pair.host.negotiated_stream()->video_stream_id, kCandidateStreamId);
+  CHECK_EQ(pair.device.negotiated_stream()->video_stream_id, kCandidateStreamId);
+}
+
+void test_lost_first_commit_ack_is_retried_without_terminating() {
+  SessionPair pair(default_host_config(), default_device_config());
+  drive_to_streaming_with_first_idr(pair);
+  const StreamProfile replacement{
+      VideoEncoder::H264, PixelFormat::Nv12, DisplayResolution{1920, 1200, 60}};
+  constexpr std::uint32_t kCandidateConfigId = 2;
+  constexpr std::uint32_t kCandidateStreamId = 0x6000000A;
+
+  CHECK_EQ(pair.host.reconfigure(replacement, kCandidateConfigId,
+                                 kCandidateStreamId),
+           SessionCommandStatus::Ok);
+  pair.host.pump();
+  pair.device.pump();
+  pair.host.pump();
+  pair.device.pump();
+  CHECK_EQ(static_cast<int>(pair.host.state()),
+           static_cast<int>(SessionState::Reconfiguring));
+  CHECK_EQ(static_cast<int>(pair.host.reconfiguration()->phase),
+           static_cast<int>(ReconfigurationPhase::AwaitingCommitted));
+
+  pair.device_to_host.clear();
+  pair.host.pump();
+  CHECK_EQ(static_cast<int>(pair.host.reconfiguration()->phase),
+           static_cast<int>(ReconfigurationPhase::AwaitingCommitted));
+
+  pair.clock.advance_ns(default_host_config().scheduler.recovery_retry_ns);
+  pair.host.pump();
+  pair.device.pump();
+  pair.host.pump();
+
+  CHECK(!pair.host.is_terminal());
+  CHECK(!pair.device.is_terminal());
+  CHECK_EQ(static_cast<int>(pair.host.reconfiguration()->phase),
+           static_cast<int>(ReconfigurationPhase::AwaitingFirstIdr));
+  CHECK_EQ(static_cast<int>(pair.host.negotiated_stream()->config_id), 1);
+}
+
+void test_lost_final_commit_ack_is_retried_until_switch_is_confirmed() {
+  SessionPair pair(default_host_config(), default_device_config());
+  drive_to_streaming_with_first_idr(pair);
+  const StreamProfile replacement{
+      VideoEncoder::H264, PixelFormat::Nv12, DisplayResolution{1920, 1200, 60}};
+  constexpr std::uint32_t kCandidateConfigId = 2;
+  constexpr std::uint32_t kCandidateStreamId = 0x6000000B;
+
+  drive_to_reconfiguration_pending_idr(pair, replacement, kCandidateConfigId,
+                                       kCandidateStreamId);
+  CHECK_EQ(pair.host.send_video_frame(std::vector<std::uint8_t>{0x69}, 69, true),
+           VideoSendStatus::Sent);
+  pair.host.pump();
+  pair.device.pump();
+  CHECK_EQ(static_cast<int>(pair.device.state()),
+           static_cast<int>(SessionState::Streaming));
+
+  pair.device_to_host.clear();
+  pair.host.pump();
+  CHECK_EQ(static_cast<int>(pair.host.state()),
+           static_cast<int>(SessionState::Reconfiguring));
+
+  pair.clock.advance_ns(default_host_config().scheduler.recovery_retry_ns);
+  pair.host.pump();
+  pair.device.pump();
+  pair.host.pump();
+
+  CHECK(!pair.host.is_terminal());
+  CHECK(!pair.device.is_terminal());
+  CHECK_EQ(static_cast<int>(pair.host.state()),
+           static_cast<int>(SessionState::Streaming));
+  CHECK_EQ(pair.host.negotiated_stream()->config_id, kCandidateConfigId);
+  CHECK_EQ(pair.host.negotiated_stream()->video_stream_id, kCandidateStreamId);
 }
 
 void test_each_running_reconfiguration_stage_timeout_or_failure_preserves_old_stream() {
@@ -1613,12 +2159,418 @@ void test_lock_and_unlock_publish_distinct_states_and_require_resume() {
   pair.host.pump();
   pair.device.pump();
   pair.host.pump();
+  pair.device.pump();
+  pair.host.pump();
+  CHECK_EQ(static_cast<int>(pair.host.state()),
+           static_cast<int>(SessionState::Reconfiguring));
+  CHECK_EQ(pair.host.send_video_frame(std::vector<std::uint8_t>{0x24}, 24, true),
+           VideoSendStatus::Sent);
+  pair.host.pump();
+  pair.device.pump();
+  pair.host.pump();
   CHECK_EQ(static_cast<int>(pair.host.state()),
            static_cast<int>(SessionState::Streaming));
   CHECK_EQ(static_cast<int>(pair.host.video_state()),
            static_cast<int>(HostVideoState::Active));
   CHECK_EQ(static_cast<int>(pair.host.input_state()),
            static_cast<int>(HostInputState::Active));
+}
+
+void test_lock_during_handshake_stays_paused_and_blocks_resume() {
+  RecordingHostBoundary host_boundary;
+  SessionPair pair(default_host_config(), default_device_config(), nullptr,
+                   &host_boundary);
+  drive_to_host_awaiting_committed(pair);
+
+  CHECK_EQ(pair.host.handle_host_event(HostEvent::ScreenLocked),
+           SessionCommandStatus::Ok);
+  CHECK(!host_boundary.capture_encoding_intent);
+  CHECK(!host_boundary.input_injection_intent);
+
+  pair.device.pump();
+  pair.host.pump();
+  CHECK_EQ(static_cast<int>(pair.host.state()),
+           static_cast<int>(SessionState::Paused));
+  CHECK_EQ(static_cast<int>(pair.host.video_state()),
+           static_cast<int>(HostVideoState::ScreenLocked));
+  CHECK_EQ(static_cast<int>(pair.host.input_state()),
+           static_cast<int>(HostInputState::ScreenLocked));
+  CHECK(!host_boundary.capture_encoding_intent);
+  CHECK(!host_boundary.input_injection_intent);
+
+  // The Device must observe the Pause instead of failing the fresh session.
+  pair.device.pump();
+  CHECK(!pair.device.is_terminal());
+  CHECK_EQ(static_cast<int>(pair.device.state()),
+           static_cast<int>(SessionState::Paused));
+
+  const StreamProfile profile{
+      VideoEncoder::H264, PixelFormat::Nv12, DisplayResolution{1920, 1200, 60}};
+  CHECK_EQ(pair.host.resume(profile, 2, 0x10101010),
+           SessionCommandStatus::DisplayUnavailable);
+  CHECK_EQ(static_cast<int>(pair.host.state()),
+           static_cast<int>(SessionState::Paused));
+  CHECK(!host_boundary.capture_encoding_intent);
+  CHECK(!host_boundary.input_injection_intent);
+
+  CHECK_EQ(pair.host.handle_host_event(HostEvent::ScreenUnlocked),
+           SessionCommandStatus::Ok);
+  CHECK_EQ(pair.host.resume(profile, 2, 0x10101010),
+           SessionCommandStatus::Ok);
+}
+
+void test_lock_during_reconfiguration_keeps_old_stream_and_pauses() {
+  SessionPair pair(default_host_config(), default_device_config());
+  drive_to_streaming_with_first_idr(pair);
+  const NegotiatedStream old_stream = *pair.host.negotiated_stream();
+  const StreamProfile replacement{
+      VideoEncoder::H264, PixelFormat::Nv12, DisplayResolution{1920, 1200, 60}};
+
+  CHECK_EQ(pair.host.reconfigure(replacement, 2, 0x60000003),
+           SessionCommandStatus::Ok);
+  CHECK_EQ(pair.host.handle_host_event(HostEvent::ScreenLocked),
+           SessionCommandStatus::Ok);
+  CHECK(!pair.host.capture_encoding_intent());
+  CHECK(!pair.host.input_injection_intent());
+  CHECK_EQ(static_cast<int>(pair.host.state()),
+           static_cast<int>(SessionState::Paused));
+
+  pair.host.pump();
+  pair.device.pump();
+  pair.host.pump();
+  CHECK(!pair.host.is_terminal());
+  CHECK(!pair.device.is_terminal());
+  CHECK_EQ(static_cast<int>(pair.host.state()),
+           static_cast<int>(SessionState::Paused));
+  CHECK_EQ(static_cast<int>(pair.device.state()),
+           static_cast<int>(SessionState::Paused));
+  CHECK(pair.host.negotiated_stream().has_value());
+  CHECK(pair.device.negotiated_stream().has_value());
+  CHECK(*pair.host.negotiated_stream() == old_stream);
+  CHECK(*pair.device.negotiated_stream() == old_stream);
+  CHECK(!pair.host.capture_encoding_intent());
+  CHECK(!pair.host.input_injection_intent());
+}
+
+void test_lock_after_candidate_idr_waits_for_reconfiguration_verdict() {
+  RecordingHostBoundary host_boundary;
+  SessionPair pair(default_host_config(), default_device_config(), nullptr,
+                   &host_boundary);
+  drive_to_streaming_with_first_idr(pair);
+  const StreamProfile replacement{
+      VideoEncoder::H264, PixelFormat::Nv12, DisplayResolution{1920, 1200, 60}};
+
+  drive_to_reconfiguration_pending_idr(pair, replacement, 2, 0x60000008);
+  CHECK_EQ(pair.host.send_video_frame(std::vector<std::uint8_t>{0x67}, 67, true),
+           VideoSendStatus::Sent);
+  pair.host.pump();
+  CHECK_EQ(static_cast<int>(pair.host.state()),
+           static_cast<int>(SessionState::Reconfiguring));
+
+  CHECK_EQ(pair.host.handle_host_event(HostEvent::ScreenLocked),
+           SessionCommandStatus::Ok);
+  CHECK(!host_boundary.capture_encoding_intent);
+  CHECK(!host_boundary.input_injection_intent);
+  CHECK_EQ(static_cast<int>(pair.host.video_state()),
+           static_cast<int>(HostVideoState::ScreenLocked));
+
+  pair.device.pump();
+  pair.host.pump();
+  pair.device.pump();
+
+  CHECK(!pair.host.is_terminal());
+  CHECK(!pair.device.is_terminal());
+  CHECK_EQ(static_cast<int>(pair.host.state()),
+           static_cast<int>(SessionState::Paused));
+  CHECK_EQ(static_cast<int>(pair.device.state()),
+           static_cast<int>(SessionState::Paused));
+  CHECK(pair.host.negotiated_stream().has_value());
+  CHECK(pair.device.negotiated_stream().has_value());
+  CHECK_EQ(pair.host.negotiated_stream()->video_stream_id, 0x60000008U);
+  CHECK_EQ(pair.device.negotiated_stream()->video_stream_id, 0x60000008U);
+  CHECK(!host_boundary.capture_encoding_intent);
+  CHECK(!host_boundary.input_injection_intent);
+}
+
+void test_lock_after_candidate_idr_started_preserves_it_until_final_ack() {
+  HostSessionConfig host_config = default_host_config();
+  host_config.limits.video_fragment_payload = 32;
+  host_config.scheduler.max_video_urbs = 2;
+  RecordingHostBoundary host_boundary;
+  SessionPair pair(host_config, default_device_config(), nullptr,
+                   &host_boundary);
+  drive_to_streaming_with_first_idr(pair);
+  const StreamProfile replacement{
+      VideoEncoder::H264, PixelFormat::Nv12, DisplayResolution{1920, 1200, 60}};
+  constexpr std::uint32_t kCandidateStreamId = 0x6000000C;
+
+  drive_to_reconfiguration_pending_idr(pair, replacement, 2,
+                                       kCandidateStreamId);
+  pair.host_to_device.set_write_chunk_size(16);
+  pair.host_to_device.writes_until_block = 1;
+  const std::vector<std::uint8_t> candidate_payload(80, 0x42);
+  CHECK_EQ(pair.host.send_video_frame(candidate_payload, 70, true),
+           VideoSendStatus::Sent);
+  pair.host.pump();
+  CHECK_EQ(static_cast<int>(pair.host.state()),
+           static_cast<int>(SessionState::Reconfiguring));
+
+  CHECK_EQ(pair.host.handle_host_event(HostEvent::ScreenLocked),
+           SessionCommandStatus::Ok);
+  CHECK(!host_boundary.capture_encoding_intent);
+  CHECK(!host_boundary.input_injection_intent);
+  CHECK_EQ(static_cast<int>(pair.host.video_state()),
+           static_cast<int>(HostVideoState::ScreenLocked));
+  CHECK_EQ(static_cast<int>(pair.host.state()),
+           static_cast<int>(SessionState::Reconfiguring));
+
+  pair.host_to_device.writes_until_block =
+      std::numeric_limits<std::size_t>::max();
+  pair.host_to_device.set_write_chunk_size(1024);
+  for (int cycle = 0; cycle < 6; ++cycle) {
+    pair.host.pump();
+    pair.device.pump();
+    pair.host.pump();
+  }
+
+  CHECK(!pair.host.is_terminal());
+  CHECK(!pair.device.is_terminal());
+  CHECK_EQ(static_cast<int>(pair.host.state()),
+           static_cast<int>(SessionState::Paused));
+  CHECK_EQ(static_cast<int>(pair.device.state()),
+           static_cast<int>(SessionState::Paused));
+  CHECK_EQ(pair.host.negotiated_stream()->video_stream_id,
+           kCandidateStreamId);
+  CHECK_EQ(pair.device.negotiated_stream()->video_stream_id,
+           kCandidateStreamId);
+  const auto frames = pair.device.take_video_frames();
+  CHECK_EQ(frames.size(), 1U);
+  CHECK_EQ(frames[0].header.video_stream_id, kCandidateStreamId);
+  CHECK_EQ(frames[0].payload, candidate_payload);
+}
+
+void test_lock_before_candidate_idr_starts_aborts_reconfiguration() {
+  HostSessionConfig host_config = default_host_config();
+  host_config.limits.video_fragment_payload = 32;
+  RecordingHostBoundary host_boundary;
+  SessionPair pair(host_config, default_device_config(), nullptr,
+                   &host_boundary);
+  drive_to_streaming_with_first_idr(pair);
+  const NegotiatedStream old_stream = *pair.host.negotiated_stream();
+  const StreamProfile replacement{
+      VideoEncoder::H264, PixelFormat::Nv12, DisplayResolution{1920, 1200, 60}};
+  constexpr std::uint32_t kCandidateStreamId = 0x6000000D;
+
+  drive_to_reconfiguration_pending_idr(pair, replacement, 2,
+                                       kCandidateStreamId);
+  CHECK_EQ(pair.host.send_video_frame(std::vector<std::uint8_t>(80, 0x43), 71,
+                                      true),
+           VideoSendStatus::Sent);
+  CHECK_EQ(static_cast<int>(pair.host.state()),
+           static_cast<int>(SessionState::Reconfiguring));
+
+  CHECK_EQ(pair.host.handle_host_event(HostEvent::ScreenLocked),
+           SessionCommandStatus::Ok);
+  CHECK(!host_boundary.capture_encoding_intent);
+  CHECK(!host_boundary.input_injection_intent);
+  CHECK_EQ(static_cast<int>(pair.host.state()),
+           static_cast<int>(SessionState::Paused));
+  CHECK_EQ(static_cast<int>(pair.host.reconfiguration()->phase),
+           static_cast<int>(ReconfigurationPhase::Failed));
+
+  for (int cycle = 0; cycle < 3; ++cycle) {
+    pair.host.pump();
+    pair.device.pump();
+  }
+  CHECK(!pair.host.is_terminal());
+  CHECK(!pair.device.is_terminal());
+  CHECK_EQ(static_cast<int>(pair.host.state()),
+           static_cast<int>(SessionState::Paused));
+  CHECK_EQ(static_cast<int>(pair.device.state()),
+           static_cast<int>(SessionState::Paused));
+  CHECK(*pair.host.negotiated_stream() == old_stream);
+  CHECK(*pair.device.negotiated_stream() == old_stream);
+  CHECK_EQ(count_video_packets_for_stream(pair.host_to_device,
+                                          kCandidateStreamId),
+           0U);
+}
+
+void test_display_error_before_candidate_idr_keeps_both_ends_paused() {
+  RecordingHostBoundary host_boundary;
+  SessionPair pair(default_host_config(), default_device_config(), nullptr,
+                   &host_boundary);
+  drive_to_streaming_with_first_idr(pair);
+  const NegotiatedStream old_stream = *pair.host.negotiated_stream();
+  const StreamProfile replacement{
+      VideoEncoder::H264, PixelFormat::Nv12, DisplayResolution{1920, 1200, 60}};
+  constexpr std::uint32_t kCandidateStreamId = 0x60000011;
+
+  drive_to_reconfiguration_pending_idr(pair, replacement, 2,
+                                       kCandidateStreamId);
+  CHECK_EQ(static_cast<int>(pair.host.reconfiguration()->phase),
+           static_cast<int>(ReconfigurationPhase::AwaitingFirstIdr));
+
+  CHECK_EQ(pair.host.handle_host_event(HostEvent::DisplayError),
+           SessionCommandStatus::Ok);
+  CHECK(!host_boundary.capture_encoding_intent);
+  CHECK(!host_boundary.input_injection_intent);
+  CHECK_EQ(static_cast<int>(pair.host.video_state()),
+           static_cast<int>(HostVideoState::DisplayError));
+
+  for (int cycle = 0; cycle < 4; ++cycle) {
+    pair.host.pump();
+    pair.device.pump();
+  }
+
+  CHECK(!pair.host.is_terminal());
+  CHECK(!pair.device.is_terminal());
+  CHECK(!pair.host.failure().has_value());
+  CHECK(!pair.device.failure().has_value());
+  CHECK_EQ(static_cast<int>(pair.host.state()),
+           static_cast<int>(SessionState::Paused));
+  CHECK_EQ(static_cast<int>(pair.device.state()),
+           static_cast<int>(SessionState::Paused));
+  CHECK(*pair.host.negotiated_stream() == old_stream);
+  CHECK(*pair.device.negotiated_stream() == old_stream);
+  CHECK(!host_boundary.capture_encoding_intent);
+  CHECK(!host_boundary.input_injection_intent);
+}
+
+void test_display_error_after_candidate_idr_started_preserves_it() {
+  HostSessionConfig host_config = default_host_config();
+  host_config.limits.video_fragment_payload = 32;
+  RecordingHostBoundary host_boundary;
+  SessionPair pair(host_config, default_device_config(), nullptr,
+                   &host_boundary);
+  drive_to_streaming_with_first_idr(pair);
+  const StreamProfile replacement{
+      VideoEncoder::H264, PixelFormat::Nv12, DisplayResolution{1920, 1200, 60}};
+  constexpr std::uint32_t kCandidateStreamId = 0x60000010;
+
+  drive_to_reconfiguration_pending_idr(pair, replacement, 2,
+                                       kCandidateStreamId);
+  pair.host_to_device.set_write_chunk_size(16);
+  pair.host_to_device.writes_until_block = 1;
+  const std::vector<std::uint8_t> candidate_payload(80, 0x46);
+  CHECK_EQ(pair.host.send_video_frame(candidate_payload, 74, true),
+           VideoSendStatus::Sent);
+  pair.host.pump();
+
+  CHECK_EQ(pair.host.handle_host_event(HostEvent::DisplayError),
+           SessionCommandStatus::Ok);
+  CHECK(!host_boundary.capture_encoding_intent);
+  CHECK_EQ(static_cast<int>(pair.host.video_state()),
+           static_cast<int>(HostVideoState::DisplayError));
+  CHECK_EQ(static_cast<int>(pair.host.state()),
+           static_cast<int>(SessionState::Reconfiguring));
+
+  pair.host_to_device.writes_until_block =
+      std::numeric_limits<std::size_t>::max();
+  pair.host_to_device.set_write_chunk_size(1024);
+  for (int cycle = 0; cycle < 6; ++cycle) {
+    pair.host.pump();
+    pair.device.pump();
+    pair.host.pump();
+  }
+
+  CHECK(!pair.host.is_terminal());
+  CHECK(!pair.device.is_terminal());
+  CHECK_EQ(static_cast<int>(pair.host.state()),
+           static_cast<int>(SessionState::Paused));
+  CHECK_EQ(static_cast<int>(pair.device.state()),
+           static_cast<int>(SessionState::Paused));
+  CHECK_EQ(pair.host.negotiated_stream()->video_stream_id,
+           kCandidateStreamId);
+  const auto frames = pair.device.take_video_frames();
+  CHECK_EQ(frames.size(), 1U);
+  CHECK_EQ(frames[0].payload, candidate_payload);
+}
+
+void test_rollback_discards_active_candidate_packet_before_old_stream() {
+  HostSessionConfig host_config = default_host_config();
+  host_config.limits.video_fragment_payload = 32;
+  SessionPair pair(host_config, default_device_config());
+  drive_to_streaming_with_first_idr(pair);
+  const NegotiatedStream old_stream = *pair.host.negotiated_stream();
+  const StreamProfile replacement{
+      VideoEncoder::H264, PixelFormat::Nv12, DisplayResolution{1920, 1200, 60}};
+  constexpr std::uint32_t kCandidateStreamId = 0x6000000E;
+
+  drive_to_reconfiguration_pending_idr(pair, replacement, 2,
+                                       kCandidateStreamId);
+  pair.host_to_device.set_write_chunk_size(16);
+  pair.host_to_device.writes_until_block = 1;
+  CHECK_EQ(pair.host.send_video_frame(std::vector<std::uint8_t>(64, 0x44), 72,
+                                      true),
+           VideoSendStatus::Sent);
+  pair.host.pump();
+  pair.device.pump();
+  CHECK_EQ(static_cast<int>(pair.device.state()),
+           static_cast<int>(SessionState::AwaitingFirstIdr));
+
+  pair.clock.advance_ns(deskmate::protocol::kHandshakeStageTimeoutNs);
+  pair.device.pump();
+  pair.host.pump();
+  CHECK(!pair.host.is_terminal());
+  CHECK(!pair.device.is_terminal());
+  CHECK_EQ(static_cast<int>(pair.host.state()),
+           static_cast<int>(SessionState::Streaming));
+  CHECK(*pair.host.negotiated_stream() == old_stream);
+
+  pair.host_to_device.writes_until_block =
+      std::numeric_limits<std::size_t>::max();
+  pair.host_to_device.set_write_chunk_size(1024);
+  CHECK_EQ(pair.host.send_video_frame(std::vector<std::uint8_t>{0x45}, 73, true),
+           VideoSendStatus::Sent);
+  pair.host.pump();
+  pair.device.pump();
+
+  CHECK(!pair.device.is_terminal());
+  CHECK(!pair.device.failure().has_value());
+  CHECK_EQ(static_cast<int>(pair.device.state()),
+           static_cast<int>(SessionState::Streaming));
+  const auto frames = pair.device.take_video_frames();
+  CHECK_EQ(frames.size(), 1U);
+  CHECK_EQ(frames[0].header.video_stream_id, old_stream.video_stream_id);
+  CHECK_EQ(frames[0].payload, std::vector<std::uint8_t>({0x45}));
+}
+
+void test_rollback_waits_for_old_stream_keyframe_before_p_frames() {
+  SessionPair pair(default_host_config(), default_device_config());
+  drive_to_streaming_with_first_idr(pair);
+  const NegotiatedStream old_stream = *pair.host.negotiated_stream();
+  const StreamProfile replacement{
+      VideoEncoder::H264, PixelFormat::Nv12, DisplayResolution{1920, 1200, 60}};
+  constexpr std::uint32_t kCandidateStreamId = 0x6000000F;
+
+  drive_to_reconfiguration_pending_idr(pair, replacement, 2,
+                                       kCandidateStreamId);
+  pair.clock.advance_ns(deskmate::protocol::kHandshakeStageTimeoutNs);
+  pair.device.pump();
+  CHECK_EQ(static_cast<int>(pair.device.state()),
+           static_cast<int>(SessionState::Streaming));
+  CHECK(*pair.device.negotiated_stream() == old_stream);
+
+  append_video(pair.host_to_device, 0x88888888,
+               old_stream.video_stream_id, 500, {0x50}, 0);
+  pair.device.pump();
+  CHECK(pair.device.take_video_frames().empty());
+  CHECK(!pair.device.is_terminal());
+
+  append_video(pair.host_to_device, 0x88888888,
+               old_stream.video_stream_id, 501, {0x51},
+               deskmate::protocol::kFlagKeyFrame);
+  pair.device.pump();
+  auto frames = pair.device.take_video_frames();
+  CHECK_EQ(frames.size(), 1U);
+  CHECK_EQ(frames[0].payload, std::vector<std::uint8_t>({0x51}));
+
+  append_video(pair.host_to_device, 0x88888888,
+               old_stream.video_stream_id, 502, {0x52}, 0);
+  pair.device.pump();
+  frames = pair.device.take_video_frames();
+  CHECK_EQ(frames.size(), 1U);
+  CHECK_EQ(frames[0].payload, std::vector<std::uint8_t>({0x52}));
 }
 
 void test_screen_recording_and_accessibility_revocations_degrade_independently() {
@@ -1793,6 +2745,48 @@ void test_surface_lease_tracks_generation_references_and_destruction() {
   CHECK_EQ(ops.remove_calls, 2);
 }
 
+void test_surface_lease_outlives_owner_with_shared_reference_ops() {
+  auto ops = std::make_shared<RecordingSurfaceOps>();
+  std::optional<SurfaceLease> lease;
+  {
+    SurfaceOwner owner(ops);
+    const std::uint64_t generation = owner.attach();
+    CHECK(generation != 0);
+    lease = owner.acquire();
+    CHECK(lease.has_value());
+    CHECK(lease->can_render());
+    CHECK_EQ(ops->add_calls, 1);
+  }
+
+  CHECK(!lease->can_render());
+  CHECK(lease->holds_reference());
+  lease->release();
+  CHECK_EQ(ops->remove_calls, 1);
+  CHECK(!lease->holds_reference());
+}
+
+void test_surface_lease_invalidates_raw_ops_when_owner_is_destroyed() {
+  RecordingSurfaceOps ops;
+  std::optional<SurfaceLease> lease;
+  {
+    SurfaceOwner owner(&ops);
+    const std::uint64_t generation = owner.attach();
+    CHECK(generation != 0);
+    lease = owner.acquire();
+    CHECK(lease.has_value());
+    CHECK(lease->can_render());
+  }
+
+  CHECK(!lease->can_render());
+  CHECK(!lease->holds_reference());
+  lease->release();
+  CHECK(!lease->holds_reference());
+  CHECK_EQ(ops.add_calls, 1);
+  CHECK_EQ(ops.remove_calls, 1);
+  lease->release();
+  CHECK_EQ(ops.remove_calls, 1);
+}
+
 void test_accessory_fd_has_exactly_one_owner_and_closes_once() {
   RecordingFdCloser closer;
   {
@@ -1899,6 +2893,63 @@ void test_stopping_rejects_work_then_cancels_drains_and_releases_in_order() {
   CHECK_EQ(boundary.release_calls, 1);
 }
 
+void test_stopping_discards_inflight_video_work_without_waiting() {
+  std::vector<std::string> events;
+  RecordingHostBoundary host_boundary;
+  host_boundary.events = &events;
+  SessionPair pair(default_host_config(), default_device_config(), nullptr,
+                   &host_boundary, nullptr, &events);
+  drive_to_streaming_with_first_idr(pair);
+  events.clear();
+
+  CHECK_EQ(pair.host.send_video_frame(
+               std::vector<std::uint8_t>(64U * 1024U, 0x41), 70, false),
+           VideoSendStatus::Sent);
+  pair.host.pump();
+  const std::size_t bytes_before_stop = pair.host_to_device.bytes().size();
+  CHECK(bytes_before_stop > 0);
+
+  pair.host.request_stop();
+  pair.host.pump();
+  CHECK_EQ(pair.host_to_device.bytes().size(), bytes_before_stop);
+  CHECK_EQ(static_cast<int>(pair.host.state()),
+           static_cast<int>(SessionState::Stopping));
+  CHECK_EQ(events,
+           std::vector<std::string>({"host.capture_off", "host.input_off",
+                                     "host.io.cancel"}));
+}
+
+void test_stopping_does_not_flush_queued_outbound_control() {
+  SessionPair pair(default_host_config(), default_device_config());
+  drive_to_streaming_with_first_idr(pair);
+
+  const std::size_t bytes_before =
+      pair.device_to_host.bytes().size();
+  pair.device_to_host.writes_until_block = 0;
+  ControlMessage pause;
+  pause.opcode = ControlOpcode::Pause;
+  pause.config_id = 1;
+  append_control(pair.host_to_device, 0x88888888, 0, 330, pause);
+  pair.device.pump();
+  CHECK_EQ(static_cast<int>(pair.device.state()),
+           static_cast<int>(SessionState::Paused));
+  CHECK_EQ(pair.device_to_host.bytes().size(), bytes_before);
+
+  pair.device_to_host.writes_until_block =
+      std::numeric_limits<std::size_t>::max();
+  pair.device.request_stop();
+  CHECK_EQ(static_cast<int>(pair.device.state()),
+           static_cast<int>(SessionState::Stopping));
+  pair.device.pump();
+
+  CHECK_EQ(pair.device_to_host.bytes().size(), bytes_before);
+  CHECK_EQ(static_cast<int>(pair.device.state()),
+           static_cast<int>(SessionState::Stopping));
+  pair.device.complete_stop();
+  CHECK_EQ(static_cast<int>(pair.device.state()),
+           static_cast<int>(SessionState::Stopped));
+}
+
 void test_sleep_uses_stop_order_and_never_closes_borrowed_fd() {
   std::vector<std::string> events;
   RecordingBoundary boundary;
@@ -1962,6 +3013,88 @@ void test_heartbeat_timeout_releases_established_session_resources() {
   CHECK_EQ(surface.reference_count(), 0U);
 }
 
+void test_fatal_timeout_cancels_io_before_drain_and_release() {
+  std::vector<std::string> events;
+  RecordingBoundary boundary;
+  RecordingHostBoundary host_boundary;
+  boundary.events = &events;
+  host_boundary.events = &events;
+  SessionPair pair(default_host_config(), default_device_config(), &boundary,
+                   &host_boundary, nullptr, &events);
+  drive_to_streaming_with_first_idr(pair);
+  events.clear();
+
+  pair.clock.advance_ns(deskmate::protocol::kPeerSilenceTimeoutNs);
+  pair.host.pump();
+  CHECK_EQ(events,
+           std::vector<std::string>({"host.capture_off", "host.input_off",
+                                     "host.io.cancel", "host.drain",
+                                     "host.destroy"}));
+
+  events.clear();
+  pair.device.pump();
+  CHECK_EQ(events,
+           std::vector<std::string>({"device.io.cancel", "device.drain",
+                                     "device.release"}));
+}
+
+void test_host_write_failure_uses_terminal_cleanup_and_cancels_io() {
+  std::vector<std::string> events;
+  RecordingHostBoundary host_boundary;
+  host_boundary.events = &events;
+  SessionPair pair(default_host_config(), default_device_config(), nullptr,
+                   &host_boundary, nullptr, &events);
+  drive_to_streaming_with_first_idr(pair);
+  events.clear();
+
+  pair.host_to_device.fail_writes = true;
+  CHECK_EQ(pair.host.send_video_frame(std::vector<std::uint8_t>{0x31}, 31, false),
+           VideoSendStatus::Sent);
+  pair.host.pump();
+
+  CHECK_EQ(static_cast<int>(pair.host.state()),
+           static_cast<int>(SessionState::Failed));
+  CHECK_EQ(static_cast<int>(*pair.host.failure()),
+           static_cast<int>(SessionFailure::IoError));
+  CHECK(!host_boundary.capture_encoding_intent);
+  CHECK(!host_boundary.input_injection_intent);
+  CHECK_EQ(host_boundary.drain_calls, 1);
+  CHECK_EQ(host_boundary.display_destroy_calls, 1);
+  CHECK_EQ(events,
+           std::vector<std::string>({"host.capture_off", "host.input_off",
+                                     "host.io.cancel", "host.drain",
+                                     "host.destroy"}));
+  CHECK_EQ(pair.host.send_video_frame(std::vector<std::uint8_t>{0x32}, 32, false),
+           VideoSendStatus::SessionFailed);
+}
+
+void test_device_write_failure_uses_terminal_cleanup_and_cancels_io() {
+  std::vector<std::string> events;
+  RecordingBoundary boundary;
+  boundary.events = &events;
+  SessionPair pair(default_host_config(), default_device_config(), &boundary,
+                   nullptr, nullptr, &events);
+  drive_to_streaming_with_first_idr(pair);
+  events.clear();
+
+  pair.device_to_host.fail_writes = true;
+  ControlMessage pause;
+  pause.opcode = ControlOpcode::Pause;
+  pause.config_id = 1;
+  append_control(pair.host_to_device, 0x88888888, 0, 300, pause);
+  pair.device.pump();
+
+  CHECK_EQ(static_cast<int>(pair.device.state()),
+           static_cast<int>(SessionState::Failed));
+  CHECK_EQ(static_cast<int>(*pair.device.failure()),
+           static_cast<int>(SessionFailure::IoError));
+  CHECK_EQ(boundary.release_calls, 1);
+  CHECK_EQ(boundary.drain_calls, 1);
+  CHECK_EQ(events,
+           std::vector<std::string>({"device.io.cancel", "device.drain",
+                                     "device.release"}));
+}
+
 void test_device_replays_config_status_without_repeating_callbacks() {
   RecordingBoundary boundary;
   SessionPair pair(default_host_config(), default_device_config(), &boundary);
@@ -2013,6 +3146,225 @@ void test_device_replays_config_status_without_repeating_callbacks() {
   CHECK_EQ(boundary.rollback_calls, 0);
   CHECK_EQ(static_cast<int>(pair.device.state()),
            static_cast<int>(SessionState::Streaming));
+}
+
+void test_duplicate_commit_requires_matching_header_stream() {
+  SessionPair pair(default_host_config(), default_device_config());
+  drive_to_streaming_with_first_idr(pair);
+  const auto count_committed = [&pair] {
+    const auto controls = decode_controls(pair.device_to_host);
+    return std::count_if(controls.begin(), controls.end(),
+                         [](const ControlMessage& control) {
+                           return control.opcode ==
+                                  ControlOpcode::StreamCommitted;
+                         });
+  };
+  const auto committed_before = count_committed();
+
+  ControlMessage duplicate_commit;
+  duplicate_commit.opcode = ControlOpcode::StreamCommit;
+  duplicate_commit.config_id = 1;
+  duplicate_commit.body = {0x77, 0x77, 0x77, 0x77};
+  append_control(pair.host_to_device, 0x88888888, 0, 310, duplicate_commit);
+  pair.device.pump();
+
+  CHECK_EQ(static_cast<int>(pair.device.state()),
+           static_cast<int>(SessionState::Failed));
+  CHECK_EQ(static_cast<int>(*pair.device.failure()),
+           static_cast<int>(SessionFailure::UnexpectedMessage));
+  const auto controls = decode_controls(pair.device_to_host);
+  CHECK_EQ(count_committed(), committed_before);
+}
+
+void test_duplicate_commit_rejects_config_generation_rollback() {
+  SessionPair pair(default_host_config(), default_device_config());
+  drive_to_streaming_with_first_idr(pair);
+
+  ControlMessage prepare;
+  prepare.opcode = ControlOpcode::StreamPrepare;
+  prepare.proto_rev = deskmate::protocol::kProtocolRevision;
+  prepare.config_id = 2;
+  const auto body = deskmate::protocol::encode_stream_profile(StreamProfile{
+      VideoEncoder::H264, PixelFormat::Nv12, DisplayResolution{1920, 1200, 60}});
+  CHECK(body);
+  prepare.body = body.value();
+  append_control(pair.host_to_device, 0x88888888, 0, 311, prepare);
+  pair.device.pump();
+  CHECK_EQ(static_cast<int>(pair.device.state()),
+           static_cast<int>(SessionState::Reconfiguring));
+  const auto count_committed = [&pair] {
+    const auto controls = decode_controls(pair.device_to_host);
+    return std::count_if(controls.begin(), controls.end(),
+                         [](const ControlMessage& control) {
+                           return control.opcode ==
+                                  ControlOpcode::StreamCommitted;
+                         });
+  };
+  const auto committed_before = count_committed();
+
+  ControlMessage old_commit;
+  old_commit.opcode = ControlOpcode::StreamCommit;
+  old_commit.config_id = 1;
+  old_commit.body = {0x77, 0x77, 0x77, 0x77};
+  append_control(pair.host_to_device, 0x88888888, 0x77777777, 312, old_commit);
+  pair.device.pump();
+
+  CHECK_EQ(static_cast<int>(pair.device.state()),
+           static_cast<int>(SessionState::Failed));
+  CHECK_EQ(static_cast<int>(*pair.device.failure()),
+           static_cast<int>(SessionFailure::UnexpectedMessage));
+  CHECK_EQ(count_committed(), committed_before);
+}
+
+void test_reconfiguration_decoder_rejects_old_stream_p_frames() {
+  SessionPair pair(default_host_config(), default_device_config());
+  drive_to_streaming_with_first_idr(pair);
+
+  const StreamProfile replacement{
+      VideoEncoder::H264, PixelFormat::Nv12, DisplayResolution{1920, 1200, 60}};
+  ControlMessage prepare;
+  prepare.opcode = ControlOpcode::StreamPrepare;
+  prepare.proto_rev = deskmate::protocol::kProtocolRevision;
+  prepare.config_id = 2;
+  const auto profile_body =
+      deskmate::protocol::encode_stream_profile(replacement);
+  CHECK(profile_body);
+  prepare.body = profile_body.value();
+  append_control(pair.host_to_device, 0x88888888, 0, 320, prepare);
+  pair.device.pump();
+  CHECK_EQ(static_cast<int>(pair.device.state()),
+           static_cast<int>(SessionState::Reconfiguring));
+
+  ControlMessage commit;
+  commit.opcode = ControlOpcode::StreamCommit;
+  commit.config_id = 2;
+  commit.body = {0x01, 0xEF, 0xCD, 0xAB};
+  append_control(pair.host_to_device, 0x88888888, 0xABCDEF01, 321, commit);
+  pair.device.pump();
+  CHECK_EQ(static_cast<int>(pair.device.state()),
+           static_cast<int>(SessionState::AwaitingFirstIdr));
+
+  append_video(pair.host_to_device, 0x88888888, 0xABCDEF01, 2,
+               {0x20, 0x21}, deskmate::protocol::kFlagKeyFrame);
+  pair.device.pump();
+  CHECK_EQ(static_cast<int>(pair.device.state()),
+           static_cast<int>(SessionState::Streaming));
+  CHECK_EQ(pair.device.take_video_frames().size(), 1U);
+
+  append_video(pair.host_to_device, 0x88888888, 0x77777777, 3, {0x30}, 0);
+  pair.device.pump();
+  CHECK_EQ(static_cast<int>(pair.device.state()),
+           static_cast<int>(SessionState::Streaming));
+  CHECK(!pair.device.is_terminal());
+  CHECK(pair.device.take_video_frames().empty());
+  CHECK(pair.device.last_good_frame().has_value());
+  CHECK_EQ(pair.device.last_good_frame()->header.seq, 2U);
+
+  append_video(pair.host_to_device, 0x88888888, 0xABCDEF01, 3, {0x40}, 0);
+  pair.device.pump();
+  const auto frames = pair.device.take_video_frames();
+  CHECK_EQ(frames.size(), 1U);
+  CHECK_EQ(frames[0].header.seq, 3U);
+  CHECK_EQ(frames[0].payload, std::vector<std::uint8_t>({0x40}));
+}
+
+void test_unknown_control_opcode_is_discarded_without_terminating() {
+  SessionPair pair(default_host_config(), default_device_config());
+  drive_to_streaming_with_first_idr(pair);
+
+  std::vector<std::uint8_t> unknown_control(10, 0);
+  unknown_control[0] = 0x7F;
+  append_packet(pair.host_to_device, 0x88888888, 0, 2,
+                deskmate::protocol::MessageType::Control,
+                std::move(unknown_control));
+  append_video(pair.host_to_device, 0x88888888, 0x77777777, 2, {0x51}, 0);
+  pair.device.pump();
+
+  CHECK(!pair.device.is_terminal());
+  CHECK_EQ(static_cast<int>(pair.device.state()),
+           static_cast<int>(SessionState::Streaming));
+  const auto frames = pair.device.take_video_frames();
+  CHECK_EQ(frames.size(), 1U);
+  CHECK_EQ(frames[0].payload, std::vector<std::uint8_t>({0x51}));
+}
+
+void test_malformed_control_payload_terminates_session() {
+  SessionPair pair(default_host_config(), default_device_config());
+  drive_to_streaming_with_first_idr(pair);
+
+  append_packet(pair.host_to_device, 0x88888888, 0, 2,
+                deskmate::protocol::MessageType::Control,
+                std::vector<std::uint8_t>(9, 0));
+  pair.device.pump();
+
+  CHECK_EQ(static_cast<int>(pair.device.state()),
+           static_cast<int>(SessionState::Failed));
+  CHECK_EQ(static_cast<int>(*pair.device.failure()),
+           static_cast<int>(SessionFailure::MalformedControlMessage));
+}
+
+void test_paused_resume_rollback_keeps_both_ends_paused_and_resumable() {
+  SessionPair pair(default_host_config(), default_device_config());
+  drive_to_streaming_with_first_idr(pair);
+  const NegotiatedStream old_stream = *pair.host.negotiated_stream();
+  CHECK_EQ(pair.host.pause(), SessionCommandStatus::Ok);
+  pair.host.pump();
+  pair.device.pump();
+  pair.host.pump();
+  CHECK_EQ(static_cast<int>(pair.host.state()),
+           static_cast<int>(SessionState::Paused));
+  CHECK_EQ(static_cast<int>(pair.device.state()),
+           static_cast<int>(SessionState::Paused));
+
+  const StreamProfile profile{
+      VideoEncoder::H264, PixelFormat::Nv12, DisplayResolution{1920, 1200, 60}};
+  constexpr std::uint32_t kCandidateConfigId = 2;
+  constexpr std::uint32_t kCandidateStreamId = 0x60000023;
+  CHECK_EQ(pair.host.resume(profile, kCandidateConfigId, kCandidateStreamId),
+           SessionCommandStatus::Ok);
+  pair.host.pump();
+  pair.device.pump();
+  pair.host.pump();
+  pair.device.pump();
+  pair.host.pump();
+  CHECK_EQ(static_cast<int>(pair.host.state()),
+           static_cast<int>(SessionState::Reconfiguring));
+  CHECK_EQ(static_cast<int>(pair.device.state()),
+           static_cast<int>(SessionState::AwaitingFirstIdr));
+
+  // No candidate IDR: the Device times out and rolls back. The Host must roll
+  // back to Paused as well, because the resume started from Paused.
+  pair.clock.advance_ns(deskmate::protocol::kHandshakeStageTimeoutNs);
+  for (int cycle = 0; cycle < 4; ++cycle) {
+    pair.host.pump();
+    pair.device.pump();
+  }
+
+  CHECK(!pair.host.is_terminal());
+  CHECK(!pair.device.is_terminal());
+  CHECK_EQ(static_cast<int>(pair.host.state()),
+           static_cast<int>(SessionState::Paused));
+  CHECK_EQ(static_cast<int>(pair.device.state()),
+           static_cast<int>(SessionState::Paused));
+  CHECK(*pair.host.negotiated_stream() == old_stream);
+  CHECK(*pair.device.negotiated_stream() == old_stream);
+
+  // A second resume from the rolled-back Paused state must be accepted by both
+  // ends.
+  CHECK_EQ(pair.host.resume(profile, 3, 0x60000024),
+           SessionCommandStatus::Ok);
+  pair.host.pump();
+  pair.device.pump();
+  pair.host.pump();
+  pair.device.pump();
+  pair.host.pump();
+  CHECK(!pair.host.is_terminal());
+  CHECK(!pair.device.is_terminal());
+  CHECK(!pair.device.failure().has_value());
+  CHECK_EQ(static_cast<int>(pair.host.state()),
+           static_cast<int>(SessionState::Reconfiguring));
+  CHECK(pair.device.state() == SessionState::Reconfiguring ||
+        pair.device.state() == SessionState::AwaitingFirstIdr);
 }
 
 void test_resume_failure_returns_to_paused_and_preserves_grace_and_old_stream() {
@@ -2193,6 +3545,28 @@ int main() {
        test_streaming_reconfiguration_keeps_old_until_committed_and_is_idempotent},
       {"reconfiguration failure keeps old stream",
        test_reconfiguration_failure_keeps_old_stream},
+      {"device does not final ack a rolled back candidate",
+       test_device_does_not_final_ack_a_rolled_back_candidate},
+      {"device initial idr timeout rolls back without terminating host",
+       test_device_initial_idr_timeout_rolls_back_without_terminating_host},
+      {"host waits for device idr timeout before rollback",
+       test_host_waits_for_device_idr_timeout_before_rollback},
+      {"candidate frames are discarded when reconfiguration times out",
+       test_candidate_frames_are_discarded_when_reconfiguration_times_out},
+      {"duplicate commit before first idr does not confirm switch",
+       test_duplicate_commit_before_first_idr_does_not_confirm_switch},
+      {"late ack from failed configuration is ignored",
+       test_late_ack_from_failed_configuration_is_ignored},
+      {"duplicate committed after switch is idempotent",
+       test_duplicate_committed_after_switch_is_idempotent},
+      {"duplicate stream ready while awaiting first idr is idempotent",
+       test_duplicate_stream_ready_while_awaiting_first_idr_is_idempotent},
+      {"duplicate first commit ack does not complete reconfiguration",
+       test_duplicate_first_commit_ack_does_not_complete_reconfiguration},
+      {"lost first commit ack is retried without terminating",
+       test_lost_first_commit_ack_is_retried_without_terminating},
+      {"lost final commit ack is retried until switch is confirmed",
+       test_lost_final_commit_ack_is_retried_until_switch_is_confirmed},
       {"each running reconfiguration stage timeout or failure preserves old stream",
        test_each_running_reconfiguration_stage_timeout_or_failure_preserves_old_stream},
       {"four timestamp clock estimator reports offset rtt drift and bound",
@@ -2201,6 +3575,24 @@ int main() {
        test_clock_exchange_over_session_messages_produces_estimate},
       {"lock and unlock publish distinct states and require resume",
        test_lock_and_unlock_publish_distinct_states_and_require_resume},
+      {"lock during handshake stays paused and blocks resume",
+       test_lock_during_handshake_stays_paused_and_blocks_resume},
+      {"lock during reconfiguration keeps old stream and pauses",
+       test_lock_during_reconfiguration_keeps_old_stream_and_pauses},
+      {"lock after candidate idr waits for reconfiguration verdict",
+       test_lock_after_candidate_idr_waits_for_reconfiguration_verdict},
+      {"lock after candidate idr started preserves it until final ack",
+       test_lock_after_candidate_idr_started_preserves_it_until_final_ack},
+      {"lock before candidate idr starts aborts reconfiguration",
+       test_lock_before_candidate_idr_starts_aborts_reconfiguration},
+      {"display error before candidate idr keeps both ends paused",
+       test_display_error_before_candidate_idr_keeps_both_ends_paused},
+      {"display error after candidate idr started preserves it",
+       test_display_error_after_candidate_idr_started_preserves_it},
+      {"rollback discards active candidate packet before old stream",
+       test_rollback_discards_active_candidate_packet_before_old_stream},
+      {"rollback waits for old stream keyframe before p frames",
+       test_rollback_waits_for_old_stream_keyframe_before_p_frames},
       {"screen recording and accessibility revocations degrade independently",
        test_screen_recording_and_accessibility_revocations_degrade_independently},
       {"display error is a control preserving degraded state",
@@ -2211,18 +3603,44 @@ int main() {
        test_pause_grace_timeout_must_be_between_thirty_and_sixty_seconds},
       {"surface lease tracks generation references and destruction",
        test_surface_lease_tracks_generation_references_and_destruction},
+      {"surface lease outlives owner with shared reference ops",
+       test_surface_lease_outlives_owner_with_shared_reference_ops},
+      {"surface lease invalidates raw ops when owner is destroyed",
+       test_surface_lease_invalidates_raw_ops_when_owner_is_destroyed},
       {"accessory fd has exactly one owner and closes once",
        test_accessory_fd_has_exactly_one_owner_and_closes_once},
       {"device stops output after surface destroy and uses new generation",
        test_device_stops_output_after_surface_destroy_and_uses_new_generation},
       {"stopping rejects work then cancels drains and releases in order",
        test_stopping_rejects_work_then_cancels_drains_and_releases_in_order},
+      {"stopping discards inflight video work without waiting",
+       test_stopping_discards_inflight_video_work_without_waiting},
+      {"stopping does not flush queued outbound control",
+       test_stopping_does_not_flush_queued_outbound_control},
       {"sleep uses stop order and never closes borrowed fd",
        test_sleep_uses_stop_order_and_never_closes_borrowed_fd},
       {"heartbeat timeout releases established session resources",
        test_heartbeat_timeout_releases_established_session_resources},
+      {"fatal timeout cancels io before drain and release",
+       test_fatal_timeout_cancels_io_before_drain_and_release},
+      {"host write failure uses terminal cleanup and cancels io",
+       test_host_write_failure_uses_terminal_cleanup_and_cancels_io},
+      {"device write failure uses terminal cleanup and cancels io",
+       test_device_write_failure_uses_terminal_cleanup_and_cancels_io},
       {"device replays config status without repeating callbacks",
        test_device_replays_config_status_without_repeating_callbacks},
+      {"duplicate commit requires matching header stream",
+       test_duplicate_commit_requires_matching_header_stream},
+      {"duplicate commit rejects config generation rollback",
+       test_duplicate_commit_rejects_config_generation_rollback},
+      {"reconfiguration decoder rejects old stream p frames",
+       test_reconfiguration_decoder_rejects_old_stream_p_frames},
+      {"unknown control opcode is discarded without terminating",
+       test_unknown_control_opcode_is_discarded_without_terminating},
+      {"malformed control payload terminates session",
+       test_malformed_control_payload_terminates_session},
+      {"paused resume rollback keeps both ends paused and resumable",
+       test_paused_resume_rollback_keeps_both_ends_paused_and_resumable},
       {"resume failure returns to paused and preserves grace and old stream",
        test_resume_failure_returns_to_paused_and_preserves_grace_and_old_stream},
   };

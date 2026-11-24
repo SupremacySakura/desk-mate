@@ -110,4 +110,14 @@ wrong_identity_json="$("$ROOT/scripts/distribution-check.sh" --dry-run --json --
 assert_json "$wrong_identity_json" '.checks.developerIDIdentityFound == false' "non-Developer ID identity was accepted"
 assert_json "$wrong_identity_json" '.missing[] | select(. == "Developer ID Application identity")' "wrong identity did not report missing Developer ID"
 
+echo "ok - encoder callback context is retained and drained before teardown"
+ENCODER_SOURCE="$ROOT/Sources/Gate0Probe/VideoEncoder.swift"
+grep -q 'passRetained(callbackContext)' "$ENCODER_SOURCE" \
+  || fail "encoder callback context is not retained"
+grep -q 'callbackContext.stopAndWait()' "$ENCODER_SOURCE" \
+  || fail "encoder teardown does not wait for in-flight callbacks"
+if grep -q 'Unmanaged<Gate0Encoder>.fromOpaque' "$ENCODER_SOURCE"; then
+  fail "encoder callback still dereferences an unretained encoder"
+fi
+
 echo "PASS: gate0 probe safety contract"

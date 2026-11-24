@@ -29,10 +29,21 @@ Reverse Input 项目。当前仓库处于 **Design / Pending Hardware Verificati
   降级状态；Pause Grace Timeout 限制为 30–60 秒。
 - Surface Lease 代际与引用计数、FD 单所有权，以及
   `STOPPING → 拒绝新工作 → 取消 I/O → 排空回调 → 释放` 的可观察契约。
+- `HostSendScheduler` 的控制消息优先发送、已开始分片完整发送、拥塞时只丢弃新
+  keyframe 之前的旧 GOP 未开始帧，以及未发送帧超龄后的恢复请求。
+- `DeviceRecoveryGate` 的 Recovery Epoch、150 ms 同周期重试与 Last Good Frame
+  门控；旧 GOP 的 P 帧不会进入解码器。恢复 IDR 会同时写入标志位和 4 字节小端
+  `recovery_id` 前缀，调度器的两条入队路径都不会静默吞掉恢复请求。
+- 重定向到新 Stream Epoch 时，解码器会丢弃候选流尚未完成的包并重新同步到下一个
+  合法头部边界，不会把候选流的残留字节拼进旧流关键帧。
+- 锁屏是覆盖握手、重配与 Streaming 的持久状态：任一阶段锁屏都会阻止采集/输入
+  意图，且 `resume()` 返回 `DisplayUnavailable`；Device 在首个 IDR 前也接受 Pause。
+- 回滚保留旧流并重新等待旧流 IDR；失败的候选 `config_id` 迟到的 ACK 会被忽略，
+  不会打断后续重配或让 Device 对已回滚候选再发最终确认。
 - 合法与非法 golden vectors。
 
-当前实现不包含帧级优先调度或 GOP 恢复策略。它们属于后续任务，不能由本目录的
-实现推断为已完成。
+上述能力是 Host 侧共享核心与确定性契约测试；真实 USB 吞吐、编码器行为、
+AVCodec Flush/重建、Surface 保留和光学延迟仍需对应 Verification Gate 的真机证据。
 
 ## 构建与测试
 
@@ -44,15 +55,19 @@ make test
 ```
 
 `make` 会生成共享静态库 `build/libdeskmate-protocol.a`、协议测试程序
-`build/deskmate-tests` 和 Session 测试程序 `build/deskmate-session-tests`。
-`make lib` 只生成静态库。
+`build/deskmate-tests`、Session 测试程序 `build/deskmate-session-tests` 和
+调度测试程序 `build/deskmate-scheduling-tests`。`make lib` 只生成静态库。
 
 也可以分别运行测试：
 
 ```sh
 ./build/deskmate-tests testdata/golden
 ./build/deskmate-session-tests
+./build/deskmate-scheduling-tests
 ```
+
+当前主机套件为协议 21 项、Session 72 项、调度 15 项，共 108 项；全部使用内存
+`ByteIo` 与 `ManualClock`，不依赖真实 sleep、USB 设备或编解码器。
 
 清理构建产物：
 
@@ -67,10 +82,11 @@ core/include/deskmate/
   protocol.hpp          线上类型、头部/包/控制载荷编码与基础校验
   message_stream.hpp    流式包解码、视频重组与协议事件
   session.hpp           Host/Device 握手、能力协商、公开状态与边界结果
+  scheduler.hpp         控制/视频优先发送、GOP 边界丢弃与恢复请求
   clock.hpp             单调时钟接缝、SteadyClock 与测试用 ManualClock
   byte_io.hpp           Session/调度器可复用的字节 I/O 接缝
 core/src/               共享核心实现
-core/tests/             无框架协议测试与 Host/Device Session 契约测试
+core/tests/             无框架协议、Host/Device Session 与调度契约测试
 testdata/golden/        独立于 C++ 编码器生成的合法/非法线上字节
 ```
 
@@ -123,15 +139,27 @@ macOS 系统事件。`request_stop()` 只进入 `Stopping`；所有已提交回�
 `InputState` 分别表达锁屏、睡眠、录屏权限、辅助功能权限和显示错误的降级结果。
 
 `SessionLimits::stage_timeout_ns` 默认 2 秒。Host 等待 HELLO、READY、
-COMMITTED；Device 等待 PREPARE、COMMIT、首个新流 IDR。超时通过
-`SessionFailure` 暴露并终止 Session。测试使用 `ManualClock::advance_ns()` 推进
-时间，不调用 sleep。
+COMMITTED；Device 等待 PREPARE、COMMIT、首个新流 IDR。Host 不以本地首 IDR
+计时器抢先回退，而是等待 Device 的明确 `PROTOCOL_ERROR` 或后续常规失联检测，
+避免 Device 已收到候选 IDR 时两端对“是否切换”作出相反判断。超时通过
+`SessionFailure` 暴露；重配超时回退旧流，初始握手超时终止 Session。测试使用
+`ManualClock::advance_ns()` 推进时间，不调用 sleep。
 
 Host 的 `pause()` 先关闭采集/编码与输入意图，再发送 `PAUSE`，不等待 ACK。
 `resume()` 要求新的 `config_id` 和非零新 `video_stream_id`；Host 发送 `RESUME`
-并重新走完整配置切换。`STREAMING` 中 `reconfigure()` 只在收到匹配的
-`STREAM_COMMITTED` 后切换 Host 的协商结果；Device 保留旧流，直到匹配的新流首个
-keyframe 到达。失败或超时通过 `ReconfigurationStatus` 暴露并保留旧流。
+并重新走完整配置切换。`STREAMING` 中的 `reconfigure()` 使用两阶段确认：
+
+1. Device 在 `STREAM_COMMIT` 后保留旧流并返回第一次 `STREAM_COMMITTED`（4 字节
+   stream id）；
+2. Host 收到第一次确认后才发送候选 Stream Epoch 的视频，并在收到候选首个
+   keyframe 前继续保留旧协商结果；
+3. Device 收到候选 keyframe 后才释放旧流并返回第二次 `STREAM_COMMITTED`
+   （5 字节，末尾 stage byte 为 `2`）；
+4. Host 只在第二次确认后切换 `negotiated_stream()` 并恢复采集/输入意图。
+
+重配失败或超时回滚旧流，重置解码器并等待旧流的新 IDR；健康 Session 不因回滚或
+重复的确认消息终止。锁屏期间即使握手或重配完成，Host 也不会恢复采集/输入意图；
+`resume()` 会返回 `DisplayUnavailable`。
 
 Pause Grace Timeout 通过 `SessionLimits::pause_grace_timeout_ns` 配置，允许
 30–60 秒，默认 30 秒。超时只销毁一次 Extended Display，并报告
@@ -273,18 +301,46 @@ name | expectation | expected-payload-hex | packet-hex
 
 ## 已知限制
 
-- 协议仍为 proposed；Gate 1–3 与真实两端互操作通过前不得转为 accepted。
+- 协议仍为 proposed；Gate 0–4A 与真实两端互操作通过前不得转为 accepted。
 - 控制 opcode 与载荷前缀是本任务为后续实现定义的草案契约；若真机或 Session
   设计需要调整，必须先修订 proposed 协议与 `proto_rev`。
 - 本仓库不证明 AOA、`accessoryFd`、AVCodec、虚拟显示器或任何性能指标。
 - `ByteIo` 只有接口；测试中的 Host/Device 内存管道是契约 harness，不是生产传输层。
-- 分片不连续产生 `RequestRecovery` 事件，但选择 IDR、优先级调度和 Last Good
-  Frame 属于后续调度任务。
+- 分片不连续产生 `RequestRecovery` 事件；本仓库验证 Host 调度、Recovery IDR
+  请求重试与 Last Good Frame 的软件契约，但不证明真实链路吞吐或硬件解码器在
+  高负载下的表现。
 - Pause/resume、心跳、重配与系统事件只验证 Session 状态机和资源契约，不证明真实
   `accessoryFd` 可被唤醒、后台心跳可维持或 AVCodec 的 Flush/Reconfigure 行为。
 - `SurfaceOwner`/`SurfaceLease` 与 `AccessoryFdOwner` 是可注入的资源边界桩；
   HarmonyOS NativeWindow 引用和真实 USB 句柄生命周期仍由 Gate 1/3 验证。
 - Device 是否能在 Gate 3 条件下保留旧流、恢复旧配置或无损切换 Surface 尚未实证；
-  本实现的回退仅是控制面契约。
-- 首个 IDR 之后不实现优先级调度、GOP 边界丢弃、恢复 IDR 重试或 Last Good Frame
-  门控。
+  本实现的回退仅是控制面契约，回滚后仍要求旧流重新提供 IDR。
+- 重配最终确认与初始确认共用 `STREAM_COMMITTED` opcode，靠 body 长度区分：4 字节
+  为初始确认，5 字节且末尾 stage byte 为 `2` 为候选首个 keyframe 后的最终确认。
+  两种确认都可重传；Host 在候选 IDR 前收到重复的初始 `STREAM_COMMIT` 只回初始
+  确认，不回最终确认。
+
+## 验证状态
+
+2026-11-24 在本机执行并通过的主机侧检查：
+
+- 根 `make clean && make test`：协议 21/21、Session 72/72、调度 15/15。
+- Gate 0：`make test`、`make dry-run`，结论保持 pending。
+- Gate 1 Host：真实 libusb 构建、CTest、语法构建、边界脚本与布局脚本；握手 OUT
+  在 `LIBUSB_ERROR_TIMEOUT` 时重试到 `--handshake-timeout-ms` deadline。Device
+  只构建 unsigned HAP 与 native `.so`，未安装或运行。
+- Gate 2A：`make test` 39/39、`validate`、`SHA256SUMS` 26/26；测试与 `validate`
+  实际重算 artifacts 的 SHA-256，拒绝占位或缺失哈希。
+- Gate 3：`make host-check`（surface lease、recovery output、probe cleanup、
+  lifecycle、annex-b 与记录校验）、源码清理契约；未运行真机 AVCodec。
+
+仍未执行、因此不得声称通过的硬件门禁：
+
+- Gate 0 live：Reference Host 的 Screen Recording、Extended Display 创建/采集/
+  编码、锁屏与睡眠清理、Developer ID 签名和公证。
+- Gate 1 真机：AOA 授权、三方唤醒、拔线、Device 后台/恢复与真实双向 Bulk。
+- Gate 2A：Reference Link 上的 Device 用户入口、NCM/ECM 识别、ping 与双向
+  iperf3 原始证据。
+- Gate 3 真机：AVCodec Flush/Reset/重建、Surface 保留、Last Good Frame 上屏和
+  真实 USB 链路下的恢复时序。
+- Gate 4A：跨端时钟校准、软件打点和高速摄影光学延迟基线。

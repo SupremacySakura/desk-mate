@@ -80,12 +80,40 @@ void RecoveryOutputRouter::InvalidateSurfaceFromCallback()
 
 bool RecoveryOutputRouter::Drain()
 {
-    std::vector<Command> commands;
+    bool all_operations_ok = true;
+    std::deque<PendingFree> pending_frees;
     {
         std::lock_guard lock(mutex_);
         if (!IsControlThreadLocked()) {
             return false;
         }
+        pending_frees.swap(pending_frees_);
+        stats_.pending_free_buffers = pending_frees.size();
+    }
+
+    std::deque<PendingFree> retry_frees;
+    const auto free_output = [&](PendingFree pending) {
+        if (operations_.FreeOutput(pending.command.decoder, pending.command.index)) {
+            std::lock_guard lock(mutex_);
+            if (pending.stale_epoch) {
+                ++stats_.freed_stale_epoch;
+            } else {
+                ++stats_.freed_surface_invalid;
+            }
+        } else {
+            std::lock_guard lock(mutex_);
+            ++stats_.free_failures;
+            retry_frees.push_back(pending);
+            all_operations_ok = false;
+        }
+    };
+    for (const PendingFree &pending : pending_frees) {
+        free_output(pending);
+    }
+
+    std::vector<Command> commands;
+    {
+        std::lock_guard lock(mutex_);
         while (!commands_.empty()) {
             commands.push_back(commands_.front());
             commands_.pop_front();
@@ -95,6 +123,7 @@ bool RecoveryOutputRouter::Drain()
     for (const Command &command : commands) {
         bool render = false;
         bool release = false;
+        bool stale_release = false;
         {
             std::lock_guard lock(mutex_);
             if (command.decoder != current_decoder_) {
@@ -102,10 +131,9 @@ bool RecoveryOutputRouter::Drain()
                 continue;
             }
             if (!command.accepted_when_posted || command.epoch != recovery_epoch_) {
-                ++stats_.freed_stale_epoch;
                 release = true;
+                stale_release = true;
             } else if (!surface_renderable_fast_.load(std::memory_order_acquire)) {
-                ++stats_.freed_surface_invalid;
                 release = true;
             } else {
                 render = true;
@@ -120,26 +148,35 @@ bool RecoveryOutputRouter::Drain()
                     rendered = operations_.RenderOutput(command.decoder, command.index);
                 } else {
                     release = true;
+                    stale_release = false;
                 }
             }
-            std::lock_guard lock(mutex_);
+            if (!rendered && !release &&
+                !surface_renderable_fast_.load(std::memory_order_acquire)) {
+                release = true;
+                stale_release = false;
+            }
             if (rendered) {
+                std::lock_guard lock(mutex_);
                 ++stats_.rendered;
                 last_good_frame_visible_ = true;
             } else if (release) {
-                ++stats_.freed_surface_invalid;
+                free_output(PendingFree{command, stale_release});
             } else {
+                std::lock_guard lock(mutex_);
                 ++stats_.render_failures;
+                all_operations_ok = false;
             }
         } else if (release) {
-            const bool freed = operations_.FreeOutput(command.decoder, command.index);
-            std::lock_guard lock(mutex_);
-            if (!freed) {
-                ++stats_.free_failures;
-            }
+            free_output(PendingFree{command, stale_release});
         }
     }
-    return true;
+    {
+        std::lock_guard lock(mutex_);
+        pending_frees_.insert(pending_frees_.end(), retry_frees.begin(), retry_frees.end());
+        stats_.pending_free_buffers = pending_frees_.size();
+    }
+    return all_operations_ok;
 }
 
 void RecoveryOutputRouter::PostOutputBuffer(DecoderInstanceId decoder, std::uint32_t index)
@@ -171,6 +208,11 @@ bool RecoveryOutputRouter::output_open() const
 {
     std::lock_guard lock(mutex_);
     return output_open_;
+}
+
+bool RecoveryOutputRouter::surface_renderable() const
+{
+    return surface_renderable_fast_.load(std::memory_order_acquire);
 }
 
 bool RecoveryOutputRouter::last_good_frame_visible() const

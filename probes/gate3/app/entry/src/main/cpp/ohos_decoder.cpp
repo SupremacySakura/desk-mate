@@ -48,13 +48,7 @@ const char *ErrorName(OH_AVErrCode code)
 
 OhosDecoder::OhosDecoder() = default;
 
-OhosDecoder::~OhosDecoder()
-{
-    if (codec_ != nullptr && (!control_thread_bound_ || OnControlThread())) {
-        (void)OH_VideoDecoder_Destroy(codec_);
-        codec_ = nullptr;
-    }
-}
+OhosDecoder::~OhosDecoder() = default;
 
 void OhosDecoder::SetSink(OhosDecoderSink *sink)
 {
@@ -138,7 +132,10 @@ bool OhosDecoder::CreateNext()
         OH_VideoDecoder_RegisterCallback(codec, callbacks, static_cast<void *>(context_ptr));
     if (registered != AV_ERR_OK) {
         NoteResult("OH_VideoDecoder_RegisterCallback", registered);
-        (void)OH_VideoDecoder_Destroy(codec);
+        const OH_AVErrCode destroyed = OH_VideoDecoder_Destroy(codec);
+        if (destroyed != AV_ERR_OK) {
+            NoteResult("OH_VideoDecoder_Destroy(after register failure)", destroyed);
+        }
         return false;
     }
 
@@ -157,6 +154,8 @@ bool OhosDecoder::DestroyCurrent()
     NoteResult("OH_VideoDecoder_Destroy", result);
     if (result == AV_ERR_OK) {
         codec_ = nullptr;
+        native_window_ = nullptr;
+        current_instance_ = 0;
         surface_set_ = false;
     }
     return result == AV_ERR_OK;

@@ -27,8 +27,8 @@ or ADRs.
 
 ## Layout
 
-- `core/`: host-compilable lifecycle, Surface Lease, recovery routing, and
-  Annex-B parser.
+- `core/`: host-compilable lifecycle, Surface Lease, cleanup retry, recovery
+  routing, and Annex-B parser.
 - `core/tests/`: public-seam contracts.
 - `app/`: Stage-model HAP, XComponent Surface, NAPI bridge, and native probe UI.
 - `testdata/`: 640x360 Constrained Baseline Annex-B fixture. SHA-256
@@ -44,7 +44,7 @@ or ADRs.
 make -C probes/gate3 host-check
 ```
 
-The target compiles four independent test binaries with C++20, strict warnings,
+The target compiles five independent test binaries with C++20, strict warnings,
 and pthreads, runs them, then validates `records/*.json`. The tests are
 cwd-independent; the Annex-B fixture path is embedded at compile time.
 
@@ -54,6 +54,10 @@ The contracts are:
   reference operations never overlap.
 - A Surface-destroy callback invalidates the epoch without running decoder
   cleanup; prior output is freed.
+- Failed output frees remain queued until a later `Drain`, and in-gate Surface
+  loss frees the rejected output instead of counting it as rendered.
+- Cleanup failures block suite success; failed decoder `Stop`/`Destroy` retains
+  the Surface Lease, and failed lease releases retry on each worker pass.
 - Callback output commands retain their generation; stale epoch output is freed
   and residual old-decoder callbacks never reach the new instance.
 - Flush/Stop/Reset/Rebuild use the specified ordered lifecycle and resend

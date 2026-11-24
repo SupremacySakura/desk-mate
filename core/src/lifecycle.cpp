@@ -53,6 +53,7 @@ std::int64_t clamp_i64(__int128 value) {
 struct SurfaceLease::State {
   mutable std::mutex mutex;
   SurfaceReferenceOps* reference_ops{};
+  std::shared_ptr<SurfaceReferenceOps> owned_reference_ops;
   std::uint64_t generation{};
   bool available{};
   std::size_t reference_count{};
@@ -124,7 +125,25 @@ SurfaceOwner::SurfaceOwner(SurfaceReferenceOps* reference_ops)
   state_->reference_ops = reference_ops;
 }
 
-SurfaceOwner::~SurfaceOwner() = default;
+SurfaceOwner::SurfaceOwner(std::shared_ptr<SurfaceReferenceOps> reference_ops)
+    : state_(std::make_shared<State>()) {
+  state_->owned_reference_ops = std::move(reference_ops);
+  state_->reference_ops = state_->owned_reference_ops.get();
+}
+
+SurfaceOwner::~SurfaceOwner() {
+  const std::lock_guard lock(state_->mutex);
+  state_->available = false;
+  if (state_->owned_reference_ops == nullptr) {
+    if (state_->reference_ops != nullptr) {
+      for (std::size_t index = 0; index < state_->reference_count; ++index) {
+        state_->reference_ops->remove_reference();
+      }
+    }
+    state_->reference_count = 0;
+    state_->reference_ops = nullptr;
+  }
+}
 
 std::uint64_t SurfaceOwner::attach() {
   const std::lock_guard lock(state_->mutex);

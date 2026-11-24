@@ -38,11 +38,13 @@ class MessageStreamDecoder {
 
   [[nodiscard]] std::vector<StreamEvent> feed(std::span<const std::uint8_t> bytes);
   void reset(StreamDecoderConfig config = {});
+  void retarget_video_stream(std::uint32_t video_stream_id);
   [[nodiscard]] bool failed() const { return failed_; }
   [[nodiscard]] const StreamDecoderConfig& config() const { return config_; }
 
  private:
   void drain(std::vector<StreamEvent>& events);
+  bool resynchronize(std::vector<StreamEvent>& events);
   void compact_pending();
   void reject(const Header& header, ProtocolError error, std::vector<StreamEvent>& events);
   void fail(ProtocolError error, std::vector<StreamEvent>& events);
@@ -61,6 +63,7 @@ class MessageStreamDecoder {
   bool failed_{};
   std::optional<Header> active_header_;
   std::uint32_t discard_remaining_{};
+  bool resyncing_{};
 
   std::optional<Header> video_header_;
   std::array<std::optional<std::vector<std::uint8_t>>, kMaxVideoFragments> video_fragments_{};

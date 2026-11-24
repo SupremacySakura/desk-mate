@@ -19,6 +19,7 @@ namespace {
 constexpr std::uint64_t kInitialFeedLimit = 12;
 constexpr std::uint64_t kOutputTimeoutMs = 5000;
 constexpr std::uint64_t kRecoveryTimeoutMs = 5000;
+constexpr std::uint64_t kShutdownCleanupAttempts = 200;
 
 std::uint64_t SteadyNowNs()
 {
@@ -126,6 +127,12 @@ ProbeEngine &ProbeEngine::Instance()
 ProbeEngine::ProbeEngine()
     : surfaces_(surface_ops_),
       router_(decoder_),
+      cleanup_(ProbeCleanupOperations{
+          .stop_decoder = [this] { return decoder_.Stop(); },
+          .destroy_decoder = [this] { return decoder_.Destroy(); },
+          .release_surface = [this](SurfaceLeaseId lease_id) { return surfaces_.Release(lease_id); },
+          .shutdown_surfaces = [this] { return surfaces_.Shutdown(); },
+      }),
       lifecycle_(decoder_, router_, surfaces_, [] { return SteadyNowNs(); })
 {
     decoder_.SetSink(this);
@@ -168,6 +175,73 @@ void ProbeEngine::SetTerminalFailure(std::string failure)
     if (failure_.empty()) {
         failure_ = std::move(failure);
         stage_ = failure_;
+    }
+}
+
+bool ProbeEngine::DrainOutputs(const char *failure_context)
+{
+    if (router_.Drain()) {
+        return true;
+    }
+    RecordSurfaceCleanupFailure(failure_context);
+    return false;
+}
+
+void ProbeEngine::RecordSurfaceCleanupFailure(const char *failure_context)
+{
+    cleanup_.RecordFailure(failure_context);
+    SetTerminalFailure(std::string(failure_context) + " failed");
+}
+
+bool ProbeEngine::ReleaseSurfaceLease(const SurfaceLease &lease, const char *failure_context)
+{
+    if (cleanup_.ReleaseSurfaceLease(lease, failure_context)) {
+        return true;
+    }
+    SetTerminalFailure(std::string(failure_context) + " failed");
+    return false;
+}
+
+void ProbeEngine::ForgetSurfaceLease(SurfaceLeaseId lease_id, SurfaceGeneration generation)
+{
+    {
+        std::lock_guard lock(snapshot_mutex_);
+        if (current_lease_.has_value() && current_lease_->id == lease_id) {
+            current_lease_.reset();
+            current_surface_generation_ = 0;
+            current_surface_id_ = 0;
+            current_surface_window_ = nullptr;
+            surface_ready_ = false;
+        }
+    }
+    if (decoder_.current_instance() == 0 && generation != 0 &&
+        !surfaces_.CollectRetiredSurface(generation)) {
+        RecordSurfaceCleanupFailure("retired surface collection after retry");
+    }
+}
+
+void ProbeEngine::RetryPendingSurfaceReleases()
+{
+    std::vector<SurfaceLease> pending;
+    {
+        const auto records = cleanup_.PendingSurfaceReleases();
+        pending.reserve(records.size());
+        for (const PendingSurfaceRelease &record : records) {
+            pending.push_back(record.lease);
+        }
+    }
+    if (pending.empty()) {
+        return;
+    }
+
+    const std::vector<SurfaceLeaseId> released = cleanup_.RetryPendingSurfaceReleases();
+    for (const SurfaceLeaseId lease_id : released) {
+        const auto lease = std::find_if(pending.begin(), pending.end(), [lease_id](const SurfaceLease &item) {
+            return item.id == lease_id;
+        });
+        if (lease != pending.end()) {
+            ForgetSurfaceLease(lease->id, lease->generation);
+        }
     }
 }
 
@@ -448,7 +522,7 @@ void ProbeEngine::ProcessCallbacks()
         std::lock_guard lock(snapshot_mutex_);
         stream_change_summary_ = summary.str();
     }
-    (void)router_.Drain();
+    (void)DrainOutputs("decoder callback output drain");
 }
 
 void ProbeEngine::ProcessSurfaceEvents()
@@ -471,11 +545,17 @@ void ProbeEngine::ProcessSurfaceEvents()
             }
 
             (void)router_.SetSurfaceRenderable(false);
+            bool decoder_stopped = true;
             if (decoder_.current_instance() != 0) {
                 (void)router_.BeginRecovery(decoder_.current_instance());
-                (void)decoder_.Stop();
-                std::lock_guard lock(snapshot_mutex_);
-                decoder_needs_rebuild_ = true;
+                if (!cleanup_.DecoderStopped() && !decoder_.Stop()) {
+                    decoder_stopped = false;
+                    RecordSurfaceCleanupFailure("surface decoder stop");
+                } else {
+                    cleanup_.ConfirmDecoderStopped();
+                    std::lock_guard lock(snapshot_mutex_);
+                    decoder_needs_rebuild_ = true;
+                }
             }
 
             std::optional<SurfaceLease> lease;
@@ -486,13 +566,13 @@ void ProbeEngine::ProcessSurfaceEvents()
                 current_surface_id_ = 0;
                 current_surface_window_ = nullptr;
                 lease = current_lease_;
-                current_lease_.reset();
             }
-            if (lease.has_value()) {
-                (void)surfaces_.Release(lease->id);
-                if (decoder_.current_instance() == 0) {
-                    (void)surfaces_.CollectRetiredSurface(lease->generation);
-                }
+            if (!decoder_stopped) {
+                SetStage("surface destroyed; decoder stop is pending cleanup retry");
+                continue;
+            }
+            if (lease.has_value() && ReleaseSurfaceLease(*lease, "surface lease release")) {
+                ForgetSurfaceLease(lease->id, lease->generation);
             }
             SetStage("surface destroyed; decoder stopped on the control thread");
             continue;
@@ -520,14 +600,18 @@ void ProbeEngine::ProcessSurfaceEvents()
         }
 
         if (previous_lease.has_value() && previous_lease->id != lease->id) {
-            (void)surfaces_.Release(previous_lease->id);
+            if (ReleaseSurfaceLease(*previous_lease, "previous surface lease release")) {
+                ForgetSurfaceLease(previous_lease->id, previous_lease->generation);
+            }
         }
 
         if (rebuild) {
             HandleSurfaceRebuild(*lease, previous_generation);
         } else {
             if (previous_lease.has_value() && decoder_.current_instance() == 0) {
-                (void)surfaces_.CollectRetiredSurface(previous_generation);
+                if (!surfaces_.CollectRetiredSurface(previous_generation)) {
+                    RecordSurfaceCleanupFailure("previous retired surface collection");
+                }
             }
             SetStage("surface lease ready on the control thread");
         }
@@ -544,7 +628,12 @@ void ProbeEngine::CleanupSurfaceIfInvalid()
     (void)router_.SetSurfaceRenderable(false);
     if (decoder_.current_instance() != 0) {
         (void)router_.BeginRecovery(decoder_.current_instance());
-        (void)decoder_.Stop();
+        if (!cleanup_.DecoderStopped() && !decoder_.Stop()) {
+            RecordSurfaceCleanupFailure("invalid surface decoder stop");
+            SetStage("invalid Surface Lease retained; decoder stop is pending cleanup retry");
+            return;
+        }
+        cleanup_.ConfirmDecoderStopped();
         std::lock_guard lock(snapshot_mutex_);
         decoder_needs_rebuild_ = true;
     }
@@ -552,22 +641,25 @@ void ProbeEngine::CleanupSurfaceIfInvalid()
     {
         std::lock_guard lock(snapshot_mutex_);
         if (current_lease_.has_value() && current_lease_->id == lease->id) {
-            current_lease_.reset();
             current_surface_generation_ = 0;
             current_surface_id_ = 0;
             current_surface_window_ = nullptr;
             surface_ready_ = false;
         }
     }
-    (void)surfaces_.Release(lease->id);
-    if (decoder_.current_instance() == 0) {
-        (void)surfaces_.CollectRetiredSurface(lease->generation);
+    if (cleanup_.HasPendingSurfaceRelease(lease->id)) {
+        SetStage("invalid Surface Lease retained; release is pending cleanup retry");
+        return;
+    }
+    if (ReleaseSurfaceLease(*lease, "invalid surface lease release")) {
+        ForgetSurfaceLease(lease->id, lease->generation);
     }
     SetStage("invalid Surface Lease drained; decoder awaits a rebuild");
 }
 
 void ProbeEngine::WorkerLoop()
 {
+    std::uint64_t shutdown_cleanup_attempts = 0;
     for (;;) {
         bool run_suite = false;
         {
@@ -582,23 +674,35 @@ void ProbeEngine::WorkerLoop()
 
         ProcessSurfaceEvents();
         ProcessCallbacks();
+        RetryPendingSurfaceReleases();
         CleanupSurfaceIfInvalid();
 
         if (worker_shutdown_.load(std::memory_order_acquire) || store_shutdown_) {
-            (void)router_.SetSurfaceRenderable(false);
+            bool cleanup_ready = true;
+            if (!router_.SetSurfaceRenderable(false)) {
+                RecordSurfaceCleanupFailure("shutdown surface output close");
+                cleanup_ready = false;
+            }
             if (decoder_.current_instance() != 0) {
-                (void)router_.BeginRecovery(decoder_.current_instance());
-                (void)router_.Drain();
-                (void)decoder_.Destroy();
+                if (!router_.BeginRecovery(decoder_.current_instance())) {
+                    RecordSurfaceCleanupFailure("shutdown recovery close");
+                    cleanup_ready = false;
+                }
+                cleanup_ready = DrainOutputs("shutdown decoder output drain") && cleanup_ready;
             }
-            const auto lease = CurrentLease();
-            if (lease.has_value()) {
-                (void)surfaces_.Release(lease->id);
-                (void)surfaces_.Shutdown();
-            } else {
-                surfaces_.Shutdown();
+            bool shutdown_complete = false;
+            if (cleanup_ready) {
+                shutdown_complete = cleanup_.Shutdown(decoder_.current_instance() != 0, CurrentLease());
             }
-            return;
+            if (shutdown_complete) {
+                return;
+            }
+            SetTerminalFailure("shutdown cleanup pending at " + cleanup_.FailureStage());
+            if (++shutdown_cleanup_attempts >= kShutdownCleanupAttempts) {
+                return;
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+            continue;
         }
 
         bool freeze = false;
@@ -609,7 +713,7 @@ void ProbeEngine::WorkerLoop()
         }
         if (freeze) {
             decoder_.SetFeedLimit(decoder_.feed_cursor());
-            (void)router_.Drain();
+            (void)DrainOutputs("freeze output drain");
             {
                 std::lock_guard lock(snapshot_mutex_);
                 manual_frozen_ = true;
@@ -715,10 +819,13 @@ bool ProbeEngine::PumpUntil(const std::function<bool()> &predicate, std::uint64_
         if (last_decoder_error_.load(std::memory_order_acquire) != 0) {
             return false;
         }
+        if (cleanup_.Failed()) {
+            return false;
+        }
         std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
     ProcessCallbacks();
-    return predicate();
+    return predicate() && !cleanup_.Failed();
 }
 
 bool ProbeEngine::RunInitialDecode(const SurfaceLease &lease)
@@ -747,6 +854,7 @@ bool ProbeEngine::RunInitialDecode(const SurfaceLease &lease)
         SetTerminalFailure("decoder prepare/start failed: " + decoder_.last_error());
         return false;
     }
+    cleanup_.DecoderStarted();
     if (!lifecycle_.StartInitial(lease)) {
         SetTerminalFailure("control-thread recovery router did not start");
         return false;
@@ -768,11 +876,12 @@ bool ProbeEngine::RunInitialDecode(const SurfaceLease &lease)
         [this, baseline] { return router_.stats().rendered > baseline; }, kOutputTimeoutMs);
     const std::uint64_t finished = SteadyNowNs();
     decoder_.SetFeedLimit(decoder_.feed_cursor());
-    (void)router_.Drain();
+    const bool drained = DrainOutputs("initial decode output drain");
 
     const OutputRouterStats stats = router_.stats();
     const std::uint64_t parameter_set_units = decoder_.parameter_set_units_pushed();
-    const bool passed = first_output && SurfaceStillValid(lease) && parameter_set_units > 0 &&
+    const bool passed = first_output && drained && SurfaceStillValid(lease) &&
+                        parameter_set_units > 0 &&
                         stats.rendered > baseline &&
                         last_decoder_error_.load(std::memory_order_acquire) == 0;
     {
@@ -806,7 +915,12 @@ bool ProbeEngine::DecodeRecovery(const SurfaceLease &lease, RecoveryAction actio
         return false;
     }
 
-    (void)router_.Drain();
+    if (!DrainOutputs("pre-recovery output drain")) {
+        measurement.failure_stage = "drain-before";
+        std::lock_guard lock(snapshot_mutex_);
+        recoveries_.push_back(std::move(measurement));
+        return false;
+    }
     const OutputRouterStats before = router_.stats();
     const std::uint64_t feed_before = decoder_.feed_cursor();
     const std::uint64_t parameter_units_before = decoder_.parameter_set_units_pushed();
@@ -832,7 +946,10 @@ bool ProbeEngine::DecodeRecovery(const SurfaceLease &lease, RecoveryAction actio
             [this, rendered_before] { return router_.stats().rendered > rendered_before; },
             kRecoveryTimeoutMs);
         decoder_.SetFeedLimit(decoder_.feed_cursor());
-        (void)router_.Drain();
+        if (!DrainOutputs("recovery output drain")) {
+            measurement.failure_stage = "drain";
+            first_output = false;
+        }
     }
     const std::uint64_t finished = SteadyNowNs();
     const OutputRouterStats after = router_.stats();
@@ -876,6 +993,10 @@ bool ProbeEngine::DecodeRecovery(const SurfaceLease &lease, RecoveryAction actio
     }
 
     const bool success = measurement.operation_success;
+    if (std::any_of(report.stages.begin(), report.stages.end(),
+                    [](const StageMeasurement &stage) { return stage.stage == "start" && stage.ok; })) {
+        cleanup_.DecoderStarted();
+    }
     {
         std::lock_guard lock(snapshot_mutex_);
         recoveries_.push_back(std::move(measurement));
@@ -926,6 +1047,7 @@ bool ProbeEngine::RunSuiteOnWorker()
     const std::uint64_t violations = decoder_.control_thread_violations();
     passed = passed && violations == 0 &&
              last_decoder_error_.load(std::memory_order_acquire) == 0 &&
+             !cleanup_.Failed() &&
              router_.last_good_frame_visible();
     {
         std::lock_guard lock(snapshot_mutex_);
@@ -961,7 +1083,9 @@ void ProbeEngine::HandleSurfaceRebuild(const SurfaceLease &lease, SurfaceGenerat
         }
     }
     if (recovered && previous_generation != 0) {
-        (void)surfaces_.CollectRetiredSurface(previous_generation);
+        if (!surfaces_.CollectRetiredSurface(previous_generation)) {
+            RecordSurfaceCleanupFailure("rebuilt retired surface collection");
+        }
     }
 }
 
@@ -1039,8 +1163,10 @@ std::string ProbeEngine::BuildReportJson() const
 {
     const OutputRouterStats stats = router_.stats();
     const bool lease_valid = current_lease_.has_value() && surfaces_.CanRender(*current_lease_);
-    const char *const verification =
-        suite_done_ ? (suite_passed_ ? "passed" : "failed") : "not executed";
+    const bool cleanup_failed = cleanup_.Failed();
+    const bool effective_suite_passed = cleanup_.EffectiveSuitePassed(suite_passed_);
+    const char *const verification = cleanup_.Verification(suite_done_, suite_passed_);
+    const std::vector<PendingSurfaceRelease> pending_releases = cleanup_.PendingSurfaceReleases();
 
     std::size_t keyframes = 0;
     std::size_t sps = 0;
@@ -1066,7 +1192,21 @@ std::string ProbeEngine::BuildReportJson() const
            << ",\"failure\":\"" << EscapeJson(failure_) << "\""
            << ",\"suite\":{\"state\":\""
            << (suite_running_ ? "running" : (suite_done_ ? "complete" : "not-started"))
-           << "\",\"passed\":" << Bool(suite_passed_) << '}'
+           << "\",\"passed\":" << Bool(effective_suite_passed) << '}'
+           << ",\"cleanup\":{\"failed\":" << Bool(cleanup_failed)
+           << ",\"failure_stage\":\"" << EscapeJson(cleanup_.FailureStage()) << "\""
+           << ",\"decoder_destroyed\":" << Bool(cleanup_.DecoderDestroyed())
+           << ",\"pending_surface_releases\":[";
+    for (std::size_t index = 0; index < pending_releases.size(); ++index) {
+        if (index != 0) {
+            output << ',';
+        }
+        const PendingSurfaceRelease &release = pending_releases[index];
+        output << "{\"lease_id\":" << release.lease.id
+               << ",\"generation\":" << release.lease.generation
+               << ",\"failure_stage\":\"" << EscapeJson(release.failure_stage) << "\"}";
+    }
+    output << "]}"
            << ",\"device\":" << DeviceJson()
            << ",\"capabilities\":" << CapabilitiesJson()
            << ",\"stream\":";
@@ -1113,6 +1253,7 @@ std::string ProbeEngine::BuildReportJson() const
            << ",\"surface_invalid_frees\":" << stats.freed_surface_invalid
            << ",\"free_failures\":" << stats.free_failures
            << ",\"render_failures\":" << stats.render_failures
+           << ",\"pending_free_buffers\":" << stats.pending_free_buffers
            << ",\"stale_input_callbacks\":" << decoder_.stale_input_callbacks()
            << ",\"control_thread_violations\":" << decoder_.control_thread_violations()
            << ",\"callback_body\":\"queue-only\""

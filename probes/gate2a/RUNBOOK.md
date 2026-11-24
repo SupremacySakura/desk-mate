@@ -16,7 +16,7 @@
 1. 在 Device 上打开设置，找到 USB 网络共享 / 以太网共享相关入口。
 2. 记录精确路径、操作者、UTC 时间和可见行为。
 3. 确认该入口不需要开启“开发者模式”。
-4. 保存截图或其他可复核证据。
+4. 把截图或其他可复核证据保存到最终 `evidence/<run>/` 目录内。
 5. 从 `templates/device-entry.json` 复制并填写：
 
 ```json
@@ -29,12 +29,14 @@
   "developer_mode_required": false,
   "path": "exact observed UI path",
   "steps": ["..."],
-  "evidence": ["screenshot-file"],
+  "evidence": ["device-entry.png"],
   "notes": "observed behavior"
 }
 ```
 
-没有看到入口或无法排除开发者模式时，保持 `not_executed` 或填写真实失败原因。
+`device-entry.json` 和其中的 `evidence` 路径都必须以最终 `evidence/<run>/`
+为基准，保存为相对路径。没有看到入口或无法排除开发者模式时，保持
+`not_executed` 或填写真实失败原因。
 
 ## 2. 建立 Reference Link
 
@@ -45,9 +47,13 @@
 
 ```sh
 cd probes/gate2a
+RUN=evidence/reference-$(date -u +%Y%m%dT%H%M%SZ)
+mkdir -p "$RUN"
+cp /path/to/device-entry.json "$RUN/device-entry.json"
+cp /path/to/device-entry.png "$RUN/device-entry.png"
 SERIAL=59GYD25716204513 make capture \
-  EVIDENCE=evidence/reference-$(date -u +%Y%m%dT%H%M%SZ) \
-  DEVICE_ENTRY=/path/to/device-entry.json
+  EVIDENCE="$RUN" \
+  DEVICE_ENTRY="$RUN/device-entry.json"
 ```
 
 5. 检查：
@@ -125,7 +131,7 @@ python3 gate2a.py measure \
 - 接口没有 IPv4 地址；
 - 缺少 `iperf3`。
 
-原始文件：
+原始文件写入 `evidence/<run>/measurement/`：
 
 - `ping.txt`
 - `iperf-host-to-device.json`
@@ -142,12 +148,18 @@ summary 的 min/avg/max/stddev。
 python3 gate2a.py compose \
   --raw-dir evidence/<run>/raw \
   --device-serial 59GYD25716204513 \
-  --device-entry /path/to/device-entry.json \
+  --device-entry evidence/<run>/device-entry.json \
   --measurement evidence/<run>/measurement/link-measurement.json \
   --output evidence/<run>/report.json
 
 python3 gate2a.py validate-report --report evidence/<run>/report.json
 ```
+
+`compose` 要求上述输入都位于同一个 `evidence/<run>/` 下，会把 measurement
+引用的 ping/iperf3 原始文件和 manual entry 截图加入 `artifacts`，并把报告内
+所有证据路径统一写成相对 `evidence/<run>/` 的路径。`validate-report` 对
+`passed` 报告会重新解析这些 raw 文件并逐项复算；报告值与 raw 不一致、路径
+逃逸、缺失文件或哈希不符都会失败。
 
 再按 `templates/REPORT.md` 写人类可读报告，并生成哈希：
 

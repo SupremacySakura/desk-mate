@@ -5,6 +5,7 @@ import datetime
 import hashlib
 import ipaddress
 import json
+import math
 import re
 import shutil
 import subprocess
@@ -20,9 +21,32 @@ NATIVE_ECM_BUNDLES = {
     "com.apple.DriverKit.AppleUserECM",
 }
 
+CANONICAL_EVIDENCE_PATHS = {
+    "host": "raw/host.json",
+    "device": "raw/device.json",
+    "usb_topology": "raw/ioreg-usb.txt",
+    "interfaces_ioreg": "raw/ioreg-interfaces.txt",
+    "ncm_ioreg": "raw/ioreg-ncm.txt",
+    "ecm_ioreg": "raw/ioreg-ecm.txt",
+    "hardware_ports": "raw/networksetup-hardware-ports.txt",
+    "network_services": "raw/networksetup-services.txt",
+    "ifconfig": "raw/ifconfig.txt",
+    "measurement": "measurement/link-measurement.json",
+    "ping": "measurement/ping.txt",
+    "host_to_device": "measurement/iperf-host-to-device.json",
+    "device_to_host": "measurement/iperf-device-to-host.json",
+}
+
+
+def reject_nonfinite_json(value):
+    raise ValueError(f"non-finite JSON number {value}")
+
 
 def load_json(path):
-    return json.loads(Path(path).read_text(encoding="utf-8"))
+    return json.loads(
+        Path(path).read_text(encoding="utf-8"),
+        parse_constant=reject_nonfinite_json,
+    )
 
 
 def write_json(path, value):
@@ -245,6 +269,72 @@ def valid_sha256(value):
     return isinstance(value, str) and bool(re.fullmatch(r"[0-9a-f]{64}", value))
 
 
+def finite_number(value):
+    return (
+        isinstance(value, (int, float))
+        and not isinstance(value, bool)
+        and math.isfinite(value)
+    )
+
+
+def numbers_close(left, right, absolute_tolerance=1e-9):
+    return math.isclose(
+        float(left),
+        float(right),
+        rel_tol=1e-9,
+        abs_tol=absolute_tolerance,
+    )
+
+
+def resolve_evidence_path(value, label, evidence_root, errors):
+    if not nonempty_string(value):
+        errors.append(f"{label}: must be a non-empty relative path")
+        return None
+    relative = Path(value)
+    if relative.is_absolute():
+        errors.append(f"{label}: must be relative to the evidence root")
+        return None
+    if ".." in relative.parts:
+        errors.append(f"{label}: must not contain '..'")
+        return None
+    try:
+        root = Path(evidence_root).resolve(strict=True)
+    except (OSError, ValueError) as error:
+        errors.append(f"{label}: evidence root is not accessible: {error}")
+        return None
+    try:
+        resolved = (root / relative).resolve(strict=True)
+    except (OSError, RuntimeError, ValueError) as error:
+        errors.append(f"{label}: file does not exist or cannot be resolved: {error}")
+        return None
+    try:
+        resolved.relative_to(root)
+    except ValueError:
+        errors.append(f"{label}: path escapes the evidence root")
+        return None
+    if not resolved.is_file():
+        errors.append(f"{label}: not a regular file: {resolved}")
+        return None
+    return resolved
+
+
+def require_finite_number(value, label, errors, positive=False):
+    if not finite_number(value):
+        errors.append(f"{label}: must be a finite number")
+        return False
+    if positive and value <= 0:
+        errors.append(f"{label}: must be positive")
+        return False
+    return True
+
+
+def compare_number(label, reported, raw, errors, tolerance=1e-9):
+    if not require_finite_number(reported, label, errors):
+        return
+    if not numbers_close(reported, raw, tolerance):
+        errors.append(f"{label}: report {reported!r} does not match raw {raw!r}")
+
+
 def validate_measurement(measurement, interface, reference_link):
     errors = []
     if not isinstance(measurement, dict):
@@ -270,17 +360,43 @@ def validate_measurement(measurement, interface, reference_link):
     else:
         if (
             not isinstance(ping.get("packets_received"), int)
+            or isinstance(ping.get("packets_received"), bool)
             or ping["packets_received"] <= 0
         ):
             errors.append("measurements.ping.packets_received: must be positive")
-        if not isinstance(ping.get("jitter_ms"), (int, float)):
-            errors.append("measurements.ping.jitter_ms: must be numeric")
+        if (
+            not isinstance(ping.get("packets_transmitted"), int)
+            or isinstance(ping.get("packets_transmitted"), bool)
+            or ping["packets_transmitted"] <= 0
+        ):
+            errors.append("measurements.ping.packets_transmitted: must be positive")
+        elif ping.get("packets_received") is not None and (
+            ping["packets_received"] > ping["packets_transmitted"]
+        ):
+            errors.append(
+                "measurements.ping: packets_received must not exceed packets_transmitted"
+            )
+        loss = ping.get("packet_loss_percent")
+        if (
+            not finite_number(loss)
+            or loss < 0
+            or loss > 100
+        ):
+            errors.append(
+                "measurements.ping.packet_loss_percent: must be finite and between 0 and 100"
+            )
+        if not finite_number(ping.get("jitter_ms")) or ping["jitter_ms"] < 0:
+            errors.append(
+                "measurements.ping.jitter_ms: must be a finite non-negative number"
+            )
         rtt = ping.get("rtt_ms")
         if not isinstance(rtt, dict) or not all(
-            isinstance(rtt.get(field), (int, float))
+            finite_number(rtt.get(field)) and rtt[field] >= 0
             for field in ("min", "avg", "max", "stddev")
         ):
-            errors.append("measurements.ping.rtt_ms: must contain numeric RTT samples")
+            errors.append(
+                "measurements.ping.rtt_ms: must contain finite RTT samples"
+            )
         if not nonempty_string(ping.get("raw_path")):
             errors.append("measurements.ping.raw_path: must not be empty")
         if not valid_sha256(ping.get("sha256")):
@@ -292,6 +408,7 @@ def validate_measurement(measurement, interface, reference_link):
         errors.append("measurements.throughput.runs: must contain executed runs")
     else:
         directions = set()
+        duplicate_directions = set()
         for index, run in enumerate(runs):
             if not isinstance(run, dict):
                 errors.append(
@@ -304,14 +421,16 @@ def validate_measurement(measurement, interface, reference_link):
                     f"measurements.throughput.runs[{index}].direction: invalid"
                 )
             else:
+                if direction in directions:
+                    duplicate_directions.add(direction)
                 directions.add(direction)
             if (
-                not isinstance(run.get("bits_per_second"), (int, float))
+                not finite_number(run.get("bits_per_second"))
                 or run["bits_per_second"] <= 0
             ):
                 errors.append(
                     f"measurements.throughput.runs[{index}].bits_per_second: "
-                    "must be positive"
+                    "must be a finite positive number"
                 )
             if not nonempty_string(run.get("raw_path")):
                 errors.append(
@@ -329,6 +448,11 @@ def validate_measurement(measurement, interface, reference_link):
                 "measurements.throughput.runs: missing directions "
                 + ", ".join(sorted(missing))
             )
+        if duplicate_directions:
+            errors.append(
+                "measurements.throughput.runs: duplicate directions "
+                + ", ".join(sorted(duplicate_directions))
+            )
 
     commands = measurement.get("commands")
     purposes = {
@@ -343,7 +467,708 @@ def validate_measurement(measurement, interface, reference_link):
     return errors
 
 
-def validate_report(report):
+def validate_file_digest(record, label, evidence_root, errors):
+    path = resolve_evidence_path(
+        record.get("path"),
+        label,
+        evidence_root,
+        errors,
+    )
+    if path is None:
+        return False
+    try:
+        actual = sha256_file(path)
+    except OSError as error:
+        errors.append(f"{label}: cannot read file: {error}")
+        return False
+    if actual != record["sha256"]:
+        errors.append(
+            f"{label}: SHA-256 mismatch: recorded {record['sha256']}, actual {actual}"
+        )
+        return False
+    return True
+
+
+def validate_archived_evidence(report, evidence_root, errors):
+    artifact_map = {}
+    artifacts = report.get("artifacts")
+    if isinstance(artifacts, list):
+        for index, artifact in enumerate(artifacts):
+            label = f"artifacts[{index}]"
+            if not isinstance(artifact, dict):
+                errors.append(f"{label}: must be an object")
+                continue
+            if not nonempty_string(artifact.get("path")):
+                errors.append(f"{label}.path: must be a non-empty relative path")
+                continue
+            if not valid_sha256(artifact.get("sha256")):
+                errors.append(f"{label}.sha256: must be a lowercase SHA-256")
+            if artifact["path"] in artifact_map:
+                errors.append(f"{label}.path: duplicate artifact path")
+            if valid_sha256(artifact.get("sha256")):
+                artifact_map[artifact["path"]] = artifact
+                validate_file_digest(
+                    artifact,
+                    label,
+                    evidence_root,
+                    errors,
+                )
+            else:
+                resolve_evidence_path(
+                    artifact["path"],
+                    f"{label}.path",
+                    evidence_root,
+                    errors,
+                )
+
+    measurements = report.get("measurements")
+    if not isinstance(measurements, dict):
+        return artifact_map
+    ping = measurements.get("ping")
+    if (
+        isinstance(ping, dict)
+        and nonempty_string(ping.get("raw_path"))
+        and valid_sha256(ping.get("sha256"))
+    ):
+        validate_file_digest(
+            {"path": ping["raw_path"], "sha256": ping["sha256"]},
+            "measurements.ping.raw_path",
+            evidence_root,
+            errors,
+        )
+        artifact = artifact_map.get(ping["raw_path"])
+        if artifact is None:
+            errors.append(
+                "measurements.ping.raw_path: must identify an archived artifact"
+            )
+        elif artifact.get("sha256") != ping["sha256"]:
+            errors.append(
+                "measurements.ping.sha256: must match its archived artifact"
+            )
+    throughput = measurements.get("throughput")
+    runs = throughput.get("runs") if isinstance(throughput, dict) else None
+    if isinstance(runs, list):
+        for index, run in enumerate(runs):
+            if (
+                isinstance(run, dict)
+                and nonempty_string(run.get("raw_path"))
+                and valid_sha256(run.get("sha256"))
+            ):
+                validate_file_digest(
+                    {"path": run["raw_path"], "sha256": run["sha256"]},
+                    f"measurements.throughput.runs[{index}].raw_path",
+                    evidence_root,
+                    errors,
+                )
+                artifact = artifact_map.get(run["raw_path"])
+                if artifact is None:
+                    errors.append(
+                        "measurements.throughput.runs"
+                        f"[{index}].raw_path: must identify an archived artifact"
+                    )
+                elif artifact.get("sha256") != run["sha256"]:
+                    errors.append(
+                        "measurements.throughput.runs"
+                        f"[{index}].sha256: must match its archived artifact"
+                    )
+    return artifact_map
+
+
+def compare_value(label, reported, expected, errors):
+    if reported != expected:
+        errors.append(f"{label}: report {reported!r} does not match raw {expected!r}")
+
+
+def compare_mapping_fields(label, reported, expected, fields, errors):
+    if not isinstance(reported, dict):
+        errors.append(f"{label}: must be an object")
+        return
+    for field in fields:
+        compare_value(
+            f"{label}.{field}",
+            reported.get(field),
+            expected.get(field),
+            errors,
+        )
+
+
+def canonical_artifact_path(
+    role,
+    artifact_map,
+    evidence_root,
+    errors,
+    required=True,
+):
+    path = CANONICAL_EVIDENCE_PATHS[role]
+    if path not in artifact_map:
+        if required:
+            errors.append(f"artifacts: missing canonical {role} evidence {path}")
+        return None
+    return resolve_evidence_path(
+        path,
+        f"artifacts.{role}",
+        evidence_root,
+        errors,
+    )
+
+
+def read_text_artifact(path, label, errors):
+    try:
+        return Path(path).read_text(encoding="utf-8")
+    except OSError as error:
+        errors.append(f"{label}: cannot read file: {error}")
+        return None
+
+
+def read_json_artifact(path, label, errors):
+    try:
+        return load_json(path)
+    except (OSError, ValueError, json.JSONDecodeError) as error:
+        errors.append(f"{label}: cannot parse JSON: {error}")
+        return None
+
+
+def validate_device_entry_evidence(report, artifact_map, evidence_root, errors):
+    evidence = report["device_entry"].get("evidence")
+    if not isinstance(evidence, list):
+        return
+    seen = set()
+    for index, item in enumerate(evidence):
+        label = f"device_entry.evidence[{index}]"
+        if not nonempty_string(item):
+            errors.append(f"{label}: must be a non-empty relative path")
+            continue
+        resolve_evidence_path(item, label, evidence_root, errors)
+        if item in seen:
+            errors.append(f"{label}: duplicate evidence path")
+        seen.add(item)
+        artifact = artifact_map.get(item)
+        if artifact is None:
+            errors.append(f"{label}: must identify an archived artifact")
+        elif not valid_sha256(artifact.get("sha256")):
+            errors.append(f"{label}: archived artifact requires a valid SHA-256")
+
+
+def validate_reference_environment(report, evidence_root, artifact_map, errors):
+    host_path = canonical_artifact_path(
+        "host", artifact_map, evidence_root, errors
+    )
+    if host_path:
+        host = read_json_artifact(host_path, "artifacts.host", errors)
+        if isinstance(host, dict):
+            compare_mapping_fields(
+                "reference_environment.host",
+                report["reference_environment"]["host"],
+                host,
+                (
+                    "model",
+                    "chip",
+                    "memory_bytes",
+                    "os_version",
+                    "os_build",
+                    "architecture",
+                ),
+                errors,
+            )
+
+    device_path = canonical_artifact_path(
+        "device", artifact_map, evidence_root, errors
+    )
+    if device_path:
+        device = read_json_artifact(device_path, "artifacts.device", errors)
+        if isinstance(device, dict):
+            compare_mapping_fields(
+                "reference_environment.device",
+                report["reference_environment"]["device"],
+                device,
+                (
+                    "model",
+                    "product_name",
+                    "serial",
+                    "software_version",
+                    "os_version",
+                    "api_version",
+                ),
+                errors,
+            )
+            if "interface_names" in report["reference_environment"]["device"]:
+                compare_value(
+                    "reference_environment.device.interface_names",
+                    report["reference_environment"]["device"].get(
+                        "interface_names"
+                    ),
+                    device.get("interface_names", []),
+                    errors,
+                )
+
+
+def validate_topology_and_classification(
+    report,
+    evidence_root,
+    artifact_map,
+    errors,
+):
+    usb_path = canonical_artifact_path(
+        "usb_topology", artifact_map, evidence_root, errors
+    )
+    if usb_path is None:
+        return
+    usb_text = read_text_artifact(usb_path, "artifacts.usb_topology", errors)
+    if usb_text is None:
+        return
+    interfaces_text = None
+    interfaces_path = canonical_artifact_path(
+        "interfaces_ioreg",
+        artifact_map,
+        evidence_root,
+        errors,
+        required=False,
+    )
+    if interfaces_path:
+        interfaces_text = read_text_artifact(
+            interfaces_path,
+            "artifacts.interfaces_ioreg",
+            errors,
+        )
+
+    serial = report["reference_environment"]["device"].get("serial")
+    try:
+        topology = discover_topology(usb_text, serial, interfaces_text)
+    except ValueError as error:
+        errors.append(f"artifacts.usb_topology: {error}")
+        return
+
+    reported_topology = report["usb_topology"]
+    compare_value(
+        "usb_topology.link_speed_mbps",
+        reported_topology.get("link_speed_mbps"),
+        topology["negotiated_speed_mbps"],
+        errors,
+    )
+    for field in (
+        "hub_count",
+        "direct_to_host",
+        "reference_link",
+        "reason",
+    ):
+        compare_value(
+            f"usb_topology.{field}",
+            reported_topology.get(field),
+            topology[field],
+            errors,
+        )
+    for field in ("ancestors", "hubs", "observed_hubs"):
+        compare_value(
+            f"usb_topology.{field}",
+            reported_topology.get(field),
+            topology[field],
+            errors,
+        )
+    compare_mapping_fields(
+        "usb_topology.target_device",
+        reported_topology.get("target_device"),
+        topology["target_device"],
+        (
+            "name",
+            "vendor",
+            "product",
+            "serial",
+            "id_vendor",
+            "id_product",
+            "link_speed_mbps",
+            "interfaces",
+        ),
+        errors,
+    )
+
+    family = report["device_network"].get("driver_family")
+    required_controller_role = {
+        "ncm": "ncm_ioreg",
+        "ecm": "ecm_ioreg",
+    }.get(family)
+    if required_controller_role is None:
+        errors.append(
+            "device_network.driver_family: passed requires NCM or ECM raw evidence"
+        )
+    else:
+        canonical_artifact_path(
+            required_controller_role,
+            artifact_map,
+            evidence_root,
+            errors,
+        )
+
+    controller_texts = []
+    for family_name, role in (("ncm", "ncm_ioreg"), ("ecm", "ecm_ioreg")):
+        controller_path = canonical_artifact_path(
+            role,
+            artifact_map,
+            evidence_root,
+            errors,
+            required=False,
+        )
+        if controller_path is None:
+            continue
+        text = read_text_artifact(
+            controller_path,
+            f"artifacts.{role}",
+            errors,
+        )
+        if text is not None:
+            controller_texts.append((family_name, text))
+
+    network_inventory = build_network_inventory(
+        usb_text,
+        controller_texts,
+        serial,
+    )
+    host_network = build_host_network(Path(evidence_root) / "raw", network_inventory)
+    compare_value(
+        "host_network",
+        report["host_network"],
+        host_network,
+        errors,
+    )
+
+    target = topology["target_device"]
+    device_entry = report["device_entry"]
+    classification = classify(
+        {
+            "usb_device": {
+                "name": target["name"],
+                "serial": target["serial"],
+                "vendor": target["vendor"],
+                "product": target["product"],
+                "id_vendor": target["id_vendor"],
+                "id_product": target["id_product"],
+                "link_speed_mbps": target["link_speed_mbps"],
+                "interfaces": target["interfaces"],
+                "ancestors": topology["ancestors"],
+                "hubs": topology["hubs"],
+            },
+            "network_interfaces": network_inventory["interfaces"],
+            "device_entry": device_entry,
+        }
+    )
+    associated = next(
+        (
+            interface
+            for interface in network_inventory["interfaces"]
+            if interface.get("name") == classification.get("interface")
+        ),
+        None,
+    )
+    expected_device_network = {
+        "interface": classification.get("interface"),
+        "driver_family": classification["driver_family"],
+        "network_driver_class": classification.get("network_driver_class"),
+        "network_driver_bundle_id": classification.get("network_driver_bundle_id"),
+        "native_bundled_driver": classification["native_bundled_driver"],
+        "rndis_detected": classification["rndis_detected"],
+        "eligible": classification["eligible"],
+        "reason": network_inventory["reason"],
+    }
+    if associated:
+        expected_device_network["macos_hardware_port"] = associated.get(
+            "macos_hardware_port"
+        )
+        expected_device_network["macos_network_service"] = associated.get(
+            "macos_network_service"
+        )
+    compare_mapping_fields(
+        "device_network",
+        report["device_network"],
+        expected_device_network,
+        tuple(expected_device_network),
+        errors,
+    )
+
+
+def validate_raw_measurements(report, evidence_root, artifact_map, errors):
+    measurements = report["measurements"]
+    ping = measurements.get("ping")
+    expected_ping_path = CANONICAL_EVIDENCE_PATHS["ping"]
+    if not isinstance(ping, dict):
+        errors.append("measurements.ping: passed requires raw ping evidence")
+        return
+    if ping.get("raw_path") != expected_ping_path:
+        errors.append(
+            "measurements.ping.raw_path: "
+            f"must be canonical {expected_ping_path}"
+        )
+    ping_path = canonical_artifact_path(
+        "ping", artifact_map, evidence_root, errors
+    )
+    if ping_path is not None:
+        try:
+            raw_ping = parse_ping(ping_path)
+        except (OSError, ValueError) as error:
+            errors.append(f"measurements.ping: cannot parse raw evidence: {error}")
+        else:
+            for field in (
+                "packets_transmitted",
+                "packets_received",
+                "packet_loss_percent",
+            ):
+                compare_value(
+                    f"measurements.ping.{field}",
+                    ping.get(field),
+                    raw_ping[field],
+                    errors,
+                )
+            compare_number(
+                "measurements.ping.jitter_ms",
+                ping.get("jitter_ms"),
+                raw_ping["jitter_ms"],
+                errors,
+            )
+            reported_rtt = ping.get("rtt_ms")
+            if not isinstance(reported_rtt, dict):
+                errors.append("measurements.ping.rtt_ms: must be an object")
+            else:
+                for field in ("min", "avg", "max", "stddev"):
+                    compare_number(
+                        f"measurements.ping.rtt_ms.{field}",
+                        reported_rtt.get(field),
+                        raw_ping["rtt_ms"][field],
+                        errors,
+                        tolerance=0.001,
+                    )
+
+    throughput = measurements.get("throughput")
+    runs = throughput.get("runs") if isinstance(throughput, dict) else None
+    if not isinstance(runs, list):
+        errors.append("measurements.throughput.runs: must be an array")
+        return
+
+    reported_paths = []
+    resolved_paths = set()
+    target = measurements.get("target")
+    for index, run in enumerate(runs):
+        if not isinstance(run, dict):
+            continue
+        direction = run.get("direction")
+        role = {
+            "host_to_device": "host_to_device",
+            "device_to_host": "device_to_host",
+        }.get(direction)
+        if role is None:
+            continue
+        if nonempty_string(run.get("raw_path")):
+            reported_paths.append(run["raw_path"])
+        expected_path = CANONICAL_EVIDENCE_PATHS[role]
+        if run.get("raw_path") != expected_path:
+            errors.append(
+                f"measurements.throughput.runs[{index}].raw_path: "
+                f"must be canonical {expected_path} for {direction}"
+            )
+        run_path = canonical_artifact_path(
+            role, artifact_map, evidence_root, errors
+        )
+        if run_path is None:
+            continue
+        resolved_paths.add(run_path)
+        try:
+            document = load_json(run_path)
+            raw_run = parse_iperf_evidence(document)
+        except (OSError, ValueError, json.JSONDecodeError) as error:
+            errors.append(
+                "measurements.throughput.runs"
+                f"[{index}]: cannot parse raw evidence: {error}"
+            )
+            continue
+        compare_number(
+            f"measurements.throughput.runs[{index}].bits_per_second",
+            run.get("bits_per_second"),
+            raw_run["bits_per_second"],
+            errors,
+        )
+        compare_value(
+            f"measurements.throughput.runs[{index}].direction",
+            direction,
+            raw_run["direction"],
+            errors,
+        )
+        compare_value(
+            f"measurements.throughput.runs[{index}].target",
+            target,
+            raw_run["target"],
+            errors,
+        )
+        if "source_field" in run:
+            compare_value(
+                f"measurements.throughput.runs[{index}].source_field",
+                run.get("source_field"),
+                raw_run["source_field"],
+                errors,
+            )
+    if nonempty_string(ping.get("raw_path")):
+        reported_paths.append(ping["raw_path"])
+    if ping_path is not None:
+        resolved_paths.add(ping_path)
+    if len(reported_paths) != 3 or len(set(reported_paths)) != 3:
+        errors.append(
+            "measurements: ping and both throughput directions must use "
+            "three distinct evidence files"
+        )
+    identities = set()
+    for path in resolved_paths:
+        try:
+            stat = path.stat()
+        except OSError:
+            continue
+        identities.add((stat.st_dev, stat.st_ino))
+    if len(resolved_paths) == 3 and len(identities) != 3:
+        errors.append(
+            "measurements: ping and both throughput directions must use "
+            "three distinct evidence files"
+        )
+
+
+def validate_measurement_artifact(
+    report,
+    evidence_root,
+    artifact_map,
+    errors,
+):
+    path = canonical_artifact_path(
+        "measurement",
+        artifact_map,
+        evidence_root,
+        errors,
+    )
+    if path is None:
+        return
+    document = read_json_artifact(path, "artifacts.measurement", errors)
+    if not isinstance(document, dict):
+        return
+    measurements = report["measurements"]
+    for field in ("status", "reference_link", "interface", "target"):
+        compare_value(
+            f"measurements.{field}",
+            measurements.get(field),
+            document.get(field),
+            errors,
+        )
+    compare_value(
+        "measurements.commands",
+        measurements.get("commands"),
+        document.get("commands"),
+        errors,
+    )
+    reported_ping = measurements.get("ping")
+    archived_ping = document.get("ping")
+    if isinstance(reported_ping, dict) and isinstance(archived_ping, dict):
+        for field in (
+            "packets_transmitted",
+            "packets_received",
+            "packet_loss_percent",
+            "jitter_ms",
+            "sha256",
+        ):
+            compare_value(
+                f"measurements.ping.{field}",
+                reported_ping.get(field),
+                archived_ping.get(field),
+                errors,
+            )
+        if isinstance(reported_ping.get("rtt_ms"), dict) and isinstance(
+            archived_ping.get("rtt_ms"),
+            dict,
+        ):
+            for field in ("min", "avg", "max", "stddev"):
+                compare_value(
+                    f"measurements.ping.rtt_ms.{field}",
+                    reported_ping["rtt_ms"].get(field),
+                    archived_ping["rtt_ms"].get(field),
+                    errors,
+                )
+    else:
+        errors.append(
+            "measurements.ping: report and archived measurement must both "
+            "contain ping evidence"
+        )
+
+    reported_runs = (
+        measurements.get("throughput", {}).get("runs")
+        if isinstance(measurements.get("throughput"), dict)
+        else None
+    )
+    archived_runs = (
+        document.get("throughput", {}).get("runs")
+        if isinstance(document.get("throughput"), dict)
+        else None
+    )
+    if not isinstance(reported_runs, list) or not isinstance(archived_runs, list):
+        return
+    archived_by_direction = {
+        run.get("direction"): run
+        for run in archived_runs
+        if isinstance(run, dict) and nonempty_string(run.get("direction"))
+    }
+    for index, run in enumerate(reported_runs):
+        if not isinstance(run, dict):
+            continue
+        archived_run = archived_by_direction.get(run.get("direction"))
+        if archived_run is None:
+            errors.append(
+                f"measurements.throughput.runs[{index}]: direction is missing "
+                "from archived measurement"
+            )
+            continue
+        for field in ("bits_per_second", "sha256", "source_field"):
+            if field == "source_field" and field not in run:
+                continue
+            compare_value(
+                f"measurements.throughput.runs[{index}].{field}",
+                run.get(field),
+                archived_run.get(field),
+                errors,
+            )
+
+
+def validate_passed_evidence(report, evidence_root, artifact_map, errors):
+    for role in (
+        "host",
+        "device",
+        "usb_topology",
+        "hardware_ports",
+        "network_services",
+        "ifconfig",
+        "measurement",
+        "ping",
+        "host_to_device",
+        "device_to_host",
+    ):
+        canonical_artifact_path(
+            role,
+            artifact_map,
+            evidence_root,
+            errors,
+        )
+    validate_reference_environment(report, evidence_root, artifact_map, errors)
+    validate_topology_and_classification(
+        report,
+        evidence_root,
+        artifact_map,
+        errors,
+    )
+    validate_measurement_artifact(
+        report,
+        evidence_root,
+        artifact_map,
+        errors,
+    )
+    validate_raw_measurements(report, evidence_root, artifact_map, errors)
+    validate_device_entry_evidence(
+        report,
+        artifact_map,
+        evidence_root,
+        errors,
+    )
+
+
+def validate_report(report, evidence_root=None):
     errors = []
     if require_path(report, "schema_version", errors) != 1:
         errors.append("schema_version: expected 1")
@@ -587,6 +1412,21 @@ def validate_report(report):
                 errors.append(
                     "measurement evidence is not archived in artifacts"
                 )
+    if evidence_root is None:
+        errors.append("artifacts: evidence root is required to verify file hashes")
+    else:
+        artifact_map = validate_archived_evidence(report, evidence_root, errors)
+        if (
+            not errors
+            and isinstance(report.get("decision"), dict)
+            and report["decision"].get("status") == "passed"
+        ):
+            validate_passed_evidence(
+                report,
+                evidence_root,
+                artifact_map,
+                errors,
+            )
     return errors
 
 
@@ -597,7 +1437,16 @@ def command_classify(arguments):
 
 
 def command_validate_report(arguments):
-    errors = validate_report(load_json(arguments.report))
+    report_path = Path(arguments.report)
+    try:
+        report = load_json(report_path)
+    except (OSError, ValueError, json.JSONDecodeError) as error:
+        print(
+            f"report validation failed: cannot load report: {error}",
+            file=sys.stderr,
+        )
+        return 1
+    errors = validate_report(report, report_path.resolve().parent)
     if errors:
         for error in errors:
             print(f"report validation failed: {error}", file=sys.stderr)
@@ -630,6 +1479,30 @@ def parse_ping(path):
         raise ValueError(f"{path}: ping summary not found")
     if not samples:
         raise ValueError(f"{path}: no successful ping RTT samples")
+    if any(not math.isfinite(sample) or sample < 0 for sample in samples):
+        raise ValueError(f"{path}: ping RTT samples must be finite and non-negative")
+
+    packets_transmitted = int(summary.group(1))
+    packets_received = int(summary.group(2))
+    reported_loss = float(summary.group(3))
+    if packets_transmitted <= 0:
+        raise ValueError(f"{path}: packets transmitted must be positive")
+    if packets_received < 0 or packets_received > packets_transmitted:
+        raise ValueError(f"{path}: ping packet counts are inconsistent")
+    if len(samples) != packets_received:
+        raise ValueError(
+            f"{path}: ping RTT sample count {len(samples)} does not match "
+            f"{packets_received} received packets"
+        )
+    calculated_loss = (
+        (packets_transmitted - packets_received) * 100.0 / packets_transmitted
+    )
+    if not math.isfinite(reported_loss) or not numbers_close(
+        reported_loss,
+        calculated_loss,
+        absolute_tolerance=0.05,
+    ):
+        raise ValueError(f"{path}: ping loss percentage is inconsistent with counts")
 
     rtt = re.search(
         r"round-trip min/avg/max/(?:stddev|mdev)\s*=\s*"
@@ -653,6 +1526,24 @@ def parse_ping(path):
             "stddev": variance**0.5,
         }
 
+    if any(
+        not math.isfinite(value) or value < 0 for value in rtt_ms.values()
+    ):
+        raise ValueError(f"{path}: ping RTT summary must be finite and non-negative")
+    mean = sum(samples) / len(samples)
+    variance = sum((sample - mean) ** 2 for sample in samples) / len(samples)
+    calculated_rtt = {
+        "min": min(samples),
+        "avg": mean,
+        "max": max(samples),
+        "stddev": variance**0.5,
+    }
+    for field, value in rtt_ms.items():
+        if not numbers_close(value, calculated_rtt[field], absolute_tolerance=0.01):
+            raise ValueError(
+                f"{path}: ping {field} summary is inconsistent with RTT samples"
+            )
+
     deltas = [
         abs(current - previous)
         for previous, current in zip(samples, samples[1:])
@@ -662,9 +1553,9 @@ def parse_ping(path):
     return {
         "raw_path": str(resolved),
         "sha256": sha256_file(resolved),
-        "packets_transmitted": int(summary.group(1)),
-        "packets_received": int(summary.group(2)),
-        "packet_loss_percent": float(summary.group(3)),
+        "packets_transmitted": packets_transmitted,
+        "packets_received": packets_received,
+        "packet_loss_percent": reported_loss,
         "rtt_ms": rtt_ms,
         "jitter_ms": jitter,
         "jitter_definition": "mean absolute difference of consecutive ICMP RTT samples",
@@ -676,8 +1567,45 @@ def iperf_rate(document):
     for section in ("sum_received", "sum_sent", "sum"):
         values = end.get(section)
         if isinstance(values, dict) and "bits_per_second" in values:
-            return float(values["bits_per_second"]), f"end.{section}.bits_per_second"
+            rate = values["bits_per_second"]
+            if not finite_number(rate) or rate <= 0:
+                raise ValueError(
+                    f"iperf {section}.bits_per_second must be finite and positive"
+                )
+            return float(rate), f"end.{section}.bits_per_second"
     raise ValueError("iperf JSON has no end.sum_received/sum_sent.bits_per_second")
+
+
+def parse_iperf_evidence(document):
+    bits_per_second, source_field = iperf_rate(document)
+    start = document.get("start", {})
+    target = None
+    connecting_to = start.get("connecting_to")
+    if isinstance(connecting_to, dict):
+        target = connecting_to.get("host")
+    if not nonempty_string(target):
+        connected = start.get("connected")
+        if isinstance(connected, list) and connected and isinstance(connected[0], dict):
+            target = connected[0].get("remote_host")
+    if not nonempty_string(target):
+        raise ValueError("iperf JSON does not identify its target")
+
+    test_start = start.get("test_start")
+    if not isinstance(test_start, dict) or "reverse" not in test_start:
+        raise ValueError("iperf JSON does not identify its direction")
+    reverse = test_start["reverse"]
+    if reverse in (0, False):
+        direction = "host_to_device"
+    elif reverse in (1, True):
+        direction = "device_to_host"
+    else:
+        raise ValueError("iperf reverse flag must be 0/1")
+    return {
+        "bits_per_second": bits_per_second,
+        "source_field": source_field,
+        "target": target,
+        "direction": direction,
+    }
 
 
 def command_link_summary(arguments):
@@ -1232,21 +2160,178 @@ def default_measurements(reference_link, reason):
     }
 
 
-def artifact_records(paths, base):
-    records = []
-    for path in sorted({Path(path).resolve() for path in paths}):
+def resolve_compose_input(value, root, label, errors, require_directory=False):
+    path = Path(value)
+    try:
+        resolved = path.resolve(strict=True)
+    except (OSError, RuntimeError, ValueError) as error:
+        errors.append(f"{label}: file does not exist or cannot be resolved: {error}")
+        return None
+    try:
+        resolved.relative_to(root)
+    except ValueError:
+        errors.append(f"{label}: path is outside the evidence root {root}")
+        return None
+    if require_directory and not resolved.is_dir():
+        errors.append(f"{label}: must be a directory")
+        return None
+    if not require_directory and not resolved.is_file():
+        errors.append(f"{label}: must be a regular file")
+        return None
+    return resolved
+
+
+def normalize_measurement_evidence(
+    measurement,
+    measurement_path,
+    root,
+    errors,
+):
+    referenced = []
+    measurement_dir = measurement_path.parent
+
+    def normalize_record(record, label):
+        relative_value = record.get("raw_path")
+        if not nonempty_string(relative_value):
+            errors.append(f"{label}.raw_path: must be a non-empty relative path")
+            return
+        relative = Path(relative_value)
+        if relative.is_absolute():
+            errors.append(f"{label}.raw_path: must be relative to the measurement")
+            return
+        if ".." in relative.parts:
+            errors.append(f"{label}.raw_path: must not contain '..'")
+            return
+        candidates = []
+        for base in (measurement_dir, root):
+            try:
+                candidate = (base / relative).resolve()
+            except (OSError, RuntimeError, ValueError):
+                continue
+            if candidate.exists():
+                if candidate not in candidates:
+                    candidates.append(candidate)
+        if not candidates:
+            errors.append(f"{label}.raw_path: referenced file does not exist")
+            return
+        if len(candidates) != 1:
+            errors.append(f"{label}.raw_path: ambiguous relative path")
+            return
+        resolved = candidates[0]
+        try:
+            normalized = resolved.relative_to(root)
+        except ValueError:
+            errors.append(f"{label}.raw_path: path escapes the evidence root")
+            return
+        if not resolved.is_file():
+            errors.append(f"{label}.raw_path: must be a regular file")
+            return
+        if not valid_sha256(record.get("sha256")):
+            errors.append(f"{label}.sha256: must be a lowercase SHA-256")
+            return
+        actual = sha256_file(resolved)
+        if actual != record["sha256"]:
+            errors.append(
+                f"{label}.sha256: recorded {record['sha256']} does not match "
+                f"measurement raw {actual}"
+            )
+            return
+        record["raw_path"] = normalized.as_posix()
+        referenced.append(resolved)
+
+    ping = measurement.get("ping")
+    if isinstance(ping, dict):
+        normalize_record(ping, "measurements.ping")
+    throughput = measurement.get("throughput")
+    runs = throughput.get("runs") if isinstance(throughput, dict) else None
+    if isinstance(runs, list):
+        for index, run in enumerate(runs):
+            if isinstance(run, dict):
+                normalize_record(
+                    run,
+                    f"measurements.throughput.runs[{index}]",
+                )
+
+    if len(referenced) != len(set(referenced)):
+        errors.append(
+            "measurement evidence: ping and throughput directions must "
+            "reference distinct raw files"
+        )
+    return referenced
+
+
+def normalize_device_entry_evidence(device_entry, root, errors):
+    referenced = []
+    evidence = device_entry.get("evidence")
+    if not isinstance(evidence, list):
+        return referenced
+    normalized_evidence = []
+    for index, item in enumerate(evidence):
+        label = f"device_entry.evidence[{index}]"
+        if not nonempty_string(item):
+            errors.append(f"{label}: must be a non-empty relative path")
+            continue
+        relative = Path(item)
+        if relative.is_absolute():
+            errors.append(f"{label}: must be relative to the evidence root")
+            continue
+        if ".." in relative.parts:
+            errors.append(f"{label}: must not contain '..'")
+            continue
+        try:
+            path = (root / relative).resolve()
+        except (OSError, RuntimeError, ValueError) as error:
+            errors.append(f"{label}: path cannot be resolved: {error}")
+            continue
+        try:
+            normalized = path.relative_to(root)
+        except ValueError:
+            errors.append(f"{label}: path escapes the evidence root")
+            continue
+        if not path.is_file():
+            errors.append(f"{label}: referenced evidence does not exist")
+            continue
+        normalized_evidence.append(normalized.as_posix())
+        referenced.append(path)
+    if len(normalized_evidence) == len(evidence):
+        device_entry["evidence"] = normalized_evidence
+    return referenced
+
+
+def artifact_records(paths, root):
+    records = {}
+    for path in paths:
+        path = Path(path)
         if not path.is_file():
             continue
         try:
-            display_path = str(path.relative_to(Path(base).resolve()))
+            relative = path.resolve().relative_to(root)
         except ValueError:
-            display_path = str(path)
-        records.append({"path": display_path, "sha256": sha256_file(path)})
-    return records
+            raise ValueError(f"artifact path escapes evidence root: {path}")
+        relative_path = relative.as_posix()
+        digest = sha256_file(path)
+        existing = records.get(relative_path)
+        if existing is not None and existing["sha256"] != digest:
+            raise ValueError(f"artifact contents changed while composing: {path}")
+        records[relative_path] = {"path": relative_path, "sha256": digest}
+    return [records[path] for path in sorted(records)]
 
 
 def compose_report(raw_dir, serial, output_path, device_entry_path=None, measurement_path=None):
-    raw_dir = Path(raw_dir)
+    errors = []
+    evidence_root = Path(output_path).resolve().parent
+    evidence_root.mkdir(parents=True, exist_ok=True)
+    raw_dir = resolve_compose_input(
+        raw_dir,
+        evidence_root,
+        "raw-dir",
+        errors,
+        require_directory=True,
+    )
+    if raw_dir is None:
+        for error in errors:
+            print(f"composed report is invalid: {error}", file=sys.stderr)
+        return 1
     host = load_json(raw_dir / "host.json")
     device = load_json(raw_dir / "device.json")
     usb_text = (raw_dir / "ioreg-usb.txt").read_text(encoding="utf-8")
@@ -1266,11 +2351,37 @@ def compose_report(raw_dir, serial, output_path, device_entry_path=None, measure
         usb_text, controller_texts, serial
     )
 
-    device_entry = (
-        load_json(device_entry_path)
-        if device_entry_path
-        else default_device_entry()
-    )
+    artifact_paths = list(raw_dir.rglob("*"))
+    device_entry_file = None
+    device_evidence_paths = []
+    if device_entry_path:
+        device_entry_file = resolve_compose_input(
+            device_entry_path,
+            evidence_root,
+            "device-entry",
+            errors,
+        )
+        if device_entry_file is None:
+            device_entry = default_device_entry()
+        else:
+            device_entry = read_json_artifact(
+                device_entry_file,
+                "device-entry",
+                errors,
+            )
+            if not isinstance(device_entry, dict):
+                device_entry = default_device_entry()
+            else:
+                device_evidence_paths = normalize_device_entry_evidence(
+                    device_entry,
+                    evidence_root,
+                    errors,
+                )
+                artifact_paths.append(device_entry_file)
+                artifact_paths.extend(device_evidence_paths)
+    else:
+        device_entry = default_device_entry()
+
     target = topology["target_device"]
     classification_input = {
         "usb_device": {
@@ -1290,22 +2401,59 @@ def compose_report(raw_dir, serial, output_path, device_entry_path=None, measure
     }
     classification = classify(classification_input)
 
+    measurement_file = None
     if measurement_path:
-        measurements = load_json(measurement_path)
-        measurement_errors = validate_measurement(
-            measurements,
-            classification.get("interface"),
-            topology["reference_link"],
+        measurement_file = resolve_compose_input(
+            measurement_path,
+            evidence_root,
+            "measurement",
+            errors,
         )
-        if measurement_errors:
-            for error in measurement_errors:
-                print(f"composed report is invalid: {error}", file=sys.stderr)
-            return 1
+        if measurement_file is not None:
+            measurements = read_json_artifact(
+                measurement_file,
+                "measurement",
+                errors,
+            )
+            if not isinstance(measurements, dict):
+                measurements = default_measurements(
+                    topology["reference_link"],
+                    "throughput, RTT, and jitter were not executed",
+                )
+            else:
+                artifact_paths.append(measurement_file)
+                artifact_paths.extend(
+                    normalize_measurement_evidence(
+                        measurements,
+                        measurement_file,
+                        evidence_root,
+                        errors,
+                    )
+                )
+        else:
+            measurements = default_measurements(
+                topology["reference_link"],
+                "throughput, RTT, and jitter were not executed",
+            )
     else:
         measurements = default_measurements(
             topology["reference_link"],
             "throughput, RTT, and jitter were not executed",
         )
+
+    if measurement_path:
+        errors.extend(
+            validate_measurement(
+                measurements,
+                classification.get("interface"),
+                topology["reference_link"],
+            )
+        )
+
+    if errors:
+        for error in errors:
+            print(f"composed report is invalid: {error}", file=sys.stderr)
+        return 1
 
     reasons = list(classification["decision"]["reasons"])
     if device_entry.get("status") != "verified":
@@ -1351,11 +2499,6 @@ def compose_report(raw_dir, serial, output_path, device_entry_path=None, measure
             "macos_network_service"
         )
 
-    artifact_paths = list(raw_dir.rglob("*"))
-    if device_entry_path:
-        artifact_paths.append(Path(device_entry_path))
-    if measurement_path:
-        artifact_paths.append(Path(measurement_path))
     hdc_ifconfig_path = raw_dir / "hdc-ifconfig.txt"
     if hdc_ifconfig_path.exists():
         device["interface_names"] = parse_device_interface_names(
@@ -1409,16 +2552,19 @@ def compose_report(raw_dir, serial, output_path, device_entry_path=None, measure
         "device_entry": device_entry,
         "measurements": measurements,
         "decision": {"status": decision, "reasons": reasons},
-        "artifacts": artifact_records(
-            artifact_paths, Path(output_path).resolve().parent
-        ),
+        "artifacts": [],
     }
-    write_json(output_path, report)
-    errors = validate_report(report)
+    try:
+        report["artifacts"] = artifact_records(artifact_paths, evidence_root)
+    except ValueError as error:
+        print(f"composed report is invalid: {error}", file=sys.stderr)
+        return 1
+    errors = validate_report(report, evidence_root)
     if errors:
         for error in errors:
             print(f"composed report is invalid: {error}", file=sys.stderr)
         return 1
+    write_json(output_path, report)
     return 0
 
 
@@ -1607,6 +2753,7 @@ def command_measure(arguments):
         return 1
 
     ping = parse_ping(output_dir / "ping.txt")
+    ping["raw_path"] = "ping.txt"
     throughput_runs = []
     for direction, filename in (
         ("host_to_device", "iperf-host-to-device.json"),
