@@ -1,0 +1,18 @@
+HDC=/Applications/DevEco-Studio.app/Contents/sdk/default/openharmony/toolchains/hdc
+
+# Build with DevEco Studio automatic signing enabled in build-profile.json5.
+env HVIGOR_USER_HOME=/private/tmp/gate3-hvigor-home \
+  JAVA_HOME=/Applications/DevEco-Studio.app/Contents/jbr/Contents/Home \
+  DEVECO_SDK_HOME=/Applications/DevEco-Studio.app/Contents/sdk \
+  NODE_HOME=/Applications/DevEco-Studio.app/Contents/tools/node \
+  /Applications/DevEco-Studio.app/Contents/tools/hvigor/bin/hvigorw \
+  clean assembleHap --no-daemon -p product=default -p buildMode=debug
+
+$HDC -t <serial> install -r probes/gate3/app/entry/build/default/outputs/default/entry-default-signed.hap
+$HDC -t <serial> shell aa start -a EntryAbility -b com.deskmate.gate3
+$HDC -t <serial> shell snapshot_display -f /data/local/tmp/gate3.jpeg
+$HDC -t <serial> shell uitest dumpLayout -p /data/local/tmp/gate3-layout.json
+$HDC -t <serial> shell uitest uiInput click 214 979  # Run recovery suite
+$HDC -t <serial> shell uitest uiInput click 608 979  # Freeze for LGF check
+$HDC -t <serial> shell uitest uiInput click 984 979  # Mark LGF stable
+$HDC -t <serial> shell uitest uiInput click 1354 979 # Resume after freeze

@@ -1,0 +1,359 @@
+{
+  "schema": "deskmate.gate3.device-probe.v1",
+  "verification": "passed",
+  "stage": "resumed after freeze; verify whether the held frame remained stable",
+  "failure": "",
+  "suite": {
+    "state": "complete",
+    "passed": true
+  },
+  "device": {
+    "productModel": "MRDI-W00",
+    "osFullName": "OpenHarmony-7.0.0.111",
+    "sdkApiVersion": 26,
+    "abiList": "arm64-v8a",
+    "displayVersion": "MRDIL-W00 7.0.0.111(SP8C00E111R6P3)",
+    "buildType": "default",
+    "incrementalVersion": "26.0.0.111"
+  },
+  "capabilities": [
+    {
+      "mime": "video/avc",
+      "present": true,
+      "name": "OMX.hisi.video.decoder.avc",
+      "hardware": true,
+      "low_latency_feature": true,
+      "surface_pixel_format": false,
+      "width_range": {
+        "min": 128,
+        "max": 8192
+      },
+      "height_range": {
+        "min": 128,
+        "max": 8192
+      },
+      "pixel_formats": [
+        2,
+        3
+      ],
+      "profiles": [
+        0,
+        8,
+        4
+      ]
+    },
+    {
+      "mime": "video/hevc",
+      "present": true,
+      "name": "OMX.hisi.video.decoder.hevc",
+      "hardware": true,
+      "low_latency_feature": true,
+      "surface_pixel_format": false,
+      "width_range": {
+        "min": 128,
+        "max": 8192
+      },
+      "height_range": {
+        "min": 128,
+        "max": 8192
+      },
+      "pixel_formats": [
+        2,
+        3
+      ],
+      "profiles": [
+        0,
+        1
+      ]
+    }
+  ],
+  "stream": {
+    "bytes": 217122,
+    "nals": 125,
+    "access_units": 60,
+    "keyframes": 2,
+    "access_units_with_sps": 2,
+    "access_units_with_pps": 2,
+    "first_access_unit_is_idr_with_sps_pps": true
+  },
+  "surface": {
+    "ready": true,
+    "generation": 1,
+    "window_key": 392698893376,
+    "lease_id": 1,
+    "lease_valid": true,
+    "active_generation": 1,
+    "renderer_surface_set": true,
+    "reference_operations_serialized": true,
+    "decoder_needs_rebuild": false
+  },
+  "initial_decode": {
+    "passed": true,
+    "duration_ns": 62103438,
+    "rendered_outputs": 2,
+    "input_access_units": 8,
+    "parameter_set_units": 1,
+    "low_latency_key_requested": true,
+    "low_latency_key_accepted": true,
+    "decoder": 2,
+    "input_buffers_pushed": 47
+  },
+  "recoveries": [
+    {
+      "action": "flush",
+      "operation_success": true,
+      "first_output_observed": true,
+      "surface_retained": true,
+      "surface_set_confirmed": true,
+      "parameter_sets_resubmitted": true,
+      "parameter_set_unit_observed": true,
+      "decoder_instance_matched": true,
+      "last_good_frame_state_stable": true,
+      "operation_duration_ns": 12129688,
+      "first_output_latency_ns": 29166875,
+      "residual_callbacks": 0,
+      "stale_epoch_frees": 0,
+      "input_buffers_pushed": 7,
+      "parameter_set_units_pushed": 1,
+      "stale_input_callbacks": 1,
+      "decoder": 1,
+      "surface_generation": 1,
+      "failure_stage": "",
+      "stages": [
+        {
+          "stage": "flush",
+          "duration_ns": 9931719,
+          "ok": true
+        },
+        {
+          "stage": "start",
+          "duration_ns": 2193594,
+          "ok": true
+        },
+        {
+          "stage": "parameter-sets-idr",
+          "duration_ns": 4375,
+          "ok": true
+        }
+      ]
+    },
+    {
+      "action": "stop",
+      "operation_success": true,
+      "first_output_observed": true,
+      "surface_retained": true,
+      "surface_set_confirmed": true,
+      "parameter_sets_resubmitted": true,
+      "parameter_set_unit_observed": true,
+      "decoder_instance_matched": true,
+      "last_good_frame_state_stable": true,
+      "operation_duration_ns": 34138125,
+      "first_output_latency_ns": 66287343,
+      "residual_callbacks": 0,
+      "stale_epoch_frees": 0,
+      "input_buffers_pushed": 9,
+      "parameter_set_units_pushed": 1,
+      "stale_input_callbacks": 0,
+      "decoder": 1,
+      "surface_generation": 1,
+      "failure_stage": "",
+      "stages": [
+        {
+          "stage": "stop",
+          "duration_ns": 18655937,
+          "ok": true
+        },
+        {
+          "stage": "start",
+          "duration_ns": 15479844,
+          "ok": true
+        },
+        {
+          "stage": "parameter-sets-idr",
+          "duration_ns": 2344,
+          "ok": true
+        }
+      ]
+    },
+    {
+      "action": "reset",
+      "operation_success": true,
+      "first_output_observed": true,
+      "surface_retained": true,
+      "surface_set_confirmed": true,
+      "parameter_sets_resubmitted": true,
+      "parameter_set_unit_observed": true,
+      "decoder_instance_matched": true,
+      "last_good_frame_state_stable": true,
+      "operation_duration_ns": 45245314,
+      "first_output_latency_ns": 75296875,
+      "residual_callbacks": 0,
+      "stale_epoch_frees": 0,
+      "input_buffers_pushed": 8,
+      "parameter_set_units_pushed": 1,
+      "stale_input_callbacks": 1,
+      "decoder": 1,
+      "surface_generation": 1,
+      "failure_stage": "",
+      "stages": [
+        {
+          "stage": "reset",
+          "duration_ns": 31023750,
+          "ok": true
+        },
+        {
+          "stage": "configure",
+          "duration_ns": 880313,
+          "ok": true
+        },
+        {
+          "stage": "set-surface",
+          "duration_ns": 989219,
+          "ok": true
+        },
+        {
+          "stage": "prepare",
+          "duration_ns": 102500,
+          "ok": true
+        },
+        {
+          "stage": "start",
+          "duration_ns": 12246563,
+          "ok": true
+        },
+        {
+          "stage": "parameter-sets-idr",
+          "duration_ns": 2969,
+          "ok": true
+        }
+      ]
+    },
+    {
+      "action": "rebuild",
+      "operation_success": true,
+      "first_output_observed": true,
+      "surface_retained": true,
+      "surface_set_confirmed": true,
+      "parameter_sets_resubmitted": true,
+      "parameter_set_unit_observed": true,
+      "decoder_instance_matched": true,
+      "last_good_frame_state_stable": true,
+      "operation_duration_ns": 74233750,
+      "first_output_latency_ns": 103627188,
+      "residual_callbacks": 0,
+      "stale_epoch_frees": 0,
+      "input_buffers_pushed": 8,
+      "parameter_set_units_pushed": 1,
+      "stale_input_callbacks": 0,
+      "decoder": 2,
+      "surface_generation": 1,
+      "failure_stage": "",
+      "stages": [
+        {
+          "stage": "destroy-create",
+          "duration_ns": 58914843,
+          "ok": true
+        },
+        {
+          "stage": "configure",
+          "duration_ns": 825938,
+          "ok": true
+        },
+        {
+          "stage": "set-surface",
+          "duration_ns": 1078281,
+          "ok": true
+        },
+        {
+          "stage": "prepare",
+          "duration_ns": 124687,
+          "ok": true
+        },
+        {
+          "stage": "start",
+          "duration_ns": 13286719,
+          "ok": true
+        },
+        {
+          "stage": "parameter-sets-idr",
+          "duration_ns": 3282,
+          "ok": true
+        }
+      ]
+    },
+    {
+      "action": "manual-freeze-resume",
+      "operation_success": true,
+      "first_output_observed": true,
+      "surface_retained": true,
+      "surface_set_confirmed": true,
+      "parameter_sets_resubmitted": true,
+      "parameter_set_unit_observed": true,
+      "decoder_instance_matched": true,
+      "last_good_frame_state_stable": true,
+      "operation_duration_ns": 11524375,
+      "first_output_latency_ns": 30118750,
+      "residual_callbacks": 0,
+      "stale_epoch_frees": 0,
+      "input_buffers_pushed": 7,
+      "parameter_set_units_pushed": 1,
+      "stale_input_callbacks": 0,
+      "decoder": 2,
+      "surface_generation": 1,
+      "failure_stage": "",
+      "stages": [
+        {
+          "stage": "flush",
+          "duration_ns": 9287500,
+          "ok": true
+        },
+        {
+          "stage": "start",
+          "duration_ns": 2235000,
+          "ok": true
+        },
+        {
+          "stage": "parameter-sets-idr",
+          "duration_ns": 1875,
+          "ok": true
+        }
+      ]
+    }
+  ],
+  "callback_audit": {
+    "output_callbacks": 24,
+    "total_callback_events": 85,
+    "callbacks_observed_off_control_thread": true,
+    "residual_decoder_callbacks": 0,
+    "stale_epoch_frees": 0,
+    "surface_invalid_frees": 0,
+    "free_failures": 0,
+    "render_failures": 0,
+    "stale_input_callbacks": 2,
+    "control_thread_violations": 0,
+    "callback_body": "queue-only",
+    "stream_change": {
+      "decoder": 2,
+      "width": 640,
+      "height": 360,
+      "pixel_format": 2
+    }
+  },
+  "last_good_frame": {
+    "state_visible": true,
+    "manual_observation": "stable",
+    "frozen": false,
+    "evidence": "router state plus retained Surface Lease; no CPU pixel readback"
+  },
+  "annexb_host_sample_interop": {
+    "state": "pending",
+    "reason": "issue 05 has not produced the real Host Annex-B sample"
+  },
+  "no_cpu_pixel_readback": true,
+  "limitations": [
+    "last_good_frame.state_visible and manual_observation are not a pixel capture",
+    "low_latency_key_accepted proves the configure key was accepted, not decoder scheduling",
+    "surface_retained uses lease validity and SetSurface success, not display scanout proof",
+    "Annex-B Host sample interoperability remains pending issue 05"
+  ]
+}

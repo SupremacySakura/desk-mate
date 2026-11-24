@@ -1,0 +1,10 @@
+<redacted-serial>		USB	Connected	localhost	hdc
+--- param
+const.product.model=MRDI-W00 
+const.product.name=HUAWEI MatePad Pro 
+const.product.software.version=MRDIL-W00 7.0.0.111(SP8C00E111R6P3) 
+const.ohos.fullname=OpenHarmony-7.0.0.111 
+const.ohos.apiversion=26 
+--- screen
+screen[0]: id=0, powerStatus=POWER_STATUS_ON, backlight=14484, screenType=EXTERNAL_TYPE, render resolution=2800x1840, physical resolution=2800x1840, isVirtual=false, skipFrameInterval=1, expectedRefreshRate=-1, skipFrameStrategy=0
+activeMode: 2800x1840, refreshRate=60

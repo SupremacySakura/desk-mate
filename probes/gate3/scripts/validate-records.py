@@ -67,7 +67,16 @@ def validate_device(record: dict, path: Path) -> None:
     build_state = require_state(build.get("state"), f"{path}: build")
     if build_state == "passed":
         require(bool(build.get("hap_sha256")), f"{path}: built HAP needs sha256")
-        require(build.get("signature") == "unsigned", f"{path}: this build must be recorded unsigned")
+        signature = build.get("signature")
+        require(signature in {"unsigned", "signed"},
+                f"{path}: build signature must be unsigned or signed")
+        if signature == "signed":
+            signing = build.get("signing")
+            require(isinstance(signing, dict) and bool(signing.get("mode")),
+                    f"{path}: signed build needs a signing summary")
+            forbidden = {"storePassword", "keyPassword", "storeFile", "certpath", "profile"}
+            require(not (forbidden & set(signing)),
+                    f"{path}: signing summary must not contain credentials or absolute paths")
     else:
         require(build.get("measurements") is None, f"{path}: unbuilt build cannot include measurements")
 

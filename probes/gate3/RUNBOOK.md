@@ -4,7 +4,11 @@ Target: HUAWEI MatePad Pro `MRDI-W00`, serial `<redacted-serial>`,
 OpenHarmony `7.0.0.111`, API 26, 2800x1840. The current USB path is through a
 Hub at USB 2.0 and is **not** a Reference Link.
 
-## 1. Build the unsigned HAP
+## 1. Build the signed HAP
+
+Enable DevEco Studio automatic signing for `com.deskmate.gate3` and the
+connected device. Keep the generated signing block, private key, profile,
+passwords, and device UDID out of Git.
 
 ```sh
 cd probes/gate3/app
@@ -21,20 +25,21 @@ env \
 Verify:
 
 ```sh
-HAP=probes/gate3/app/entry/build/default/outputs/default/entry-default-unsigned.hap
+HAP=entry/build/default/outputs/default/entry-default-signed.hap
 shasum -a 256 "$HAP"
 unzip -l "$HAP" | grep -E 'libentry.so|gate3-testsrc.h264'
-unzip -l "$HAP" | grep META-INF || echo "UNSIGNED: no META-INF"
+ls -l "$HAP"
 ```
 
 Do not invent a signature. If no matching signing material exists, an install
 failure caused by `no signature file` is a **not executed** device run, not a
-failed probe.
+failed probe. Do not commit a signing block produced for a local run.
 
 ## 2. Reach the target
 
 ```sh
 HDC=/Applications/DevEco-Studio.app/Contents/sdk/default/openharmony/toolchains/hdc
+HAP=probes/gate3/app/entry/build/default/outputs/default/entry-default-signed.hap
 "$HDC" list targets
 "$HDC" -t <redacted-serial> shell param get const.product.model
 "$HDC" -t <redacted-serial> shell param get const.ohos.fullname
