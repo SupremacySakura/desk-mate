@@ -50,6 +50,8 @@ public:
         std::uint64_t frames_submitted = 0;
         std::uint64_t frames_rendered = 0;
         std::uint64_t frames_dropped = 0;
+        std::uint64_t input_callbacks = 0;
+        std::uint64_t output_callbacks = 0;
         std::uint64_t input_buffers = 0;
         std::uint64_t stale_callbacks = 0;
         std::uint64_t output_errors = 0;

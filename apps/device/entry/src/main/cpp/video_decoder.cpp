@@ -6,12 +6,17 @@
 #include <sstream>
 #include <unistd.h>
 
-#include <hilog/log.h>
 #include <multimedia/player_framework/native_avformat.h>
 #include <native_window/external_window.h>
 
-#define DECODER_LOG_DOMAIN 0x3210
-#define DECODER_LOG_TAG "DeskMateDecoder"
+// OH_LOG_* expands LOG_DOMAIN / LOG_TAG; hilog/log.h defaults them to 0 / NULL.
+// They must be defined before the include for the macros to pick them up.
+#undef LOG_DOMAIN
+#undef LOG_TAG
+#define LOG_DOMAIN 0x3210
+#define LOG_TAG "DeskMateDecoder"
+
+#include <hilog/log.h>
 
 namespace deskmate::device {
 namespace {
@@ -145,6 +150,10 @@ void VideoDecoder::OnNeedInputBuffer(OH_AVCodec *, std::uint32_t index,
     if (self == nullptr) {
         return;
     }
+    {
+        std::lock_guard lock(self->mutex_);
+        ++self->stats_.input_callbacks;
+    }
     Event event;
     event.kind = Event::Kind::InputReady;
     event.index = index;
@@ -158,6 +167,10 @@ void VideoDecoder::OnNewOutputBuffer(OH_AVCodec *, std::uint32_t index,
     auto *self = static_cast<VideoDecoder *>(user_data);
     if (self == nullptr) {
         return;
+    }
+    {
+        std::lock_guard lock(self->mutex_);
+        ++self->stats_.output_callbacks;
     }
     Event event;
     event.kind = Event::Kind::OutputReady;
@@ -293,11 +306,17 @@ void VideoDecoder::SetSurface(void *native_window)
         std::ostringstream message;
         message << "SET_BUFFER_GEOMETRY failed: " << geometry;
         SetError(message.str());
+        OH_LOG_ERROR(LOG_APP, "%{public}s", message.str().c_str());
     }
     const OH_AVErrCode result =
         OH_VideoDecoder_SetSurface(codec_, static_cast<OHNativeWindow *>(native_window));
     NoteResult("OH_VideoDecoder_SetSurface", result);
     surface_set_ = result == AV_ERR_OK;
+    OH_LOG_INFO(LOG_APP,
+                "surface set %{public}dx%{public}d geometry=%{public}d "
+                "result=%{public}d",
+                config_.width, config_.height, geometry,
+                static_cast<std::int32_t>(result));
 }
 
 bool VideoDecoder::Push(const std::vector<std::uint8_t> &access_unit,
@@ -315,6 +334,13 @@ bool VideoDecoder::Push(const std::vector<std::uint8_t> &access_unit,
         queued_.push_back(PendingFrame{access_unit, pts_us, keyframe});
         ++stats_.frames_submitted;
     }
+    // The codec hands over its whole input pool right after Start(), which is
+    // usually before the first access unit arrives. Those buffers wait in
+    // input_ready_ and only get filled from PumpFrames(), which used to run
+    // solely on OnNeedInputBuffer. With nothing pushed the codec never asks
+    // for another buffer, so the pool stayed empty and no frame was ever
+    // decoded: the surface stayed black for both HEVC and H.264.
+    PumpFrames();
     return true;
 }
 
@@ -424,6 +450,9 @@ void VideoDecoder::ProcessEvents()
                     stats_.height = event.height;
                 }
                 stats_.pixel_format = event.pixel_format;
+                OH_LOG_INFO(LOG_APP,
+                            "stream changed %{public}dx%{public}d format=%{public}d",
+                            stats_.width, stats_.height, stats_.pixel_format);
                 break;
             }
         }

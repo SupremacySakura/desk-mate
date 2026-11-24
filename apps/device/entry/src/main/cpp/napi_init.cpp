@@ -7,6 +7,13 @@
 #include <string>
 #include <vector>
 
+#undef LOG_DOMAIN
+#undef LOG_TAG
+#define LOG_DOMAIN 0x3210
+#define LOG_TAG "DeskMateSurface"
+
+#include <hilog/log.h>
+
 namespace {
 
 std::mutex g_surface_mutex;
@@ -23,6 +30,7 @@ bool UpdateSurface(void *window)
 {
     const std::string key = SurfaceKey(window);
     if (key.empty()) {
+        OH_LOG_ERROR(LOG_APP, "surface callback carried a null window");
         return false;
     }
     std::lock_guard lock(g_surface_mutex);
@@ -30,6 +38,8 @@ bool UpdateSurface(void *window)
     if (key == g_surface_key) {
         return true;
     }
+    OH_LOG_INFO(LOG_APP, "surface created key=%{public}s",
+                key.c_str());
     if (!g_surface_key.empty()) {
         (void)engine.SurfaceDestroyed(g_surface_key);
         g_surface_key.clear();
@@ -39,6 +49,7 @@ bool UpdateSurface(void *window)
     }
     engine.SetNativeWindow(window);
     g_surface_key = key;
+    OH_LOG_INFO(LOG_APP, "surface attached key=%{public}s", key.c_str());
     return true;
 }
 
@@ -49,6 +60,7 @@ void RemoveSurface(void *window)
     if (key.empty() || key != g_surface_key) {
         return;
     }
+    OH_LOG_INFO(LOG_APP, "surface destroyed key=%{public}s", key.c_str());
     g_surface_key.clear();
     auto &engine = deskmate::device::DeviceEngine::Instance();
     (void)engine.SurfaceDestroyed(key);
@@ -57,16 +69,19 @@ void RemoveSurface(void *window)
 
 void OnSurfaceCreated(OH_NativeXComponent *, void *window)
 {
+    OH_LOG_INFO(LOG_APP, "OnSurfaceCreated");
     (void)UpdateSurface(window);
 }
 
 void OnSurfaceChanged(OH_NativeXComponent *, void *window)
 {
+    OH_LOG_INFO(LOG_APP, "OnSurfaceChanged");
     (void)UpdateSurface(window);
 }
 
 void OnSurfaceDestroyed(OH_NativeXComponent *, void *window)
 {
+    OH_LOG_INFO(LOG_APP, "OnSurfaceDestroyed");
     RemoveSurface(window);
 }
 
@@ -233,6 +248,7 @@ void RegisterXComponent(napi_env env, napi_value exports)
     napi_value export_instance = nullptr;
     if (napi_get_named_property(env, exports, OH_NATIVE_XCOMPONENT_OBJ,
                                 &export_instance) != napi_ok) {
+        OH_LOG_ERROR(LOG_APP, "XComponent export object is missing");
         return;
     }
     napi_valuetype type = napi_undefined;
@@ -244,9 +260,13 @@ void RegisterXComponent(napi_env env, napi_value exports)
     if (napi_unwrap(env, export_instance, reinterpret_cast<void **>(&component)) !=
             napi_ok ||
         component == nullptr) {
+        OH_LOG_ERROR(LOG_APP, "XComponent unwrap failed");
         return;
     }
-    (void)OH_NativeXComponent_RegisterCallback(component, &g_xComponentCallback);
+    const int32_t result =
+        OH_NativeXComponent_RegisterCallback(component, &g_xComponentCallback);
+    OH_LOG_INFO(LOG_APP, "XComponent callback registration result=%{public}d",
+                result);
 }
 
 napi_value Init(napi_env env, napi_value exports)

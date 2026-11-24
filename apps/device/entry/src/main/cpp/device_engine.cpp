@@ -19,8 +19,13 @@
 
 #include <hilog/log.h>
 
-#define ENGINE_LOG_DOMAIN 0x3210
-#define ENGINE_LOG_TAG "DeskMateEngine"
+// OH_LOG_* expands LOG_DOMAIN / LOG_TAG at the use site, and hilog/log.h only
+// supplies 0 / NULL defaults when they are undefined. Without this every line
+// landed in domain 0 with a null tag and was invisible to `hilog -T`.
+#undef LOG_DOMAIN
+#undef LOG_TAG
+#define LOG_DOMAIN 0x3210
+#define LOG_TAG "DeskMateEngine"
 
 namespace deskmate::device {
 namespace {
@@ -69,6 +74,11 @@ CapabilitySet DeviceCapabilities()
 const char *StateName(SessionState state)
 {
     return protocol::session_state_name(state).data();
+}
+
+const char *EncoderName(VideoEncoder encoder)
+{
+    return encoder == VideoEncoder::Hevc ? "hevc" : "h264";
 }
 
 // Timer thread: poll() on the accessory descriptor ignores its timeout on this
@@ -120,30 +130,53 @@ public:
     explicit EngineBoundary(DeviceEngine *engine) : engine_(engine) {}
 
     BoundaryResult prepare_stream(const StreamProfile &profile,
-                                  std::uint32_t) override
+                                  std::uint32_t config_id) override
     {
+        OH_LOG_INFO(LOG_APP,
+                    "prepare_stream config=%{public}u encoder=%{public}s "
+                    "%{public}dx%{public}d@%{public}u nv12=%{public}d",
+                    config_id, EncoderName(profile.encoder),
+                    profile.resolution.width, profile.resolution.height,
+                    profile.resolution.refresh_hz,
+                    profile.pixel_format == PixelFormat::Nv12 ? 1 : 0);
         if (profile.encoder != VideoEncoder::Hevc &&
             profile.encoder != VideoEncoder::H264) {
+            OH_LOG_ERROR(LOG_APP, "prepare_stream rejected: encoder");
             return BoundaryResult::Failed;
         }
         if (profile.pixel_format != PixelFormat::Nv12) {
+            OH_LOG_ERROR(LOG_APP, "prepare_stream rejected: pixel format");
             return BoundaryResult::Failed;
         }
         if (profile.resolution.width == 0 || profile.resolution.height == 0) {
+            OH_LOG_ERROR(LOG_APP, "prepare_stream rejected: empty resolution");
             return BoundaryResult::Failed;
         }
+        OH_LOG_INFO(LOG_APP, "prepare_stream accepted config=%{public}u",
+                    config_id);
         return BoundaryResult::Ok;
     }
 
-    BoundaryResult commit_stream(const StreamProfile &profile, std::uint32_t,
-                                 std::uint32_t) override
+    BoundaryResult commit_stream(const StreamProfile &profile,
+                                 std::uint32_t config_id,
+                                 std::uint32_t video_stream_id) override
     {
-        return engine_->CommitProfile(profile) ? BoundaryResult::Ok
-                                               : BoundaryResult::Failed;
+        const bool ok = engine_->CommitProfile(profile);
+        OH_LOG_INFO(LOG_APP,
+                    "commit_stream config=%{public}u stream=%{public}u "
+                    "encoder=%{public}s %{public}dx%{public}d@%{public}u ok=%{public}d",
+                    config_id, video_stream_id, EncoderName(profile.encoder),
+                    profile.resolution.width, profile.resolution.height,
+                    profile.resolution.refresh_hz, ok ? 1 : 0);
+        return ok ? BoundaryResult::Ok : BoundaryResult::Failed;
     }
 
-    void release_stream(std::uint32_t, std::uint32_t) override
+    void release_stream(std::uint32_t config_id,
+                        std::uint32_t video_stream_id) override
     {
+        OH_LOG_INFO(LOG_APP,
+                    "release_stream config=%{public}u stream=%{public}u",
+                    config_id, video_stream_id);
         engine_->ReleaseDecoder();
     }
 
@@ -436,6 +469,7 @@ void DeviceEngine::WorkerMain()
     timer.Start();
 
     int rebuilds = 0;
+    auto last_report_ns = std::chrono::steady_clock::now();
     while (!stop_requested_.load()) {
         {
             std::lock_guard lock(mutex_);
@@ -447,13 +481,13 @@ void DeviceEngine::WorkerMain()
 
         bool rebuild = false;
         while (!stop_requested_.load()) {
-            // Only ask for POLLOUT while bytes are actually queued: requesting
-            // it unconditionally makes poll() return immediately on a writable
-            // endpoint and turns this loop into a busy spin.
-            const bool wants_write = io.stats().pending_write_bytes > 0;
+            // poll() on the accessory descriptor ignores its timeout on this
+            // platform, so this loop is driven by the 5 ms eventfd tick; the
+            // descriptor is only watched for readable/hangup transitions. A
+            // NAK'd OUT endpoint is retried on the next tick rather than via
+            // POLLOUT, which would otherwise make poll() spin when writable.
             pollfd fds[2] = {
-                {accessory_fd_,
-                 static_cast<short>(POLLIN | (wants_write ? POLLOUT : 0)), 0},
+                {accessory_fd_, POLLIN, 0},
                 {wake_fd_, POLLIN, 0},
             };
             const int ready = ::poll(fds, 2, 1000);
@@ -470,14 +504,10 @@ void DeviceEngine::WorkerMain()
                 rebuild = true;
                 break;
             }
+            io.note_poll_revents(fds[0].revents);
             if ((fds[1].revents & POLLIN) != 0) {
                 PumpTimer();
             }
-            if ((fds[0].revents & POLLOUT) != 0) {
-                // The endpoint finally drained a NAK'd bulk IN transfer.
-                io.flush_pending();
-            }
-
             session_->pump();
 
             bool dirty = false;
@@ -526,8 +556,90 @@ void DeviceEngine::WorkerMain()
             }
 
             if (session_->is_terminal()) {
+                const auto failure = session_->failure();
+                OH_LOG_ERROR(LOG_APP,
+                             "session terminal state=%{public}s "
+                             "failure=%{public}s detail=%{public}s "
+                             "rebuilds=%{public}d",
+                             StateName(session_->state()),
+                             failure.has_value()
+                                 ? protocol::session_failure_name(*failure)
+                                       .data()
+                                 : "none",
+                             std::string(session_->failure_detail()).c_str(),
+                             rebuilds);
                 rebuild = true;
                 break;
+            }
+
+            // One line per second so a stalled handshake can be diagnosed from
+            // hilog alone: which state the session sits in and what the
+            // descriptor actually did.
+            const auto now = std::chrono::steady_clock::now();
+            if (now - last_report_ns >= std::chrono::seconds(1)) {
+                last_report_ns = now;
+                const auto stats = io.stats();
+                const auto state = session_->state();
+                const bool surface = surface_id_.size() > 0;
+                const bool window = native_window_ != nullptr;
+                const bool decoder_open = decoder_ != nullptr && decoder_->open();
+                const bool decoder_surface =
+                    decoder_ != nullptr && decoder_->surface_attached();
+                OH_LOG_INFO(
+                    LOG_APP,
+                    "state=%{public}s failure=%{public}s detail=%{public}s "
+                    "reads=%{public}llu bytes=%{public}llu read_err=%{public}llu "
+                    "errno=%{public}d zero=%{public}llu "
+                    "write_err=%{public}llu werrno=%{public}d "
+                    "tx=%{public}llu pending=%{public}zu einval=%{public}llu "
+                    "wblk=%{public}llu partial=%{public}llu "
+                    "revents=0x%{public}x nonce=0x%{public}x "
+                    "rebuilds=%{public}d stop=%{public}d "
+                    "surface=%{public}d window=%{public}d decoder=%{public}d "
+                    "dopen=%{public}d dsurface=%{public}d "
+                    "rx=%{public}llu dropped=%{public}llu "
+                    "dsubmit=%{public}llu dinput_cb=%{public}llu "
+                    "dout_cb=%{public}llu dinput=%{public}llu "
+                    "drendered=%{public}llu ddrop=%{public}llu "
+                    "derr=%{public}llu dstale=%{public}llu dstream=%{public}llu "
+                    "width=%{public}d height=%{public}d fmt=%{public}d "
+                    "derror=%{public}s",
+                    StateName(state),
+                    session_->failure().has_value()
+                        ? protocol::session_failure_name(*session_->failure())
+                              .data()
+                        : "none",
+                    std::string(session_->failure_detail()).c_str(),
+                    static_cast<unsigned long long>(stats.reads),
+                    static_cast<unsigned long long>(stats.bytes_read),
+                    static_cast<unsigned long long>(stats.read_errors),
+                    stats.last_read_errno,
+                    static_cast<unsigned long long>(stats.zero_reads),
+                    static_cast<unsigned long long>(stats.write_errors),
+                    stats.last_write_errno,
+                    static_cast<unsigned long long>(stats.bytes_written),
+                    stats.pending_write_bytes,
+                    static_cast<unsigned long long>(stats.einval_shrinks),
+                    static_cast<unsigned long long>(stats.write_would_block),
+                    static_cast<unsigned long long>(stats.write_partials),
+                    stats.last_poll_revents, session_->session_nonce(), rebuilds,
+                    stop_requested_.load() ? 1 : 0, surface ? 1 : 0,
+                    window ? 1 : 0, decoder_ != nullptr ? 1 : 0,
+                    decoder_open ? 1 : 0, decoder_surface ? 1 : 0,
+                    static_cast<unsigned long long>(frames_received_),
+                    static_cast<unsigned long long>(frames_dropped_),
+                    static_cast<unsigned long long>(decoder_stats_.frames_submitted),
+                    static_cast<unsigned long long>(decoder_stats_.input_callbacks),
+                    static_cast<unsigned long long>(decoder_stats_.output_callbacks),
+                    static_cast<unsigned long long>(decoder_stats_.input_buffers),
+                    static_cast<unsigned long long>(decoder_stats_.frames_rendered),
+                    static_cast<unsigned long long>(decoder_stats_.frames_dropped),
+                    static_cast<unsigned long long>(decoder_stats_.output_errors),
+                    static_cast<unsigned long long>(decoder_stats_.stale_callbacks),
+                    static_cast<unsigned long long>(decoder_stats_.stream_changes),
+                    decoder_stats_.width, decoder_stats_.height,
+                    decoder_stats_.pixel_format,
+                    decoder_ != nullptr ? decoder_->last_error().c_str() : "none");
             }
         }
 
