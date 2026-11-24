@@ -1,2 +1,4 @@
 build/
 .DS_Store
+.hvigor/
+probes/gate3/.build/
