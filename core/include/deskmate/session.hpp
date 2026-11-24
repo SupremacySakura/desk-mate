@@ -3,6 +3,8 @@
 #include "deskmate/byte_io.hpp"
 #include "deskmate/clock.hpp"
 #include "deskmate/protocol.hpp"
+#include "deskmate/recovery.hpp"
+#include "deskmate/scheduler.hpp"
 
 #include <cstddef>
 #include <cstdint>
@@ -69,6 +71,7 @@ struct ReceivedVideoFrame {
   Header header{};
   std::vector<std::uint8_t> payload;
   std::uint64_t surface_generation{};
+  std::optional<std::uint32_t> recovery_id;
 };
 
 class SurfaceReferenceOps {
@@ -334,6 +337,7 @@ struct HostSessionConfig {
   std::uint32_t initial_config_id{1};
   std::uint32_t protocol_revision{kProtocolRevision};
   SessionLimits limits{};
+  SendSchedulerConfig scheduler{};
 };
 
 struct DeviceSessionConfig {
@@ -341,6 +345,7 @@ struct DeviceSessionConfig {
   CapabilitySet capabilities;
   std::uint32_t protocol_revision{kProtocolRevision};
   SessionLimits limits{};
+  DeviceRecoveryConfig recovery{};
 };
 
 class DeviceBoundary {
@@ -404,6 +409,8 @@ class HostSession {
   [[nodiscard]] std::string_view failure_detail() const;
   [[nodiscard]] std::uint32_t session_nonce() const;
   [[nodiscard]] const std::optional<NegotiatedStream>& negotiated_stream() const;
+  [[nodiscard]] const std::optional<SchedulerIdrRequest>& pending_idr_request()
+      const;
   [[nodiscard]] bool capture_encoding_intent() const;
   [[nodiscard]] bool input_injection_intent() const;
   [[nodiscard]] bool pause_acknowledged() const;
@@ -461,6 +468,9 @@ class DeviceSession {
   void complete_stop();
   void stop();
   [[nodiscard]] std::vector<ReceivedVideoFrame> take_video_frames();
+  [[nodiscard]] bool recovery_gated() const;
+  [[nodiscard]] const std::optional<std::uint32_t>& recovery_id() const;
+  [[nodiscard]] const std::optional<ReceivedVideoFrame>& last_good_frame() const;
 
  private:
   struct Impl;
