@@ -40,6 +40,9 @@ Reverse Input 项目。当前仓库处于 **Design / Pending Hardware Verificati
   意图，且 `resume()` 返回 `DisplayUnavailable`；Device 在首个 IDR 前也接受 Pause。
 - 回滚保留旧流并重新等待旧流 IDR；失败的候选 `config_id` 迟到的 ACK 会被忽略，
   不会打断后续重配或让 Device 对已回滚候选再发最终确认。
+- Basic Input 的 28 字节显式小端载荷（触点/滚动/按键、归一化坐标与主键位）；
+  Device 只在 `Streaming` 发送，Host 只在 `Streaming` 且输入意图有效时交付，
+  陈旧 Stream Epoch 或锁屏后的输入不会进入注入队列。
 - 合法与非法 golden vectors。
 
 上述能力是 Host 侧共享核心与确定性契约测试；真实 USB 吞吐、编码器行为、
@@ -66,7 +69,7 @@ make test
 ./build/deskmate-scheduling-tests
 ```
 
-当前主机套件为协议 21 项、Session 72 项、调度 15 项，共 108 项；全部使用内存
+当前主机套件为协议 21 项、Session 75 项、调度 15 项，共 111 项；全部使用内存
 `ByteIo` 与 `ManualClock`，不依赖真实 sleep、USB 设备或编解码器。
 
 清理构建产物：
@@ -270,6 +273,23 @@ Session 层，本实现的握手只接受与本地 `kProtocolRevision` 相同的
 `STREAM_COMMIT` 与 `STREAM_COMMITTED` 的 body 是 4 字节非零
 `video_stream_id`；包头 `video_stream_id` 必须与 body 相同。`PROTOCOL_ERROR`
 body 是 1 字节 `SessionFailure` 数值，见 `session.hpp`。
+
+Input body 固定为 28 字节，全部显式小端：
+
+| 偏移 | 字段 | 编码 |
+| ---: | --- | --- |
+| 0 | `kind` | `uint8`，`TOUCH_DOWN=1`、`TOUCH_MOVE=2`、`TOUCH_UP=3`、`TOUCH_CANCEL=4`、`SCROLL=5`、`KEY=6` |
+| 1 | `pointer_id` | `uint8` |
+| 2 | `flags` | `uint16`；bit0 为主键按下 |
+| 4 | `x` | `float32`，归一化到 Device 显示宽度 `0..1` |
+| 8 | `y` | `float32`，归一化到 Device 显示高度 `0..1` |
+| 12 | `dx` | `float32`，滚动增量（显示宽度的倍数） |
+| 16 | `dy` | `float32`，滚动增量（显示高度的倍数） |
+| 20 | `keycode` | `uint32`，仅 `KEY` 使用且必须非零 |
+| 24 | reserved | `uint32`，必须为 0 |
+
+`x`/`y`/`dx`/`dy` 必须为有限值；保留位非零、长度不符或未知 `kind` 会被丢弃而不
+终止 Session。
 
 0x05 校时 body 固定为 28 字节：
 

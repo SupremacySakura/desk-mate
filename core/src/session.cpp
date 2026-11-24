@@ -411,6 +411,7 @@ class EndpointCore {
   virtual void process_video(const Header& header,
                              std::vector<std::uint8_t> payload,
                              std::optional<std::uint32_t> recovery_id) = 0;
+  virtual void process_input(const Header&, std::span<const std::uint8_t>) {}
   virtual void on_terminal_begin() {}
   virtual void on_terminal_failure() {}
 
@@ -460,6 +461,11 @@ class EndpointCore {
     if (event.header.type == static_cast<std::uint8_t>(MessageType::Clock)) {
       mark_valid_message();
       process_clock(event.header, event.payload);
+      return;
+    }
+    if (event.header.type == static_cast<std::uint8_t>(MessageType::Input)) {
+      mark_valid_message();
+      process_input(event.header, event.payload);
       return;
     }
     if (event.header.type != static_cast<std::uint8_t>(MessageType::Control)) {
@@ -959,6 +965,35 @@ struct HostSession::Impl final : EndpointCore {
   void process_video(const Header&, std::vector<std::uint8_t>,
                      std::optional<std::uint32_t>) override {
     fail_with(SessionFailure::UnexpectedMessage, true);
+  }
+
+  void process_input(const Header& header,
+                     std::span<const std::uint8_t> payload) override {
+    if (state() != SessionState::Streaming) {
+      return;
+    }
+    if (!negotiated_stream().has_value() ||
+        header.video_stream_id != negotiated_stream()->video_stream_id) {
+      return;
+    }
+    if (!input_injection_intent_) {
+      return;
+    }
+    const auto decoded = decode_input_payload(payload);
+    if (!decoded) {
+      return;
+    }
+    input_events_.push_back(decoded.value());
+    if (input_events_.size() > kMaxQueuedInputEvents) {
+      input_events_.erase(input_events_.begin());
+      ++input_events_dropped_;
+    }
+  }
+
+  std::vector<InputEvent> take_input_events() {
+    std::vector<InputEvent> events;
+    events.swap(input_events_);
+    return events;
   }
 
   void process_clock(const Header& header,
@@ -1747,6 +1782,10 @@ struct HostSession::Impl final : EndpointCore {
       return;
     }
     input_injection_intent_ = enabled;
+    // Input that arrived before the intent was withdrawn must never be
+    // injected after the screen locks, the session pauses, or the stream is
+    // replaced.
+    input_events_.clear();
     if (boundary_ != nullptr) {
       boundary_->set_input_injection_intent(enabled);
     }
@@ -1789,6 +1828,8 @@ struct HostSession::Impl final : EndpointCore {
   bool pause_after_reconfiguration_{};
   std::optional<std::uint64_t> reconfiguration_ack_retry_ns_;
   std::set<std::uint32_t> retired_config_ids_;
+  std::vector<InputEvent> input_events_;
+  std::uint64_t input_events_dropped_{};
   HostSendScheduler scheduler_;
 };
 
@@ -2310,6 +2351,35 @@ struct DeviceSession::Impl final : EndpointCore {
     return std::exchange(received_frames_, {});
   }
 
+  SessionCommandStatus send_input(const InputEvent& event) {
+    if (is_terminal()) {
+      return SessionCommandStatus::InvalidState;
+    }
+    if (state() != SessionState::Streaming ||
+        !committed_stream_id_.has_value()) {
+      return SessionCommandStatus::InvalidState;
+    }
+    const auto payload = encode_input_payload(event);
+    if (!payload) {
+      return SessionCommandStatus::InvalidArgument;
+    }
+    Packet packet;
+    packet.header.type = static_cast<std::uint8_t>(MessageType::Input);
+    packet.header.session_nonce = config_.session_nonce;
+    packet.header.video_stream_id = *committed_stream_id_;
+    packet.header.seq = next_input_seq_++;
+    packet.header.payload_len =
+        static_cast<std::uint32_t>(payload.value().size());
+    packet.payload = payload.value();
+    const auto encoded = encode_packet(packet);
+    if (!encoded) {
+      return SessionCommandStatus::InvalidArgument;
+    }
+    queue_outbound(std::move(encoded.value()));
+    ++input_events_sent_;
+    return SessionCommandStatus::Ok;
+  }
+
   std::uint64_t attach_surface() {
     if (surface_ == nullptr) {
       return 0;
@@ -2566,6 +2636,8 @@ struct DeviceSession::Impl final : EndpointCore {
   DeviceRecoveryGate recovery_gate_;
   std::optional<ReceivedVideoFrame> last_good_frame_;
   std::optional<std::uint32_t> requested_recovery_id_;
+  std::uint32_t next_input_seq_{1};
+  std::uint64_t input_events_sent_{};
 };
 
 HostSession::HostSession(ByteIo& io, MonotonicClock& clock, HostSessionConfig config,
@@ -2637,6 +2709,9 @@ VideoSendStatus HostSession::send_video_frame(std::span<const std::uint8_t> payl
                                               bool keyframe) {
   return impl_->send_video_frame(payload, timestamp_us, keyframe);
 }
+std::vector<InputEvent> HostSession::take_input_events() {
+  return impl_->take_input_events();
+}
 
 DeviceSession::DeviceSession(ByteIo& io, MonotonicClock& clock,
                              DeviceSessionConfig config, DeviceBoundary* boundary,
@@ -2678,6 +2753,9 @@ void DeviceSession::stop() {
 }
 std::vector<ReceivedVideoFrame> DeviceSession::take_video_frames() {
   return impl_->take_video_frames();
+}
+SessionCommandStatus DeviceSession::send_input(const InputEvent& event) {
+  return impl_->send_input(event);
 }
 bool DeviceSession::recovery_gated() const { return impl_->recovery_gated(); }
 const std::optional<std::uint32_t>& DeviceSession::recovery_id() const {

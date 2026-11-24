@@ -62,6 +62,8 @@ using deskmate::protocol::HostSessionConfig;
 using deskmate::protocol::HostEvent;
 using deskmate::protocol::HostInputState;
 using deskmate::protocol::HostVideoState;
+using deskmate::protocol::InputEvent;
+using deskmate::protocol::InputKind;
 using deskmate::protocol::SurfaceLease;
 using deskmate::protocol::SurfaceOwner;
 using deskmate::protocol::SurfaceReferenceOps;
@@ -2792,6 +2794,132 @@ void test_borrowed_accessory_fd_never_closes_on_destruction() {
   }
 }
 
+void test_input_payload_round_trips_and_rejects_malformed_bodies() {
+  InputEvent event;
+  event.kind = InputKind::TouchMove;
+  event.pointer_id = 2;
+  event.flags = deskmate::protocol::kInputFlagPrimaryButton;
+  event.x = 0.25F;
+  event.y = 0.75F;
+  event.dx = -0.5F;
+  event.dy = 1.5F;
+
+  const auto encoded = deskmate::protocol::encode_input_payload(event);
+  CHECK(encoded);
+  CHECK_EQ(encoded.value().size(), 28U);
+  const auto decoded = deskmate::protocol::decode_input_payload(encoded.value());
+  CHECK(decoded);
+  CHECK_EQ(static_cast<int>(decoded.value().kind),
+           static_cast<int>(InputKind::TouchMove));
+  CHECK_EQ(decoded.value().pointer_id, 2U);
+  CHECK_EQ(decoded.value().flags,
+           deskmate::protocol::kInputFlagPrimaryButton);
+  CHECK(decoded.value().x == 0.25F);
+  CHECK(decoded.value().y == 0.75F);
+  CHECK(decoded.value().dx == -0.5F);
+  CHECK(decoded.value().dy == 1.5F);
+
+  CHECK(!deskmate::protocol::decode_input_payload(
+      std::span<const std::uint8_t>(encoded.value()).first(27)));
+
+  auto bad_reserved = encoded.value();
+  bad_reserved[24] = 1;
+  CHECK(!deskmate::protocol::decode_input_payload(bad_reserved));
+
+  auto bad_kind = encoded.value();
+  bad_kind[0] = 0x7F;
+  CHECK(!deskmate::protocol::decode_input_payload(bad_kind));
+
+  InputEvent nan_event;
+  nan_event.kind = InputKind::TouchDown;
+  nan_event.x = std::numeric_limits<float>::quiet_NaN();
+  CHECK(!deskmate::protocol::encode_input_payload(nan_event));
+
+  InputEvent key_without_code;
+  key_without_code.kind = InputKind::Key;
+  CHECK(!deskmate::protocol::encode_input_payload(key_without_code));
+}
+
+void test_device_input_reaches_host_only_while_streaming_and_permitted() {
+  RecordingBoundary boundary;
+  SessionPair pair(default_host_config(), default_device_config(), &boundary);
+  pair.start();
+
+  InputEvent early;
+  early.kind = InputKind::TouchDown;
+  CHECK_EQ(static_cast<int>(pair.device.send_input(early)),
+           static_cast<int>(SessionCommandStatus::InvalidState));
+
+  drive_to_streaming_with_first_idr(pair);
+  CHECK(pair.host.input_injection_intent());
+
+  InputEvent down;
+  down.kind = InputKind::TouchDown;
+  down.pointer_id = 1;
+  down.flags = deskmate::protocol::kInputFlagPrimaryButton;
+  down.x = 0.4F;
+  down.y = 0.6F;
+  CHECK_EQ(static_cast<int>(pair.device.send_input(down)),
+           static_cast<int>(SessionCommandStatus::Ok));
+  pair.device.pump();
+  pair.host.pump();
+
+  const auto events = pair.host.take_input_events();
+  CHECK_EQ(events.size(), 1U);
+  CHECK_EQ(static_cast<int>(events[0].kind),
+           static_cast<int>(InputKind::TouchDown));
+  CHECK_EQ(events[0].pointer_id, 1U);
+  CHECK(events[0].x == 0.4F);
+  CHECK(events[0].y == 0.6F);
+  CHECK(pair.host.take_input_events().empty());
+
+  CHECK_EQ(static_cast<int>(pair.host.handle_host_event(HostEvent::ScreenLocked)),
+           static_cast<int>(SessionCommandStatus::Ok));
+  CHECK(!pair.host.input_injection_intent());
+  pair.host.pump();
+  pair.device.pump();
+  // Locking pauses the stream, so the Device refuses new input outright.
+  CHECK_EQ(static_cast<int>(pair.device.send_input(down)),
+           static_cast<int>(SessionCommandStatus::InvalidState));
+  pair.device.pump();
+  pair.host.pump();
+  CHECK(pair.host.take_input_events().empty());
+}
+
+void test_input_from_a_stale_stream_generation_is_dropped() {
+  RecordingBoundary boundary;
+  SessionPair pair(default_host_config(), default_device_config(), &boundary);
+  pair.start();
+  drive_to_streaming_with_first_idr(pair);
+
+  const auto negotiated = pair.device.negotiated_stream();
+  CHECK(negotiated.has_value());
+  deskmate::protocol::InputEvent event;
+  event.kind = InputKind::Scroll;
+  event.dx = 0.0F;
+  event.dy = -0.1F;
+  const auto payload = deskmate::protocol::encode_input_payload(event);
+  CHECK(payload);
+
+  deskmate::protocol::Packet packet;
+  packet.header.type = static_cast<std::uint8_t>(
+      deskmate::protocol::MessageType::Input);
+  packet.header.session_nonce = negotiated->video_stream_id == 0
+                                    ? 1U
+                                    : pair.device.session_nonce();
+  packet.header.video_stream_id = negotiated->video_stream_id + 1U;
+  packet.header.seq = 1;
+  packet.header.payload_len = static_cast<std::uint32_t>(payload.value().size());
+  packet.payload = payload.value();
+  const auto encoded = deskmate::protocol::encode_packet(packet);
+  CHECK(encoded);
+  pair.device_to_host.append(encoded.value());
+  pair.host.pump();
+  CHECK(pair.host.take_input_events().empty());
+  CHECK_EQ(static_cast<int>(pair.host.state()),
+           static_cast<int>(SessionState::Streaming));
+}
+
 void test_device_stops_output_after_surface_destroy_and_uses_new_generation() {
   RecordingSurfaceOps ops;
   SurfaceOwner surface(&ops);
@@ -3594,6 +3722,12 @@ int main() {
        test_surface_lease_invalidates_raw_ops_when_owner_is_destroyed},
       {"borrowed accessory fd never closes on destruction",
        test_borrowed_accessory_fd_never_closes_on_destruction},
+      {"input payload round trips and rejects malformed bodies",
+       test_input_payload_round_trips_and_rejects_malformed_bodies},
+      {"device input reaches host only while streaming and permitted",
+       test_device_input_reaches_host_only_while_streaming_and_permitted},
+      {"input from a stale stream generation is dropped",
+       test_input_from_a_stale_stream_generation_is_dropped},
       {"device stops output after surface destroy and uses new generation",
        test_device_stops_output_after_surface_destroy_and_uses_new_generation},
       {"stopping rejects work then cancels drains and releases in order",

@@ -1,6 +1,8 @@
 #include "deskmate/protocol.hpp"
 
 #include <algorithm>
+#include <cmath>
+#include <cstring>
 
 namespace deskmate::protocol {
 namespace {
@@ -51,6 +53,28 @@ ProtocolError error(ErrorCode code, ErrorAction action, std::string_view detail)
 bool is_known_control_opcode(std::uint8_t value) {
   return value >= static_cast<std::uint8_t>(ControlOpcode::ClientHello) &&
          value <= static_cast<std::uint8_t>(ControlOpcode::ProtocolError);
+}
+
+bool is_known_input_kind(std::uint8_t value) {
+  return value >= static_cast<std::uint8_t>(InputKind::TouchDown) &&
+         value <= static_cast<std::uint8_t>(InputKind::Key);
+}
+
+void write_f32(std::span<std::uint8_t> bytes, std::size_t offset, float value) {
+  std::uint32_t bits = 0;
+  std::memcpy(&bits, &value, sizeof(bits));
+  write_u32(bytes, offset, bits);
+}
+
+float read_f32(std::span<const std::uint8_t> bytes, std::size_t offset) {
+  const std::uint32_t bits = read_u32(bytes, offset);
+  float value = 0.0F;
+  std::memcpy(&value, &bits, sizeof(value));
+  return value;
+}
+
+bool is_finite_input(float value) {
+  return std::isfinite(value);
 }
 
 }  // namespace
@@ -281,6 +305,77 @@ bool is_supported_message_type(std::uint8_t type) {
          type == static_cast<std::uint8_t>(MessageType::Input) ||
          type == static_cast<std::uint8_t>(MessageType::Control) ||
          type == static_cast<std::uint8_t>(MessageType::Clock);
+}
+
+Result<std::vector<std::uint8_t>> encode_input_payload(
+    const InputEvent& event) {
+  constexpr std::size_t kInputPayloadSize = 28;
+  const auto kind = static_cast<std::uint8_t>(event.kind);
+  if (!is_known_input_kind(kind)) {
+    return Result<std::vector<std::uint8_t>>::failure(
+        error(ErrorCode::InvalidLocalArgument, ErrorAction::RejectLocalArgument,
+              "input kind is not defined in protocol revision 1"));
+  }
+  if (!is_finite_input(event.x) || !is_finite_input(event.y) ||
+      !is_finite_input(event.dx) || !is_finite_input(event.dy)) {
+    return Result<std::vector<std::uint8_t>>::failure(
+        error(ErrorCode::InvalidLocalArgument, ErrorAction::RejectLocalArgument,
+              "input coordinates must be finite"));
+  }
+  if (event.kind == InputKind::Key && event.keycode == 0) {
+    return Result<std::vector<std::uint8_t>>::failure(
+        error(ErrorCode::InvalidLocalArgument, ErrorAction::RejectLocalArgument,
+              "key events require a non-zero keycode"));
+  }
+
+  std::vector<std::uint8_t> payload(kInputPayloadSize, 0);
+  const std::span<std::uint8_t> out(payload);
+  out[0] = kind;
+  out[1] = event.pointer_id;
+  write_u16(out, 2, event.flags);
+  write_f32(out, 4, event.x);
+  write_f32(out, 8, event.y);
+  write_f32(out, 12, event.dx);
+  write_f32(out, 16, event.dy);
+  write_u32(out, 20, event.keycode);
+  write_u32(out, 24, 0);
+  return Result<std::vector<std::uint8_t>>::success(std::move(payload));
+}
+
+Result<InputEvent> decode_input_payload(std::span<const std::uint8_t> payload) {
+  constexpr std::size_t kInputPayloadSize = 28;
+  if (payload.size() != kInputPayloadSize) {
+    return Result<InputEvent>::failure(
+        error(ErrorCode::InvalidControlPayload, ErrorAction::DiscardMessage,
+              "input payload must be exactly 28 bytes"));
+  }
+  if (!is_known_input_kind(payload[0])) {
+    return Result<InputEvent>::failure(
+        error(ErrorCode::UnsupportedMessageType, ErrorAction::DiscardMessage,
+              "input payload carries an unknown event kind"));
+  }
+  if (read_u32(payload, 24) != 0) {
+    return Result<InputEvent>::failure(
+        error(ErrorCode::InvalidControlPayload, ErrorAction::DiscardMessage,
+              "input payload reserved field must be zero"));
+  }
+
+  InputEvent event;
+  event.kind = static_cast<InputKind>(payload[0]);
+  event.pointer_id = payload[1];
+  event.flags = read_u16(payload, 2);
+  event.x = read_f32(payload, 4);
+  event.y = read_f32(payload, 8);
+  event.dx = read_f32(payload, 12);
+  event.dy = read_f32(payload, 16);
+  event.keycode = read_u32(payload, 20);
+  if (!is_finite_input(event.x) || !is_finite_input(event.y) ||
+      !is_finite_input(event.dx) || !is_finite_input(event.dy)) {
+    return Result<InputEvent>::failure(
+        error(ErrorCode::InvalidControlPayload, ErrorAction::DiscardMessage,
+              "input payload carries a non-finite coordinate"));
+  }
+  return Result<InputEvent>::success(event);
 }
 
 bool is_session_level_message(std::uint8_t type) {

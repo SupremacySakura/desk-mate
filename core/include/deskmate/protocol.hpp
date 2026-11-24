@@ -131,6 +131,31 @@ struct ControlMessage {
   std::vector<std::uint8_t> body;
 };
 
+enum class InputKind : std::uint8_t {
+  TouchDown = 1,
+  TouchMove = 2,
+  TouchUp = 3,
+  TouchCancel = 4,
+  Scroll = 5,
+  Key = 6,
+};
+
+// Bit 0 of `flags` is the primary-button state for pointer events. `x` and `y`
+// are normalized to the Device display (0..1); `dx`/`dy` carry scroll deltas in
+// display widths/heights. A `keycode` is only meaningful for `InputKind::Key`.
+inline constexpr std::uint16_t kInputFlagPrimaryButton = 0x0001;
+
+struct InputEvent {
+  InputKind kind{InputKind::TouchMove};
+  std::uint8_t pointer_id{};
+  std::uint16_t flags{};
+  float x{};
+  float y{};
+  float dx{};
+  float dy{};
+  std::uint32_t keycode{};
+};
+
 struct VideoFrameToSend {
   std::uint32_t session_nonce{};
   std::uint32_t video_stream_id{};
@@ -148,6 +173,11 @@ struct VideoFrameToSend {
     const VideoFrameToSend& frame, std::size_t max_fragment_payload);
 [[nodiscard]] Result<std::vector<std::uint8_t>> encode_control_payload(const ControlMessage& message);
 [[nodiscard]] Result<ControlMessage> decode_control_payload(
+    std::span<const std::uint8_t> payload);
+
+[[nodiscard]] Result<std::vector<std::uint8_t>> encode_input_payload(
+    const InputEvent& event);
+[[nodiscard]] Result<InputEvent> decode_input_payload(
     std::span<const std::uint8_t> payload);
 
 [[nodiscard]] bool is_supported_message_type(std::uint8_t type);

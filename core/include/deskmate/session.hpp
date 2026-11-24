@@ -25,6 +25,7 @@ inline constexpr std::uint64_t kDefaultPauseGraceTimeoutNs =
     kMinPauseGraceTimeoutNs;
 inline constexpr std::size_t kDefaultVideoFragmentPayload = 32U * 1024U;
 inline constexpr std::size_t kMaxCapabilityItems = 8;
+inline constexpr std::size_t kMaxQueuedInputEvents = 256;
 
 enum class VideoEncoder : std::uint8_t {
   H264 = 1,
@@ -426,6 +427,9 @@ class HostSession {
   [[nodiscard]] VideoSendStatus send_video_frame(
       std::span<const std::uint8_t> payload, std::uint64_t timestamp_us,
       bool keyframe);
+  // Returns only events accepted while `Streaming` and while input injection is
+  // permitted by the current Host state.
+  [[nodiscard]] std::vector<InputEvent> take_input_events();
 
  private:
   struct Impl;
@@ -460,6 +464,7 @@ class DeviceSession {
   void complete_stop();
   void stop();
   [[nodiscard]] std::vector<ReceivedVideoFrame> take_video_frames();
+  [[nodiscard]] SessionCommandStatus send_input(const InputEvent& event);
   [[nodiscard]] bool recovery_gated() const;
   [[nodiscard]] const std::optional<std::uint32_t>& recovery_id() const;
   [[nodiscard]] const std::optional<ReceivedVideoFrame>& last_good_frame() const;
