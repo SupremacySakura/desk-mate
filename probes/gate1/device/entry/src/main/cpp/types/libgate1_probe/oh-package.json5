@@ -1,0 +1,6 @@
+{
+  "name": "libgate1_probe.so",
+  "version": "1.0.0",
+  "description": "NAPI declarations for the Gate 1 accessory probe",
+  "types": "./Index.d.ts"
+}
