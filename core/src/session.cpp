@@ -155,18 +155,18 @@ class EndpointCore {
   EndpointCore& operator=(const EndpointCore&) = delete;
   virtual ~EndpointCore() = default;
 
-  void pump() {
+  virtual void pump() {
     if (!started_ && state_ == SessionState::Idle) {
       return;
     }
-    flush();
+    flush_outbound();
     if (state_ == SessionState::Failed) {
-      flush();
+      flush_outbound();
       return;
     }
     if (deadline_ns_.has_value() && clock_.now_ns() >= *deadline_ns_) {
       fail_with(*timeout_failure_, true);
-      flush();
+      flush_outbound();
       return;
     }
 
@@ -194,7 +194,8 @@ class EndpointCore {
         process_event(std::move(event));
       }
     }
-    flush();
+    finish_receive_cycle();
+    flush_outbound();
   }
 
   [[nodiscard]] SessionState state() const { return state_; }
@@ -286,16 +287,24 @@ class EndpointCore {
 
   void queue_bytes(std::vector<std::uint8_t> bytes) {
     if (!bytes.empty()) {
-      outbound_.push_back(std::move(bytes));
+      queue_outbound(std::move(bytes));
     }
   }
 
   [[nodiscard]] std::uint32_t next_video_seq() { return next_video_seq_++; }
 
+  virtual void queue_outbound(std::vector<std::uint8_t> bytes) {
+    outbound_.push_back(std::move(bytes));
+  }
+  virtual void flush_outbound() { flush(); }
+
   virtual void process_control(const Header& header,
                                const ControlMessage& message) = 0;
+  virtual void process_recovery_event(const StreamEvent&) {}
+  virtual void finish_receive_cycle() {}
   virtual void process_video(const Header& header,
-                             std::vector<std::uint8_t> payload) = 0;
+                             std::vector<std::uint8_t> payload,
+                             std::optional<std::uint32_t> recovery_id) = 0;
 
  private:
   void arm_timeout(SessionFailure failure) {
@@ -314,13 +323,17 @@ class EndpointCore {
       return;
     }
     if (event.kind == StreamEventKind::RejectedMessage) {
+      if (event.error.action == ErrorAction::RequestRecovery) {
+        process_recovery_event(event);
+      }
       return;
     }
     if (event.kind == StreamEventKind::VideoFrame) {
       if (session_nonce_ != 0 && event.header.session_nonce != session_nonce_) {
         return;
       }
-      process_video(event.header, std::move(event.payload));
+      process_video(event.header, std::move(event.payload),
+                    std::move(event.recovery_id));
       return;
     }
     if (event.kind != StreamEventKind::Message) {
@@ -639,7 +652,8 @@ Result<StreamProfile> decode_stream_profile(std::span<const std::uint8_t> bytes)
 struct HostSession::Impl final : EndpointCore {
   Impl(ByteIo& io, MonotonicClock& clock, HostSessionConfig config)
       : EndpointCore(io, clock, config.limits, 0),
-        config_(std::move(config)) {}
+        config_(std::move(config)),
+        scheduler_(io, clock, config_.scheduler) {}
 
   void start() {
     if (started()) {
@@ -654,6 +668,21 @@ struct HostSession::Impl final : EndpointCore {
     mark_started(SessionState::AwaitingClientHello, SessionFailure::HelloTimeout);
   }
 
+  void pump() override {
+    EndpointCore::pump();
+    if (is_terminal()) {
+      scheduler_.begin_stopping();
+    } else {
+      scheduler_.pump();
+    }
+  }
+
+  void queue_outbound(std::vector<std::uint8_t> bytes) override {
+    scheduler_.enqueue_priority(std::move(bytes));
+  }
+
+  void flush_outbound() override { scheduler_.pump_priority(); }
+
   void process_control(const Header& header, const ControlMessage& message) override {
     if (message.opcode == ControlOpcode::ProtocolError) {
       const auto failure = decode_failure_body(message.body);
@@ -662,6 +691,19 @@ struct HostSession::Impl final : EndpointCore {
       } else {
         fail_with(*failure, false);
       }
+      return;
+    }
+
+    if (message.opcode == ControlOpcode::RequestIdr) {
+      const auto recovery_id = decode_recovery_id(message.body);
+      const auto stream = negotiated_stream();
+      if (state() != SessionState::Streaming || !stream.has_value() ||
+          header.video_stream_id != stream->video_stream_id ||
+          !recovery_id) {
+        fail_with(SessionFailure::UnexpectedMessage, true);
+        return;
+      }
+      scheduler_.request_idr_from_peer(recovery_id.value());
       return;
     }
 
@@ -693,7 +735,8 @@ struct HostSession::Impl final : EndpointCore {
     }
   }
 
-  void process_video(const Header&, std::vector<std::uint8_t>) override {
+  void process_video(const Header&, std::vector<std::uint8_t>,
+                     std::optional<std::uint32_t>) override {
     fail_with(SessionFailure::UnexpectedMessage, true);
   }
 
@@ -719,18 +762,27 @@ struct HostSession::Impl final : EndpointCore {
     frame.timestamp_us = timestamp_us;
     frame.flags = keyframe ? kFlagKeyFrame : 0;
     frame.payload.assign(payload.begin(), payload.end());
-    const auto fragments =
-        encode_video_fragments(frame, config_.limits.video_fragment_payload);
-    if (!fragments) {
-      return VideoSendStatus::InvalidArgument;
+    const SchedulerQueueStatus queued = scheduler_.enqueue_video_frame(
+        std::move(frame), config_.limits.video_fragment_payload);
+    switch (queued) {
+      case SchedulerQueueStatus::Queued:
+        if (keyframe) {
+          sent_initial_idr_ = true;
+        }
+        return VideoSendStatus::Sent;
+      case SchedulerQueueStatus::IdrRequired:
+        return VideoSendStatus::IdrRequired;
+      case SchedulerQueueStatus::InvalidArgument:
+        return VideoSendStatus::InvalidArgument;
+      case SchedulerQueueStatus::Stopped:
+        return VideoSendStatus::SessionFailed;
     }
-    for (const auto& fragment : fragments.value()) {
-      queue_bytes(fragment);
-    }
-    if (keyframe) {
-      sent_initial_idr_ = true;
-    }
-    return VideoSendStatus::Sent;
+    return VideoSendStatus::InvalidArgument;
+  }
+
+  [[nodiscard]] const std::optional<SchedulerIdrRequest>& pending_idr_request()
+      const {
+    return scheduler_.idr_request();
   }
 
   void handle_client_hello(const Header& header, const ControlMessage& message) {
@@ -809,6 +861,7 @@ struct HostSession::Impl final : EndpointCore {
   HostSessionConfig config_;
   std::optional<StreamProfile> prepared_profile_;
   bool sent_initial_idr_{};
+  HostSendScheduler scheduler_;
 };
 
 struct DeviceSession::Impl final : EndpointCore {
@@ -816,7 +869,8 @@ struct DeviceSession::Impl final : EndpointCore {
        DeviceBoundary* boundary)
       : EndpointCore(io, clock, config.limits, config.session_nonce),
         config_(std::move(config)),
-        boundary_(boundary) {}
+        boundary_(boundary),
+        recovery_gate_(clock, config_.recovery) {}
 
   void start() {
     if (started()) {
@@ -837,6 +891,11 @@ struct DeviceSession::Impl final : EndpointCore {
     mark_started(SessionState::AwaitingPrepare, SessionFailure::PrepareTimeout);
     queue_control(ControlOpcode::ClientHello, config_.protocol_revision, 0,
                   capabilities.value(), 0);
+  }
+
+  void pump() override {
+    queue_recovery_retry_if_due();
+    EndpointCore::pump();
   }
 
   void process_control(const Header& header, const ControlMessage& message) override {
@@ -861,7 +920,32 @@ struct DeviceSession::Impl final : EndpointCore {
     fail_with(SessionFailure::UnexpectedMessage, true);
   }
 
-  void process_video(const Header& header, std::vector<std::uint8_t> payload) override {
+  void process_recovery_event(const StreamEvent& event) override {
+    if (state() != SessionState::Streaming ||
+        !committed_stream_id_.has_value() ||
+        event.header.video_stream_id != *committed_stream_id_) {
+      return;
+    }
+    (void)recovery_gate_.begin_recovery();
+  }
+
+  void finish_receive_cycle() override {
+    if (state() != SessionState::Streaming ||
+        !recovery_gate_.gated() ||
+        !recovery_gate_.recovery_id().has_value()) {
+      return;
+    }
+    const std::uint32_t recovery_id = *recovery_gate_.recovery_id();
+    if (requested_recovery_id_.has_value() &&
+        *requested_recovery_id_ == recovery_id) {
+      return;
+    }
+    queue_recovery_request(recovery_id);
+    requested_recovery_id_ = recovery_id;
+  }
+
+  void process_video(const Header& header, std::vector<std::uint8_t> payload,
+                     std::optional<std::uint32_t> recovery_id) override {
     if (!committed_stream_id_.has_value() ||
         header.video_stream_id != *committed_stream_id_ ||
         header.session_nonce != config_.session_nonce) {
@@ -877,7 +961,30 @@ struct DeviceSession::Impl final : EndpointCore {
       fail_with(SessionFailure::UnexpectedMessage, true);
       return;
     }
-    received_frames_.push_back(ReceivedVideoFrame{header, std::move(payload)});
+    if (recovery_gate_.observe_frame(header.flags, recovery_id) ==
+        RecoveryFrameAction::Drop) {
+      return;
+    }
+    ReceivedVideoFrame frame{header, std::move(payload), recovery_id};
+    last_good_frame_ = frame;
+    received_frames_.push_back(std::move(frame));
+  }
+
+  void queue_recovery_retry_if_due() {
+    if (state() != SessionState::Streaming ||
+        !committed_stream_id_.has_value()) {
+      return;
+    }
+    const auto recovery_id = recovery_gate_.retry_if_due();
+    if (recovery_id.has_value()) {
+      queue_recovery_request(*recovery_id);
+      requested_recovery_id_ = *recovery_id;
+    }
+  }
+
+  void queue_recovery_request(std::uint32_t recovery_id) {
+    queue_control(ControlOpcode::RequestIdr, 0, 0,
+                  encode_recovery_id(recovery_id), *committed_stream_id_);
   }
 
   void handle_stream_prepare(const Header& header,
@@ -955,6 +1062,9 @@ struct DeviceSession::Impl final : EndpointCore {
     set_negotiated_stream(NegotiatedStream{*prepared_profile_,
                                            *prepared_config_id_, *stream_id});
     reset_decoder_stream(*stream_id);
+    recovery_gate_.reset();
+    requested_recovery_id_.reset();
+    last_good_frame_.reset();
     transition(SessionState::AwaitingFirstIdr, SessionFailure::InitialIdrTimeout);
     queue_control(ControlOpcode::StreamCommitted, 0, *prepared_config_id_,
                   write_u32(*stream_id), *stream_id);
@@ -974,12 +1084,26 @@ struct DeviceSession::Impl final : EndpointCore {
     return std::exchange(received_frames_, {});
   }
 
+  [[nodiscard]] bool recovery_gated() const {
+    return recovery_gate_.gated();
+  }
+  [[nodiscard]] const std::optional<std::uint32_t>& recovery_id() const {
+    return recovery_gate_.recovery_id();
+  }
+  [[nodiscard]] const std::optional<ReceivedVideoFrame>& last_good_frame()
+      const {
+    return last_good_frame_;
+  }
+
   DeviceSessionConfig config_;
   DeviceBoundary* boundary_;
   std::optional<std::uint32_t> prepared_config_id_;
   std::optional<StreamProfile> prepared_profile_;
   std::optional<std::uint32_t> committed_stream_id_;
   std::vector<ReceivedVideoFrame> received_frames_;
+  DeviceRecoveryGate recovery_gate_;
+  std::optional<ReceivedVideoFrame> last_good_frame_;
+  std::optional<std::uint32_t> requested_recovery_id_;
 };
 
 HostSession::HostSession(ByteIo& io, MonotonicClock& clock, HostSessionConfig config)
@@ -997,6 +1121,10 @@ std::string_view HostSession::failure_detail() const { return impl_->failure_det
 std::uint32_t HostSession::session_nonce() const { return impl_->session_nonce(); }
 const std::optional<NegotiatedStream>& HostSession::negotiated_stream() const {
   return impl_->negotiated_stream();
+}
+const std::optional<SchedulerIdrRequest>& HostSession::pending_idr_request()
+    const {
+  return impl_->pending_idr_request();
 }
 VideoSendStatus HostSession::send_video_frame(std::span<const std::uint8_t> payload,
                                               std::uint64_t timestamp_us,
@@ -1028,6 +1156,13 @@ const std::optional<NegotiatedStream>& DeviceSession::negotiated_stream() const 
 }
 std::vector<ReceivedVideoFrame> DeviceSession::take_video_frames() {
   return impl_->take_video_frames();
+}
+bool DeviceSession::recovery_gated() const { return impl_->recovery_gated(); }
+const std::optional<std::uint32_t>& DeviceSession::recovery_id() const {
+  return impl_->recovery_id();
+}
+const std::optional<ReceivedVideoFrame>& DeviceSession::last_good_frame() const {
+  return impl_->last_good_frame();
 }
 
 }  // namespace deskmate::protocol

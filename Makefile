@@ -9,7 +9,8 @@ BUILD_DIR := build
 LIB := $(BUILD_DIR)/libdeskmate-protocol.a
 PROTOCOL_TEST_BIN := $(BUILD_DIR)/deskmate-tests
 SESSION_TEST_BIN := $(BUILD_DIR)/deskmate-session-tests
-TEST_BINS := $(PROTOCOL_TEST_BIN) $(SESSION_TEST_BIN)
+SCHEDULING_TEST_BIN := $(BUILD_DIR)/deskmate-scheduling-tests
+TEST_BINS := $(PROTOCOL_TEST_BIN) $(SESSION_TEST_BIN) $(SCHEDULING_TEST_BIN)
 
 LIB_SOURCES := $(wildcard core/src/*.cpp)
 TEST_SOURCES := $(wildcard core/tests/*.cpp)
@@ -35,6 +36,10 @@ $(SESSION_TEST_BIN): $(BUILD_DIR)/core/tests/session_tests.o $(LIB)
 	mkdir -p $(dir $@)
 	$(CXX) $(LDFLAGS) $^ -o $@
 
+$(SCHEDULING_TEST_BIN): $(BUILD_DIR)/core/tests/scheduling_tests.o $(LIB)
+	mkdir -p $(dir $@)
+	$(CXX) $(LDFLAGS) $^ -o $@
+
 $(BUILD_DIR)/%.o: %.cpp
 	mkdir -p $(dir $@)
 	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -MMD -MP -c $< -o $@
@@ -42,6 +47,7 @@ $(BUILD_DIR)/%.o: %.cpp
 test: $(TEST_BINS)
 	./$(PROTOCOL_TEST_BIN) testdata/golden
 	./$(SESSION_TEST_BIN)
+	./$(SCHEDULING_TEST_BIN)
 
 clean:
 	rm -rf $(BUILD_DIR)

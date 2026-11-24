@@ -90,6 +90,10 @@ class BytePipe {
   void append(std::span<const std::uint8_t> bytes) {
     bytes_.insert(bytes_.end(), bytes.begin(), bytes.end());
   }
+  void clear() {
+    bytes_.clear();
+    read_offset_ = 0;
+  }
 
  private:
   std::vector<std::uint8_t> bytes_;
@@ -543,6 +547,28 @@ void append_video(BytePipe& pipe, std::uint32_t session_nonce,
   }
 }
 
+void append_recovery_video(BytePipe& pipe, std::uint32_t session_nonce,
+                           std::uint32_t video_stream_id, std::uint32_t seq,
+                           std::vector<std::uint8_t> payload,
+                           std::uint32_t recovery_id) {
+  deskmate::protocol::VideoFrameToSend frame;
+  frame.session_nonce = session_nonce;
+  frame.video_stream_id = video_stream_id;
+  frame.seq = seq;
+  frame.timestamp_us = seq * 100;
+  frame.flags =
+      deskmate::protocol::kFlagKeyFrame | deskmate::protocol::kFlagRecoveryIdr;
+  frame.recovery_id = recovery_id;
+  frame.payload = std::move(payload);
+  const auto fragments = deskmate::protocol::encode_video_fragments(frame, 32);
+  if (!fragments) {
+    return;
+  }
+  for (const auto& fragment : fragments.value()) {
+    pipe.append(fragment);
+  }
+}
+
 void test_duplicate_prepare_is_idempotent_and_non_destructive() {
   RecordingBoundary boundary;
   SessionPair pair(default_host_config(), default_device_config(), &boundary);
@@ -682,15 +708,273 @@ void test_device_discards_stale_nonce_and_stream_video() {
                deskmate::protocol::kFlagKeyFrame);
   append_video(pair.host_to_device, 0x88888888, 0xAAAAAAAA, 3, {0x50},
                deskmate::protocol::kFlagKeyFrame);
-  append_video(pair.host_to_device, 0x88888888, 0x77777777, 4, {0x60}, 0);
+  append_video(pair.host_to_device, 0x88888888, 0x77777777, 2, {0x60}, 0);
+  pair.device.pump();
+
+  const auto frames = pair.device.take_video_frames();
+  CHECK_EQ(frames.size(), 1U);
+  CHECK_EQ(frames[0].header.seq, 2U);
+  CHECK_EQ(frames[0].payload, std::vector<std::uint8_t>({0x60}));
+  CHECK_EQ(static_cast<int>(pair.device.state()),
+           static_cast<int>(SessionState::Streaming));
+}
+
+void test_device_gates_old_recovery_epoch_and_retries_same_id() {
+  SessionPair pair(default_host_config(), default_device_config());
+  drive_to_committed(pair);
+
+  CHECK_EQ(pair.host.send_video_frame(
+               std::vector<std::uint8_t>{0x10, 0x11}, 1, true),
+           VideoSendStatus::Sent);
+  pair.host.pump();
+  pair.device.pump();
+  auto frames = pair.device.take_video_frames();
+  CHECK_EQ(frames.size(), 1U);
+  CHECK_EQ(frames[0].header.seq, 1U);
+  CHECK(pair.device.last_good_frame().has_value());
+  CHECK_EQ(pair.device.last_good_frame()->header.seq, 1U);
+  CHECK(!pair.device.recovery_gated());
+
+  const auto controls_before =
+      decode_controls(pair.device_to_host).size();
+  append_video(pair.host_to_device, 0x88888888, 0x77777777, 3, {0x30}, 0);
+  pair.device.pump();
+  CHECK(pair.device.take_video_frames().empty());
+  CHECK(pair.device.recovery_gated());
+  CHECK(pair.device.recovery_id().has_value());
+  CHECK_EQ(*pair.device.recovery_id(), 1U);
+  CHECK_EQ(pair.device.last_good_frame()->header.seq, 1U);
+
+  auto controls = decode_controls(pair.device_to_host);
+  CHECK_EQ(controls.size(), controls_before + 1U);
+  CHECK_EQ(static_cast<int>(controls.back().opcode),
+           static_cast<int>(ControlOpcode::RequestIdr));
+  CHECK_EQ(controls.back().body,
+           std::vector<std::uint8_t>({0x01, 0x00, 0x00, 0x00}));
+
+  pair.clock.advance_ns(deskmate::protocol::kDefaultRecoveryRetryNs - 1);
+  pair.device.pump();
+  CHECK_EQ(decode_controls(pair.device_to_host).size(),
+           controls_before + 1U);
+  pair.clock.advance_ns(1);
+  pair.device.pump();
+  controls = decode_controls(pair.device_to_host);
+  CHECK_EQ(controls.size(), controls_before + 2U);
+  CHECK_EQ(static_cast<int>(controls.back().opcode),
+           static_cast<int>(ControlOpcode::RequestIdr));
+  CHECK_EQ(controls.back().body,
+           std::vector<std::uint8_t>({0x01, 0x00, 0x00, 0x00}));
+
+  pair.host.pump();
+  CHECK(pair.host.pending_idr_request().has_value());
+  CHECK_EQ(pair.host.pending_idr_request()->recovery_id, 1U);
+
+  append_recovery_video(pair.host_to_device, 0x88888888, 0x77777777, 4,
+                        {0x40}, 2);
+  pair.device.pump();
+  CHECK(pair.device.take_video_frames().empty());
+  CHECK(pair.device.recovery_gated());
+  CHECK_EQ(pair.device.last_good_frame()->header.seq, 1U);
+
+  append_recovery_video(pair.host_to_device, 0x88888888, 0x77777777, 5,
+                        {0x50, 0x51}, 1);
+  pair.device.pump();
+  frames = pair.device.take_video_frames();
+  CHECK_EQ(frames.size(), 1U);
+  CHECK_EQ(frames[0].header.seq, 5U);
+  CHECK_EQ(frames[0].payload,
+           std::vector<std::uint8_t>({0x50, 0x51}));
+  CHECK(!pair.device.recovery_gated());
+  CHECK(pair.device.last_good_frame().has_value());
+  CHECK_EQ(pair.device.last_good_frame()->header.seq, 5U);
+
+  append_video(pair.host_to_device, 0x88888888, 0x77777777, 7, {0x70}, 0);
+  pair.device.pump();
+  CHECK(pair.device.recovery_gated());
+  CHECK(pair.device.recovery_id().has_value());
+  CHECK_EQ(*pair.device.recovery_id(), 2U);
+  CHECK_EQ(pair.device.last_good_frame()->header.seq, 5U);
+  controls = decode_controls(pair.device_to_host);
+  CHECK_EQ(static_cast<int>(controls.back().opcode),
+           static_cast<int>(ControlOpcode::RequestIdr));
+  CHECK_EQ(controls.back().body,
+           std::vector<std::uint8_t>({0x02, 0x00, 0x00, 0x00}));
+
+  append_recovery_video(pair.host_to_device, 0x88888888, 0x77777777, 8,
+                        {0x80}, 2);
+  pair.device.pump();
+  frames = pair.device.take_video_frames();
+  CHECK_EQ(frames.size(), 1U);
+  CHECK_EQ(frames[0].header.seq, 8U);
+  CHECK(!pair.device.recovery_gated());
+}
+
+void test_host_recovery_idr_resumes_gated_device() {
+  SessionPair pair(default_host_config(), default_device_config());
+  drive_to_committed(pair);
+
+  CHECK_EQ(pair.host.send_video_frame(std::vector<std::uint8_t>{0x10}, 1, true),
+           VideoSendStatus::Sent);
+  pair.host.pump();
+  pair.device.pump();
+  CHECK_EQ(pair.device.take_video_frames().size(), 1U);
+
+  CHECK_EQ(pair.host.send_video_frame(std::vector<std::uint8_t>{0x20}, 2, false),
+           VideoSendStatus::Sent);
+  pair.host.pump();
+  pair.host_to_device.clear();
+  CHECK_EQ(pair.host.send_video_frame(std::vector<std::uint8_t>{0x30}, 3, false),
+           VideoSendStatus::Sent);
+  pair.host.pump();
+  pair.device.pump();
+  CHECK(pair.device.recovery_gated());
+  CHECK(pair.device.take_video_frames().empty());
+
+  pair.host.pump();
+  CHECK(pair.host.pending_idr_request().has_value());
+  CHECK_EQ(pair.host.pending_idr_request()->recovery_id, 1U);
+
+  CHECK_EQ(pair.host.send_video_frame(std::vector<std::uint8_t>{0x40, 0x41}, 4,
+                                      true),
+           VideoSendStatus::Sent);
+  CHECK(!pair.host.pending_idr_request().has_value());
+  pair.host.pump();
+  pair.device.pump();
+  const auto frames = pair.device.take_video_frames();
+  CHECK_EQ(frames.size(), 1U);
+  CHECK_EQ(frames[0].header.seq, 4U);
+  CHECK(frames[0].recovery_id.has_value());
+  CHECK_EQ(*frames[0].recovery_id, 1U);
+  CHECK_EQ(frames[0].payload,
+           std::vector<std::uint8_t>({0x40, 0x41}));
+  CHECK(!pair.device.recovery_gated());
+  CHECK_EQ(pair.device.last_good_frame()->header.seq, 4U);
+}
+
+void test_recovery_idr_in_same_batch_suppresses_idle_request() {
+  SessionPair pair(default_host_config(), default_device_config());
+  drive_to_committed(pair);
+
+  CHECK_EQ(pair.host.send_video_frame(std::vector<std::uint8_t>{0x10}, 1, true),
+           VideoSendStatus::Sent);
+  pair.host.pump();
+  pair.device.pump();
+  CHECK_EQ(pair.device.take_video_frames().size(), 1U);
+  const auto controls_before = decode_controls(pair.device_to_host).size();
+
+  append_video(pair.host_to_device, 0x88888888, 0x77777777, 3, {0x30}, 0);
+  append_recovery_video(pair.host_to_device, 0x88888888, 0x77777777, 4,
+                        {0x40}, 1);
   pair.device.pump();
 
   const auto frames = pair.device.take_video_frames();
   CHECK_EQ(frames.size(), 1U);
   CHECK_EQ(frames[0].header.seq, 4U);
-  CHECK_EQ(frames[0].payload, std::vector<std::uint8_t>({0x60}));
-  CHECK_EQ(static_cast<int>(pair.device.state()),
-           static_cast<int>(SessionState::Streaming));
+  CHECK(!pair.device.recovery_gated());
+  CHECK_EQ(decode_controls(pair.device_to_host).size(), controls_before);
+}
+
+void test_host_congestion_drops_unstarted_gop_and_recovers_with_new_idr() {
+  HostSessionConfig host_config = default_host_config();
+  host_config.limits.video_fragment_payload = 2;
+  host_config.scheduler.max_video_urbs = 1;
+  host_config.scheduler.max_pending_video_bytes = 80;
+  SessionPair pair(host_config, default_device_config());
+  drive_to_committed(pair);
+
+  CHECK_EQ(pair.host.send_video_frame(std::vector<std::uint8_t>{0x10}, 1, true),
+           VideoSendStatus::Sent);
+  pair.host.pump();
+  pair.device.pump();
+  CHECK_EQ(pair.device.take_video_frames().size(), 1U);
+
+  CHECK_EQ(pair.host.send_video_frame(
+               std::vector<std::uint8_t>{0x20, 0x21, 0x22, 0x23}, 2, false),
+           VideoSendStatus::Sent);
+  pair.host.pump();
+  CHECK_EQ(pair.host.send_video_frame(std::vector<std::uint8_t>{0x30, 0x31}, 3,
+                                      false),
+           VideoSendStatus::Sent);
+  CHECK_EQ(pair.host.send_video_frame(std::vector<std::uint8_t>{0x40, 0x41}, 4,
+                                      false),
+           VideoSendStatus::IdrRequired);
+  CHECK(pair.host.pending_idr_request().has_value());
+  CHECK_EQ(pair.host.pending_idr_request()->recovery_id, 1U);
+
+  pair.host.pump();
+  pair.device.pump();
+  auto frames = pair.device.take_video_frames();
+  CHECK_EQ(frames.size(), 1U);
+  CHECK_EQ(frames[0].header.seq, 2U);
+  CHECK_EQ(pair.device.last_good_frame()->header.seq, 2U);
+  CHECK(!pair.device.recovery_gated());
+
+  CHECK_EQ(pair.host.send_video_frame(std::vector<std::uint8_t>{0x50, 0x51}, 5,
+                                      true),
+           VideoSendStatus::Sent);
+  CHECK(!pair.host.pending_idr_request().has_value());
+  pair.host.pump();
+  pair.host.pump();
+  pair.host.pump();
+  pair.device.pump();
+  frames = pair.device.take_video_frames();
+  CHECK_EQ(frames.size(), 1U);
+  CHECK_EQ(frames[0].header.seq, 5U);
+  CHECK(frames[0].recovery_id.has_value());
+  CHECK_EQ(*frames[0].recovery_id, 1U);
+  CHECK(!pair.device.recovery_gated());
+  CHECK_EQ(pair.device.last_good_frame()->header.seq, 5U);
+}
+
+void test_host_oldest_unsent_frame_age_triggers_recovery() {
+  HostSessionConfig host_config = default_host_config();
+  host_config.limits.video_fragment_payload = 2;
+  host_config.scheduler.max_video_urbs = 1;
+  host_config.scheduler.max_pending_video_bytes = 1'000'000;
+  host_config.scheduler.max_oldest_unsent_frame_age_ns = 10'000'000;
+  SessionPair pair(host_config, default_device_config());
+  drive_to_committed(pair);
+
+  CHECK_EQ(pair.host.send_video_frame(std::vector<std::uint8_t>{0x10}, 1, true),
+           VideoSendStatus::Sent);
+  pair.host.pump();
+  pair.device.pump();
+  CHECK_EQ(pair.device.take_video_frames().size(), 1U);
+
+  CHECK_EQ(pair.host.send_video_frame(
+               std::vector<std::uint8_t>{0x20, 0x21, 0x22, 0x23}, 2, false),
+           VideoSendStatus::Sent);
+  pair.host.pump();
+  CHECK_EQ(pair.host.send_video_frame(std::vector<std::uint8_t>{0x30, 0x31}, 3,
+                                      false),
+           VideoSendStatus::Sent);
+  CHECK(!pair.host.pending_idr_request().has_value());
+
+  pair.clock.advance_ns(10'000'000);
+  pair.host.pump();
+  CHECK(pair.host.pending_idr_request().has_value());
+  CHECK_EQ(pair.host.pending_idr_request()->recovery_id, 1U);
+  pair.device.pump();
+  auto frames = pair.device.take_video_frames();
+  CHECK_EQ(frames.size(), 1U);
+  CHECK_EQ(frames[0].header.seq, 2U);
+  CHECK(!pair.device.recovery_gated());
+
+  CHECK_EQ(pair.host.send_video_frame(std::vector<std::uint8_t>{0x40, 0x41}, 4,
+                                      true),
+           VideoSendStatus::Sent);
+  CHECK(!pair.host.pending_idr_request().has_value());
+  pair.host.pump();
+  pair.host.pump();
+  pair.host.pump();
+  pair.device.pump();
+  frames = pair.device.take_video_frames();
+  CHECK_EQ(frames.size(), 1U);
+  CHECK_EQ(frames[0].header.seq, 4U);
+  CHECK(frames[0].recovery_id.has_value());
+  CHECK_EQ(*frames[0].recovery_id, 1U);
+  CHECK(!pair.device.recovery_gated());
+  CHECK_EQ(pair.device.last_good_frame()->header.seq, 4U);
 }
 
 void test_device_rejects_prepare_revision_mismatch() {
@@ -930,6 +1214,16 @@ int main() {
        test_device_ignores_p_frames_until_matching_stream_keyframe},
       {"device discards stale nonce and stream video",
        test_device_discards_stale_nonce_and_stream_video},
+      {"device gates old recovery epoch and retries same id",
+       test_device_gates_old_recovery_epoch_and_retries_same_id},
+      {"host recovery IDR resumes gated device",
+       test_host_recovery_idr_resumes_gated_device},
+      {"recovery IDR in same batch suppresses idle request",
+       test_recovery_idr_in_same_batch_suppresses_idle_request},
+      {"host congestion drops unstarted GOP and recovers with new IDR",
+       test_host_congestion_drops_unstarted_gop_and_recovers_with_new_idr},
+      {"host oldest unsent frame age triggers recovery",
+       test_host_oldest_unsent_frame_age_triggers_recovery},
       {"device rejects prepare revision mismatch",
        test_device_rejects_prepare_revision_mismatch},
       {"different config id does not repeat prepare or switch stream",
