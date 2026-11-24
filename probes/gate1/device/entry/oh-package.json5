@@ -1,0 +1,11 @@
+{
+  "name": "entry",
+  "version": "1.0.0",
+  "description": "DeskMate Gate 1 entry",
+  "main": "",
+  "author": "DeskMate",
+  "license": "",
+  "dependencies": {
+    "libgate1_probe.so": "file:./src/main/cpp/types/libgate1_probe"
+  }
+}

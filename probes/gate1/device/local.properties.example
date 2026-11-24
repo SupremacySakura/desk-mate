@@ -1,0 +1,2 @@
+# Optional local override. Do not commit a machine-specific SDK path.
+# sdk.dir=/absolute/path/to/DevEco-Studio.app/Contents/sdk/default

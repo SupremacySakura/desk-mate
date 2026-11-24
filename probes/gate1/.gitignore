@@ -1,0 +1,14 @@
+# Host CMake products
+host/build/
+host/build-*/
+
+# DevEco / hvigor products
+device/.hvigor/
+device/oh_modules/
+device/entry/oh_modules/
+device/entry/.cxx/
+device/entry/build/
+device/local.properties
+
+# Local, unredacted captures. Commit curated evidence under evidence/ instead.
+evidence/local/
