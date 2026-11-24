@@ -176,6 +176,11 @@ bool DeviceEngine::StartSession(int accessory_fd)
     if (running_.load()) {
         return true;
     }
+    // A worker that exited on its own (accessory unplugged) is still joinable;
+    // assigning over a joinable thread would terminate the process.
+    if (worker_.joinable()) {
+        worker_.join();
+    }
     {
         std::lock_guard lock(mutex_);
         accessory_fd_ = accessory_fd;
@@ -197,22 +202,29 @@ bool DeviceEngine::StopSession()
         running_.store(false);
         return true;
     }
-    stop_requested_.store(true);
-    if (wake_fd_ >= 0) {
-        const std::uint64_t value = 1;
-        const ssize_t written = ::write(wake_fd_, &value, sizeof(value));
-        (void)written;
-    }
+    RequestStop();
     worker_.join();
     running_.store(false);
     OH_LOG_INFO(LOG_APP, "session worker joined");
     return true;
 }
 
+void DeviceEngine::RequestStop()
+{
+    stop_requested_.store(true);
+    if (wake_fd_ >= 0) {
+        const std::uint64_t value = 1;
+        const ssize_t written = ::write(wake_fd_, &value, sizeof(value));
+        (void)written;
+    }
+    OH_LOG_INFO(LOG_APP, "session stop requested");
+}
+
 bool DeviceEngine::SurfaceCreated(const std::string &surface_id)
 {
     std::lock_guard lock(mutex_);
     surface_id_ = surface_id;
+    surface_dirty_ = true;
     return true;
 }
 
@@ -222,6 +234,7 @@ bool DeviceEngine::SurfaceDestroyed(const std::string &surface_id)
     if (surface_id_ == surface_id) {
         surface_id_.clear();
         native_window_ = nullptr;
+        surface_dirty_ = true;
     }
     return true;
 }
@@ -230,6 +243,7 @@ void DeviceEngine::SetNativeWindow(void *window)
 {
     std::lock_guard lock(mutex_);
     native_window_ = window;
+    surface_dirty_ = true;
 }
 
 void DeviceEngine::NoteLifecycle(const std::string &event)
@@ -280,6 +294,7 @@ bool DeviceEngine::EnsureDecoder()
     void *window = nullptr;
     {
         std::lock_guard lock(mutex_);
+        surface_dirty_ = false;
         if (!profile_dirty_ && decoder_ != nullptr) {
             return decoder_ != nullptr;
         }
@@ -318,6 +333,56 @@ bool DeviceEngine::EnsureDecoder()
     return ok;
 }
 
+// COMMIT can arrive before the XComponent surface exists (AOA re-enumeration
+// moves the Ability to the background). When the window shows up later the
+// decoder is reopened against it instead of staying surface-less forever.
+void DeviceEngine::ApplyPendingSurface()
+{
+    bool dirty = false;
+    void *window = nullptr;
+    {
+        std::lock_guard lock(mutex_);
+        dirty = surface_dirty_;
+        window = native_window_;
+    }
+    if (!dirty) {
+        return;
+    }
+    if (decoder_ == nullptr) {
+        std::lock_guard lock(mutex_);
+        surface_dirty_ = false;
+        return;
+    }
+    if (window == nullptr) {
+        if (decoder_->surface_attached()) {
+            // The surface is gone: freeze on the last frame and reopen later.
+            decoder_->Close();
+            decoder_.reset();
+            std::lock_guard lock(mutex_);
+            profile_dirty_ = true;
+            surface_dirty_ = false;
+        } else {
+            std::lock_guard lock(mutex_);
+            surface_dirty_ = false;
+        }
+        return;
+    }
+    if (decoder_->surface_attached()) {
+        std::lock_guard lock(mutex_);
+        surface_dirty_ = false;
+        return;
+    }
+    decoder_->Close();
+    decoder_.reset();
+    {
+        std::lock_guard lock(mutex_);
+        profile_dirty_ = true;
+        surface_dirty_ = false;
+    }
+    (void)EnsureDecoder();
+    OH_LOG_INFO(LOG_APP, "decoder attached to late surface");
+}
+
 void DeviceEngine::DrainVideo()
 {
     if (session_ == nullptr || decoder_ == nullptr) {
@@ -331,6 +396,9 @@ void DeviceEngine::DrainVideo()
                            keyframe)) {
             std::lock_guard lock(mutex_);
             ++frames_received_;
+        } else {
+            std::lock_guard lock(mutex_);
+            ++frames_dropped_;
         }
     }
 }
@@ -406,6 +474,7 @@ void DeviceEngine::WorkerMain()
                 decoder_->Close();
                 decoder_.reset();
             }
+            ApplyPendingSurface();
             if (dirty) {
                 (void)EnsureDecoder();
             }
@@ -475,6 +544,8 @@ void DeviceEngine::WorkerMain()
         ++worker_exits_;
         session_state_ = "stopped";
     }
+    running_.store(false);
+    OH_LOG_INFO(LOG_APP, "session worker exited");
 }
 
 std::string DeviceEngine::SnapshotJson() const

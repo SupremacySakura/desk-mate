@@ -137,6 +137,17 @@ napi_value StopSession(napi_env env, napi_callback_info)
     return Boolean(env, deskmate::device::DeviceEngine::Instance().StopSession());
 }
 
+napi_value RequestStop(napi_env env, napi_callback_info)
+{
+    deskmate::device::DeviceEngine::Instance().RequestStop();
+    return Boolean(env, true);
+}
+
+napi_value IsRunning(napi_env env, napi_callback_info)
+{
+    return Boolean(env, deskmate::device::DeviceEngine::Instance().Running());
+}
+
 napi_value SurfaceCreated(napi_env env, napi_callback_info info)
 {
     std::size_t argc = 1;
@@ -244,6 +255,10 @@ napi_value Init(napi_env env, napi_value exports)
         {"startSession", nullptr, StartSession, nullptr, nullptr, nullptr,
          napi_default, nullptr},
         {"stopSession", nullptr, StopSession, nullptr, nullptr, nullptr,
+         napi_default, nullptr},
+        {"requestStop", nullptr, RequestStop, nullptr, nullptr, nullptr,
+         napi_default, nullptr},
+        {"isRunning", nullptr, IsRunning, nullptr, nullptr, nullptr,
          napi_default, nullptr},
         {"surfaceCreated", nullptr, SurfaceCreated, nullptr, nullptr, nullptr,
          napi_default, nullptr},

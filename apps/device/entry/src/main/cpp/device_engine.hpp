@@ -30,8 +30,11 @@ public:
     ~DeviceEngine();
 
     bool StartSession(int accessory_fd);
-    // Returns once the worker has joined. ArkTS must call closeAccessory before
-    // this so the blocked poll() wakes with POLLHUP.
+    // Non-blocking: sets the stop flag and pokes the wake eventfd. ArkTS must
+    // call usbManager.closeAccessory() between RequestStop() and StopSession():
+    // only the official close produces the POLLHUP that unblocks poll().
+    void RequestStop();
+    // Returns once the worker has joined.
     bool StopSession();
     bool Running() const { return running_.load(); }
 
@@ -55,6 +58,7 @@ private:
 
     void WorkerMain();
     bool EnsureDecoder();
+    void ApplyPendingSurface();
     void DrainVideo();
     void PumpTimer();
 
@@ -66,6 +70,7 @@ private:
     int wake_fd_ = -1;
     std::string surface_id_;
     void *native_window_ = nullptr;
+    bool surface_dirty_ = false;
     std::string lifecycle_ = "unknown";
     std::string last_error_;
     std::unique_ptr<protocol::DeviceSession> session_;

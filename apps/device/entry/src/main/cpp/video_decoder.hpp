@@ -62,6 +62,10 @@ public:
     [[nodiscard]] Stats stats() const;
     [[nodiscard]] std::string last_error() const;
     [[nodiscard]] bool open() const { return codec_ != nullptr; }
+    [[nodiscard]] bool surface_attached() const
+    {
+        return codec_ != nullptr && surface_set_;
+    }
 
 private:
     struct PendingFrame {

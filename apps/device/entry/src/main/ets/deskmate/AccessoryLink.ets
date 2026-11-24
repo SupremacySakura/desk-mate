@@ -66,11 +66,13 @@ export class AccessoryLink {
     const opened: usbManager.USBAccessoryHandle | undefined = this.handle;
     this.handle = undefined;
     if (opened === undefined) {
+      native.requestStop();
       return;
     }
-    // Stop the worker first so it is waiting on poll() when the descriptor is
-    // closed; closeAccessory is what produces POLLHUP.
-    native.stopSession();
+    // Order matters on this platform: the worker blocks in poll() and only the
+    // official closeAccessory() wakes it (POLLHUP). requestStop() is
+    // non-blocking, so it must come first, then the close, then the join.
+    native.requestStop();
     try {
       usbManager.closeAccessory(opened);
       hilog.info(DOMAIN, TAG, 'accessory closed');
@@ -79,6 +81,7 @@ export class AccessoryLink {
       hilog.error(DOMAIN, TAG, 'closeAccessory failed: %{public}s',
         `${failure.code} ${failure.message}`);
     }
+    native.stopSession();
   }
 
   private tick(): void {
@@ -86,6 +89,13 @@ export class AccessoryLink {
       return;
     }
     if (this.handle !== undefined) {
+      // The worker exits by itself when the accessory hangs up or the rebuild
+      // budget is spent. Drop the stale handle so the poll can reopen.
+      if (!native.isRunning()) {
+        hilog.warn(DOMAIN, TAG, 'native worker exited, reopening accessory');
+        this.closeAccessory();
+        this.publish('searching', 'waiting for USB accessory');
+      }
       return;
     }
     this.busy = true;

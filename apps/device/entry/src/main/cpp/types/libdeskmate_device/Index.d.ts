@@ -1,5 +1,7 @@
 export const startSession: (accessoryFd: number) => boolean;
 export const stopSession: () => boolean;
+export const requestStop: () => boolean;
+export const isRunning: () => boolean;
 export const surfaceCreated: (surfaceId: string) => boolean;
 export const surfaceDestroyed: (surfaceId: string) => boolean;
 export const sendInput: (
