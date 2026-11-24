@@ -73,6 +73,37 @@ const char* errno_text(int value)
 
 constexpr std::size_t kOutputHighWatermark = 128U * 1024U;
 
+// Restores the borrowed descriptor's flags on every exit path, including an
+// exception escaping the worker thread (std::bad_alloc from frame parsing),
+// which would otherwise leave the ArkTS-owned fd in non-blocking mode.
+class ScopedAccessoryFlags {
+public:
+    ScopedAccessoryFlags(int fd, int& saved_flags) noexcept
+        : fd_(fd), saved_flags_(saved_flags) {}
+
+    ScopedAccessoryFlags(const ScopedAccessoryFlags&) = delete;
+    ScopedAccessoryFlags& operator=(const ScopedAccessoryFlags&) = delete;
+
+    ~ScopedAccessoryFlags()
+    {
+        if (saved_flags_ < 0 || fd_ <= 0) {
+            return;
+        }
+        if (fcntl(fd_, F_SETFL, saved_flags_) < 0) {
+            OH_LOG_WARN(
+                LOG_APP,
+                "restore fcntl flags failed on accessoryFd=%{public}d: %{public}s",
+                fd_,
+                errno_text(errno));
+        }
+        saved_flags_ = -1;
+    }
+
+private:
+    int fd_;
+    int& saved_flags_;
+};
+
 } // namespace
 
 AccessoryProbe::WakeMode AccessoryProbe::parse_mode(const std::string& mode)
@@ -159,10 +190,12 @@ std::string AccessoryProbe::start(int accessory_fd, const std::string& mode)
     parse_errors_.store(0);
     would_block_writes_.store(0);
     backpressure_skips_.store(0);
+    frames_dropped_.store(0);
     pending_output_bytes_.store(0);
-    pending_out_.clear();
-    pending_offset_ = 0;
-    pending_frames_ = 0;
+    pending_chunks_.clear();
+    front_offset_ = 0;
+    lifecycle_background_.store(0);
+    lifecycle_foreground_.store(0);
     saved_accessory_flags_ = -1;
     decoder_.reset();
     set_phase("starting");
@@ -350,6 +383,8 @@ std::string AccessoryProbe::finish_owner_close_join()
 
 void AccessoryProbe::worker_main()
 {
+    ScopedAccessoryFlags restore_guard(accessory_fd_, saved_accessory_flags_);
+
     if (mode_ == WakeMode::kSignal) {
         sigset_t set;
         sigemptyset(&set);
@@ -371,7 +406,7 @@ void AccessoryProbe::worker_main()
 
         std::array<pollfd, 2> fds {};
         fds[0].fd = accessory_fd_;
-        const bool want_write = pending_offset_ < pending_out_.size();
+        const bool want_write = !pending_chunks_.empty();
         fds[0].events = static_cast<short>(POLLIN | (want_write ? POLLOUT : 0));
         nfds_t count = 1;
         if (event_fd_ >= 0) {
@@ -530,7 +565,6 @@ void AccessoryProbe::worker_main()
         }
     }
 
-    restore_accessory_flags();
     record_exit(exit_reason);
 }
 
@@ -561,8 +595,7 @@ void AccessoryProbe::process_input(const std::uint8_t* data, std::size_t size)
         return;
     }
 
-    pending_frames_ += response_frames;
-    enqueue_output(output);
+    enqueue_output(output, response_frames);
 }
 
 void AccessoryProbe::build_frame_response(
@@ -639,43 +672,56 @@ void AccessoryProbe::append_stats_response(
     output.insert(output.end(), response.begin(), response.end());
 }
 
-void AccessoryProbe::enqueue_output(const std::vector<std::uint8_t>& bytes)
+std::size_t AccessoryProbe::pending_output_size() const
+{
+    std::size_t total = 0;
+    bool first = true;
+    for (const OutputChunk& chunk : pending_chunks_) {
+        total += chunk.bytes.size();
+        if (first) {
+            total -= front_offset_;
+            first = false;
+        }
+    }
+    return total;
+}
+
+void AccessoryProbe::enqueue_output(
+    const std::vector<std::uint8_t>& bytes,
+    std::uint64_t frames)
 {
     if (bytes.empty()) {
         return;
     }
-    if (pending_offset_ > 0 && pending_offset_ == pending_out_.size()) {
-        pending_out_.clear();
-        pending_offset_ = 0;
-    }
-    if (pending_offset_ > 0 && pending_offset_ > 64U * 1024U) {
-        pending_out_.erase(
-            pending_out_.begin(),
-            pending_out_.begin() + static_cast<std::ptrdiff_t>(pending_offset_));
-        pending_offset_ = 0;
-    }
-
-    if (pending_out_.size() - pending_offset_ >= kOutputHighWatermark) {
+    if (pending_output_size() >= kOutputHighWatermark) {
+        // Drop the whole batch instead of half-writing it, and account for it
+        // so the frame counters stay explainable.
         backpressure_skips_.fetch_add(1);
-        pending_frames_ = 0;
+        frames_dropped_.fetch_add(frames);
         return;
     }
-    pending_out_.insert(pending_out_.end(), bytes.begin(), bytes.end());
-    pending_output_bytes_.store(pending_out_.size() - pending_offset_);
+    pending_chunks_.push_back(OutputChunk{bytes, frames});
+    pending_output_bytes_.store(pending_output_size());
     flush_pending();
 }
 
 bool AccessoryProbe::flush_pending()
 {
-    while (pending_offset_ < pending_out_.size()) {
+    while (!pending_chunks_.empty()) {
+        OutputChunk& chunk = pending_chunks_.front();
         set_phase("write");
         const ssize_t written = write(
             accessory_fd_,
-            pending_out_.data() + pending_offset_,
-            pending_out_.size() - pending_offset_);
+            chunk.bytes.data() + front_offset_,
+            chunk.bytes.size() - front_offset_);
         if (written > 0) {
-            pending_offset_ += static_cast<std::size_t>(written);
+            front_offset_ += static_cast<std::size_t>(written);
             bytes_written_.fetch_add(static_cast<std::uint64_t>(written));
+            if (front_offset_ == chunk.bytes.size()) {
+                frames_written_.fetch_add(chunk.frames);
+                pending_chunks_.pop_front();
+                front_offset_ = 0;
+            }
             continue;
         }
         if (written == 0) {
@@ -697,13 +743,7 @@ bool AccessoryProbe::flush_pending()
         return false;
     }
 
-    if (pending_offset_ == pending_out_.size()) {
-        frames_written_.fetch_add(pending_frames_);
-        pending_frames_ = 0;
-        pending_out_.clear();
-        pending_offset_ = 0;
-    }
-    pending_output_bytes_.store(pending_out_.size() - pending_offset_);
+    pending_output_bytes_.store(pending_output_size());
     return true;
 }
 
@@ -812,6 +852,7 @@ std::string AccessoryProbe::status_json(bool ok, const std::string& message)
          << ",\"owner_close_wakeups\":" << owner_close_wakeups_.load()
          << ",\"would_block_writes\":" << would_block_writes_.load()
          << ",\"backpressure_skips\":" << backpressure_skips_.load()
+         << ",\"frames_dropped\":" << frames_dropped_.load()
          << ",\"pending_output_bytes\":" << pending_output_bytes_.load()
          << "}";
     return json.str();
@@ -874,6 +915,7 @@ std::string AccessoryProbe::stats_json()
          << ",\"parse_errors\":" << parse_errors_.load()
          << ",\"would_block_writes\":" << would_block_writes_.load()
          << ",\"backpressure_skips\":" << backpressure_skips_.load()
+         << ",\"frames_dropped\":" << frames_dropped_.load()
          << ",\"pending_output_bytes\":" << pending_output_bytes_.load()
          << "}";
     return json.str();
