@@ -1,0 +1,30 @@
+generated_at_utc=2026-11-24T05:54:01Z
+generated_at_local=2026-11-24T13:54:01+0800
+
+ProductName:		macOS
+ProductVersion:		27.3
+BuildVersion:		26C5047e
+
+Darwin Supremacys-MacBook-Air.local 27.3.0 Darwin Kernel Version 27.3.0: Mon Nov  9 23:53:14 PST 2026; root:xnu-13432.60.70.0.3~25/RELEASE_ARM64_T8132 arm64
+hw.model=Mac16,12
+hw.memsize=17179869184
+
+{
+  "SPHardwareDataType" : [
+    {
+      "_name" : "hardware_overview",
+      "activation_lock_status" : "activation_lock_disabled",
+      "boot_rom_version" : "20457.60.77.501.2",
+      "chip_type" : "Apple M4",
+      "machine_model" : "Mac16,12",
+      "machine_name" : "MacBook Air",
+      "model_number" : "MC6U4CH/A",
+      "number_processors" : "proc 10:0:4:6",
+      "os_loader_version" : "20457.60.77.501.2",
+      "physical_memory" : "16 GB",
+      "platform_UUID" : "<redacted-platform-uuid>",
+      "provisioning_UDID" : "<redacted-host-udid>",
+      "serial_number" : "<redacted-host-serial>"
+    }
+  ]
+}

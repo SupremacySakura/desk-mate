@@ -1,0 +1,37 @@
+1795503490 start bundle=com.deskmate.gate1probe ability=EntryAbility
+1795503491 aa start -a EntryAbility -b com.deskmate.gate1probe rc=0 output=ok
+1795503493 layout dump ok bytes=
+1795503494 layout dump ok bytes=
+1795503494 click authorize text=1. 授权并打开 bounds=34 349 310 434 center=172,391
+1795503494 click authorize rc=0
+1795503498 layout dump ok bytes=
+1795503499 layout dump ok bytes=
+1795503499 click authorize text=1. 授权并打开 bounds=34 349 310 434 center=172,391
+1795503499 click authorize rc=0
+1795503503 layout dump ok bytes=
+1795503504 layout dump ok bytes=
+1795503504 click authorize text=1. 授权并打开 bounds=34 349 310 434 center=172,391
+1795503504 click authorize rc=0
+1795503507 layout dump ok bytes=
+1795503507 accessory already open
+1795503508 layout dump ok bytes=
+1795503509 click start_eventfd text=启动 eventfd bounds=34 539 300 624 center=167,581
+1795503509 click start_eventfd rc=0
+1795503509 eventfd start requested
+1795503550 layout dump ok bytes=
+1795503551 click refresh_stats text=刷新统计 bounds=34 1086 238 1171 center=136,1128
+1795503551 click refresh_stats rc=0
+1795503553 layout dump ok bytes=
+1795503553 stats layout copied
+1795503555 layout dump ok bytes=
+1795503555 click stop_eventfd text=停止并 join bounds=317 539 554 624 center=435,581
+1795503555 click stop_eventfd rc=0
+1795503559 layout dump ok bytes=
+1795503559 expected text not visible: 关闭空闲句柄; bringing Ability to foreground
+1795503560 aa start -a EntryAbility -b com.deskmate.gate1probe rc=0 output=ok
+1795503562 layout dump ok bytes=
+1795503562 click close_idle text=关闭空闲句柄 bounds=327 349 599 434 center=463,391
+1795503562 click close_idle rc=0
+1795503565 layout dump ok bytes=
+1795503566 hilog captured /data/local/tmp/gate1_auto_hilog.log
+1795503566 done

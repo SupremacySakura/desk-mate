@@ -1,0 +1,168 @@
+[aoa] GET_PROTOCOL(51), SEND_STRING(52), START(53)
+[aoa] START accepted; device re-enumerated
+[open] waiting for AOA accessory enumeration...
+[open] accessory 18d1:2d00 bus=1 address=7 speed=480 Mbps interface=0 alt=0 endpoints=2 ep_in=0x81(max=512,attr=0x2) ep_out=0x1(max=512,attr=0x2)
+[open] claimed interface 0, bulk IN=0x81 OUT=0x1
+[handshake] waiting 14000 ms after claim before first HELLO; open Accessory and start the Device worker now
+[handshake] initial delay elapsed; starting HELLO
+[handshake] HELLO sent; waiting up to 90000 ms for Device authorization/native start
+[handshake] HELLO_ACK seq=1 protocol=1
+[zlp] scheduled zero-length bulk OUT
+[zlp] scheduled zero-length bulk OUT
+[zlp] scheduled zero-length bulk OUT
+[run] t=1.00003s out=943352 in=943331 data_frames=416 echoes=414 mismatches=0 hb=1/1 hb_rtt_us=1251 zlp_out=3 zlp_in=0 device_stats=no
+[zlp] scheduled zero-length bulk OUT
+[zlp] scheduled zero-length bulk OUT
+[zlp] scheduled zero-length bulk OUT
+[zlp] scheduled zero-length bulk OUT
+[zlp] scheduled zero-length bulk OUT
+[run] t=2.00048s out=2501861 in=2501985 data_frames=1099 echoes=1098 mismatches=0 hb=2/2 hb_rtt_us=573 zlp_out=8 zlp_in=0 device_stats=yes
+[zlp] scheduled zero-length bulk OUT
+[zlp] scheduled zero-length bulk OUT
+[zlp] scheduled zero-length bulk OUT
+[zlp] scheduled zero-length bulk OUT
+[zlp] scheduled zero-length bulk OUT
+[zlp] scheduled zero-length bulk OUT
+[zlp] scheduled zero-length bulk OUT
+[zlp] scheduled zero-length bulk OUT
+[run] t=3.00167s out=4689253 in=4689505 data_frames=2059 echoes=2058 mismatches=0 hb=3/3 hb_rtt_us=470 zlp_out=16 zlp_in=0 device_stats=yes
+[zlp] scheduled zero-length bulk OUT
+[zlp] scheduled zero-length bulk OUT
+[zlp] scheduled zero-length bulk OUT
+[zlp] scheduled zero-length bulk OUT
+[zlp] scheduled zero-length bulk OUT
+[zlp] scheduled zero-length bulk OUT
+[zlp] scheduled zero-length bulk OUT
+[run] t=4.00186s out=6903987 in=6904367 data_frames=3031 echoes=3030 mismatches=0 hb=4/4 hb_rtt_us=404 zlp_out=23 zlp_in=0 device_stats=yes
+[zlp] scheduled zero-length bulk OUT
+[zlp] scheduled zero-length bulk OUT
+[zlp] scheduled zero-length bulk OUT
+[zlp] scheduled zero-length bulk OUT
+[zlp] scheduled zero-length bulk OUT
+[zlp] scheduled zero-length bulk OUT
+[zlp] scheduled zero-length bulk OUT
+[zlp] scheduled zero-length bulk OUT
+[run] t=5.00033s out=9124184 in=9120580 data_frames=4008 echoes=4006 mismatches=0 hb=5/5 hb_rtt_us=447 zlp_out=31 zlp_in=0 device_stats=yes
+[zlp] scheduled zero-length bulk OUT
+[zlp] scheduled zero-length bulk OUT
+[zlp] scheduled zero-length bulk OUT
+[zlp] scheduled zero-length bulk OUT
+[zlp] scheduled zero-length bulk OUT
+[zlp] scheduled zero-length bulk OUT
+[zlp] scheduled zero-length bulk OUT
+[run] t=6.00008s out=11360797 in=11361433 data_frames=4987 echoes=4986 mismatches=0 hb=6/6 hb_rtt_us=388 zlp_out=38 zlp_in=0 device_stats=yes
+[zlp] scheduled zero-length bulk OUT
+[zlp] scheduled zero-length bulk OUT
+[zlp] scheduled zero-length bulk OUT
+[zlp] scheduled zero-length bulk OUT
+[zlp] scheduled zero-length bulk OUT
+[zlp] scheduled zero-length bulk OUT
+[zlp] scheduled zero-length bulk OUT
+[zlp] scheduled zero-length bulk OUT
+[run] t=7.00193s out=13643886 in=13644650 data_frames=5989 echoes=5988 mismatches=0 hb=7/7 hb_rtt_us=389 zlp_out=46 zlp_in=0 device_stats=yes
+[zlp] scheduled zero-length bulk OUT
+[zlp] scheduled zero-length bulk OUT
+[zlp] scheduled zero-length bulk OUT
+[zlp] scheduled zero-length bulk OUT
+[zlp] scheduled zero-length bulk OUT
+[zlp] scheduled zero-length bulk OUT
+[zlp] scheduled zero-length bulk OUT
+[zlp] scheduled zero-length bulk OUT
+[zlp] scheduled zero-length bulk OUT
+[run] t=8.00028s out=16082819 in=16079599 data_frames=7062 echoes=7060 mismatches=0 hb=8/8 hb_rtt_us=328 zlp_out=55 zlp_in=0 device_stats=yes
+[zlp] scheduled zero-length bulk OUT
+[zlp] scheduled zero-length bulk OUT
+[zlp] scheduled zero-length bulk OUT
+[zlp] scheduled zero-length bulk OUT
+[zlp] scheduled zero-length bulk OUT
+[zlp] scheduled zero-length bulk OUT
+[zlp] scheduled zero-length bulk OUT
+[run] t=9.00007s out=18347085 in=18348105 data_frames=8056 echoes=8055 mismatches=0 hb=9/9 hb_rtt_us=414 zlp_out=62 zlp_in=0 device_stats=yes
+[zlp] scheduled zero-length bulk OUT
+[zlp] scheduled zero-length bulk OUT
+[zlp] scheduled zero-length bulk OUT
+[zlp] scheduled zero-length bulk OUT
+[zlp] scheduled zero-length bulk OUT
+[zlp] scheduled zero-length bulk OUT
+[zlp] scheduled zero-length bulk OUT
+[zlp] scheduled zero-length bulk OUT
+[zlp] scheduled zero-length bulk OUT
+[zlp] scheduled zero-length bulk OUT
+[run] t=10.0003s out=21086469 in=21083505 data_frames=9258 echoes=9256 mismatches=0 hb=10/10 hb_rtt_us=332 zlp_out=72 zlp_in=0 device_stats=yes
+[zlp] scheduled zero-length bulk OUT
+[zlp] scheduled zero-length bulk OUT
+[zlp] scheduled zero-length bulk OUT
+[zlp] scheduled zero-length bulk OUT
+[zlp] scheduled zero-length bulk OUT
+[zlp] scheduled zero-length bulk OUT
+[zlp] scheduled zero-length bulk OUT
+[zlp] scheduled zero-length bulk OUT
+[run] t=11.002s out=23610173 in=23611449 data_frames=10363 echoes=10362 mismatches=0 hb=11/11 hb_rtt_us=404 zlp_out=80 zlp_in=0 device_stats=yes
+[zlp] scheduled zero-length bulk OUT
+[zlp] scheduled zero-length bulk OUT
+[zlp] scheduled zero-length bulk OUT
+[zlp] scheduled zero-length bulk OUT
+[zlp] scheduled zero-length bulk OUT
+[zlp] scheduled zero-length bulk OUT
+[zlp] scheduled zero-length bulk OUT
+[zlp] scheduled zero-length bulk OUT
+[zlp] scheduled zero-length bulk OUT
+[run] t=12.0022s out=26111998 in=26113402 data_frames=11461 echoes=11460 mismatches=0 hb=12/12 hb_rtt_us=1844 zlp_out=89 zlp_in=0 device_stats=yes
+[zlp] scheduled zero-length bulk OUT
+[zlp] scheduled zero-length bulk OUT
+[zlp] scheduled zero-length bulk OUT
+[zlp] scheduled zero-length bulk OUT
+[zlp] scheduled zero-length bulk OUT
+[zlp] scheduled zero-length bulk OUT
+[zlp] scheduled zero-length bulk OUT
+[zlp] scheduled zero-length bulk OUT
+[run] t=13.0001s out=28504495 in=28506004 data_frames=12513 echoes=12511 mismatches=0 hb=13/13 hb_rtt_us=398 zlp_out=97 zlp_in=0 device_stats=yes
+[zlp] scheduled zero-length bulk OUT
+[zlp] scheduled zero-length bulk OUT
+[zlp] scheduled zero-length bulk OUT
+[zlp] scheduled zero-length bulk OUT
+[run] t=14.0187s out=29475128 in=29476788 data_frames=12937 echoes=12936 mismatches=0 hb=14/14 hb_rtt_us=369 zlp_out=101 zlp_in=0 device_stats=yes
+[run] t=15.038s out=29475128 in=29476788 data_frames=12937 echoes=12936 mismatches=0 hb=14/14 hb_rtt_us=369 zlp_out=101 zlp_in=0 device_stats=yes
+[run] t=16.0042s out=29475128 in=29476788 data_frames=12937 echoes=12936 mismatches=0 hb=14/14 hb_rtt_us=369 zlp_out=101 zlp_in=0 device_stats=yes
+[cancel] issued IN rc=LIBUSB_SUCCESS / LIBUSB_TRANSFER_COMPLETED, OUT rc=LIBUSB_SUCCESS / LIBUSB_TRANSFER_COMPLETED; active=2
+[cleanup] active_transfers=0 after 0 ms; safe to release interface
+[result] handshake=ok echo=ok echoes=12936
+[result] cancel_wait_ms=0 in_status=CANCELLED out_status=CANCELLED active_on_release=0
+
+=== Probe summary ===
+handshake_ok=true
+echo_ok=true
+out_bytes=29475128
+in_bytes=29476788
+data_frames_sent=12937
+data_echoes_received=12936
+echo_mismatches=0
+unmatched_echoes=0
+pending_echoes_at_stop=1
+zlp_out_scheduled=101
+zlp_out_completed=101
+zlp_in_completed=0
+heartbeats_sent=14
+heartbeat_acks=14
+heartbeat_last_rtt_us=369
+heartbeat_max_rtt_us=1844
+heartbeat_loss_events=0
+cancellation_requested=true
+cancellation_ok=true
+cancel_wait_ms=0
+cancel_issue_gap_us=137
+in_callback_after_cancel_us=337
+out_callback_after_cancel_us=340
+active_on_release=0
+cleanup_safe=true
+device_stats_seen=true
+device.zero_reads=97
+device.poll_wakeups=12665
+device.bytes_read=28572842
+device.bytes_written=28574358
+device.zero_writes=1567
+device.parse_errors=0
+
+Gate 1 conclusion: NOT EVALUATED
+A transport run is not a Gate 1 pass. Reference Environment and
+direct-link topology must be documented and the full matrix repeated.

@@ -20,6 +20,9 @@
   只借用 `accessoryFd`，绝不关闭它。
 - `scripts/build_host.sh`：真实 libusb 构建、测试；缺失依赖时可显式构建不可运行语法检查目标。
 - `scripts/build_device.sh`：通过 `DEVECO_SDK_HOME` 调用 DevEco SDK 构建 unsigned HAP。
+- `scripts/auto_device.sh`：在 Device 上自动等待 AOA accessory、授权/打开、启动
+  eventfd worker、刷新统计并抓取 hilog；每次点击前重新 dump layout，必要时先
+  `aa start` 把 Ability 拉回前台。
 - `scripts/capture_environment.sh`：采集 Mac、USB 拓扑、协商速率和可选 hdc 设备信息。
 - `scripts/check_device_boundary.sh`：静态检查 Device C++ 对 `accessoryFd` 的单所有者边界。
 - `RUNBOOK.md`：真机执行顺序、三种唤醒分支和证据记录要求。
@@ -94,6 +97,13 @@ gate1_host run --bus N --address N \
 `run` 依次执行 AOA 51/52/53、等待重枚举、打开 accessory、claim interface、
 等待 `HELLO_ACK`、双向 Bulk、统计、同时取消 IN/OUT 和归零清理。握手期间每秒重发
 `HELLO`，给操作者留出在平板上完成授权和启动 native worker 的时间。
+真实 AOA 重枚举可能把 Ability 切到后台；自动脚本在每次点击前 dump layout，并在
+目标按钮不可见时执行 `aa start -a EntryAbility -b com.deskmate.gate1probe`。
+如果 Device 的 `openAccessory`/worker 启动晚于 Host claim，使用
+`--handshake-initial-delay-ms 10000` 让首个 `HELLO` 延后发出；该延迟只改变握手
+开始时间，不改变 `--handshake-timeout-ms` 的 `HELLO_ACK` 等待预算。
+如果探针报告 `cleanup_safe=false`，即使 JSON 写入失败，Host 也不会关闭仍可能被
+回调引用的 handle/context；进程只能由操作者确认后再结束。
 
 Device 界面按顺序提供：
 
@@ -105,6 +115,46 @@ Device 界面按顺序提供：
 
 Device C++ 可以 `close(event_fd_)`，但不得对 `accessoryFd` 调用 `close()` 或
 `shutdown()`。`scripts/check_device_boundary.sh` 会拒绝越界写法。
+`EntryAbility.onDestroy` 通过共享 `gate1Probe` 同步停止 worker、join 后由 ArkTS
+关闭 `USBAccessoryHandle`；若 join 失败则保留句柄而不由 native 关闭。
+
+Device 的 read/poll 错误会在 hilog 中记录数值 `errno`、fd、mode 和 poll
+`revents`；`stats_json()` 同时输出 `last_read_errno` 与 `last_poll_revents`。
+自动脚本把原始布局和日志写到：
+
+- `/data/local/tmp/gate1_auto.log`
+- `/data/local/tmp/gate1_auto_layout.json`
+- `/data/local/tmp/gate1_auto_stats.json`
+- `/data/local/tmp/gate1_auto_final.json`
+- `/data/local/tmp/gate1_auto_hilog.log`
+
+通过 `hdc file recv` 取回这些文件后再写入证据目录；脚本本身不伪造证据。
+
+## 真机实测状态（2026-11-24）
+
+已在 HUAWEI MatePad Pro `MRDI-W00` / OpenHarmony 7.0.0.111 / API 26 上完成一轮
+真机测试。**结论为 `NOT EVALUATED`**：链路经 USB2.1 Hub 协商 480 Mbps，不是
+Reference Link，按证据规则不得判定 Gate 1 通过。
+
+已实测通过的功能：
+
+- AOA 51/52/53 授权与重枚举，claim interface 0，端点 0x81/0x01。
+- 持续双向 Bulk 传输，两端 `bytes_read`/`bytes_written` 与 Host
+  `out_bytes`/`in_bytes` 逐字节相等。
+- `poll/eventfd` 唤醒：`wake_reason=eventfd`，`stop_to_wake_us=1410`。
+- 官方 `closeAccessory` 唤醒：`wake_reason=owner-close`（`POLLHUP`）。
+- 并行取消 IN/OUT，`active_on_release=0`，`cleanup_safe=true`。
+
+已实测失败：
+
+- 定向 `SIGUSR1` 唤醒：`read()` 返回 `errno=5 (EIO)`，worker 以 `read-error`
+  退出，`signal_wakeups=0`。本平台不支持该唤醒路径。
+
+未执行：受控拔线重连、受控后台冻结、心跳丢失注入、总线分析仪 ZLP 验证。
+
+完整数据与逐轮排查见 `evidence/2026-11-24-device-run/REPORT.md`。真机上确认的
+平台约束（`accessoryFd` 按消息读取、`poll` 不遵守 timeout、写方向必须非阻塞等）
+见 `RUNBOOK.md` 第 5.1 节。
 
 ## 证据规则
 

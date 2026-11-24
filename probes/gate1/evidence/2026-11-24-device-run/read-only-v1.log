@@ -1,0 +1,26 @@
+opened 1:7
+control req=51 idx=0 len=0 rc=-9
+control req=52 idx=0 len=9 rc=9
+control req=52 idx=1 len=22 rc=22
+control req=52 idx=2 len=23 rc=23
+control req=52 idx=3 len=4 rc=4
+control req=52 idx=4 len=39 rc=39
+control req=53 idx=0 len=0 rc=0
+AOA START sent; waiting for 18d1:2d00
+accessory at bus=1 addr=7
+claimed; reading bulk IN 0x81 for 60s
+t=  5.05 bulk_in rc=-7 (LIBUSB_ERROR_TIMEOUT) got=0
+t=  6.76 bulk_in rc=0 (LIBUSB_SUCCESS / LIBUSB_TRANSFER_COMPLETED) got=20
+  data: 44 4d 50 31 01 81 00 00 01 00 00 00 04 00 00 00 44 4d 47 31
+t= 11.77 bulk_in rc=-7 (LIBUSB_ERROR_TIMEOUT) got=0
+t= 16.82 bulk_in rc=-7 (LIBUSB_ERROR_TIMEOUT) got=0
+t= 21.82 bulk_in rc=-7 (LIBUSB_ERROR_TIMEOUT) got=0
+t= 26.84 bulk_in rc=-7 (LIBUSB_ERROR_TIMEOUT) got=0
+t= 31.84 bulk_in rc=-7 (LIBUSB_ERROR_TIMEOUT) got=0
+t= 36.93 bulk_in rc=-7 (LIBUSB_ERROR_TIMEOUT) got=0
+t= 41.94 bulk_in rc=-7 (LIBUSB_ERROR_TIMEOUT) got=0
+t= 46.95 bulk_in rc=-7 (LIBUSB_ERROR_TIMEOUT) got=0
+t= 52.02 bulk_in rc=-7 (LIBUSB_ERROR_TIMEOUT) got=0
+t= 57.05 bulk_in rc=-7 (LIBUSB_ERROR_TIMEOUT) got=0
+t= 62.13 bulk_in rc=-7 (LIBUSB_ERROR_TIMEOUT) got=0
+total=20

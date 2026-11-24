@@ -1,0 +1,71 @@
+[aoa] GET_PROTOCOL(51), SEND_STRING(52), START(53)
+[aoa] START accepted; device re-enumerated
+[open] waiting for AOA accessory enumeration...
+[open] accessory 18d1:2d00 bus=1 address=7 speed=480 Mbps interface=0 alt=0 endpoints=2 ep_in=0x81(max=512,attr=0x2) ep_out=0x1(max=512,attr=0x2)
+[open] claimed interface 0, bulk IN=0x81 OUT=0x1
+[handshake] waiting 10000 ms after claim before first HELLO; open Accessory and start the Device worker now
+[handshake] initial delay elapsed; starting HELLO
+[handshake] HELLO sent; waiting up to 60000 ms for Device authorization/native start
+[handshake] HELLO_ACK seq=1 protocol=1
+[run] t=1.00018s out=2905413 in=2900519 data_frames=679 echoes=678 mismatches=0 hb=1/1 hb_rtt_us=1267 zlp_out=0 zlp_in=0 device_stats=no
+[run] t=2.00114s out=7711319 in=2900519 data_frames=1798 echoes=678 mismatches=0 hb=1/3 hb_rtt_us=1267 zlp_out=0 zlp_in=0 device_stats=no
+[run] t=3.00126s out=11965655 in=2900679 data_frames=2791 echoes=678 mismatches=0 hb=2/3 hb_rtt_us=5597 zlp_out=0 zlp_in=0 device_stats=yes
+[run] t=4.00075s out=18551927 in=2900695 data_frames=4326 echoes=678 mismatches=0 hb=3/4 hb_rtt_us=2474 zlp_out=0 zlp_in=0 device_stats=yes
+[run] t=5.00253s out=22997407 in=2900855 data_frames=5355 echoes=678 mismatches=0 hb=4/5 hb_rtt_us=4012 zlp_out=0 zlp_in=0 device_stats=yes
+[run] t=6.00029s out=27404643 in=2900871 data_frames=6384 echoes=678 mismatches=0 hb=5/6 hb_rtt_us=4612 zlp_out=0 zlp_in=0 device_stats=yes
+[run] t=7.00364s out=32330712 in=2901031 data_frames=7532 echoes=678 mismatches=0 hb=6/7 hb_rtt_us=1272 zlp_out=0 zlp_in=0 device_stats=yes
+[run] t=8.00129s out=36961858 in=2901047 data_frames=8610 echoes=678 mismatches=0 hb=7/8 hb_rtt_us=5000 zlp_out=0 zlp_in=0 device_stats=yes
+[run] t=9.0002s out=41860622 in=2901207 data_frames=9750 echoes=678 mismatches=0 hb=8/9 hb_rtt_us=3162 zlp_out=0 zlp_in=0 device_stats=yes
+[run] t=10.0013s out=47387411 in=2901223 data_frames=11038 echoes=678 mismatches=0 hb=9/10 hb_rtt_us=4473 zlp_out=0 zlp_in=0 device_stats=yes
+[run] t=11.0017s out=53116281 in=2901383 data_frames=12369 echoes=678 mismatches=0 hb=10/11 hb_rtt_us=2160 zlp_out=0 zlp_in=0 device_stats=yes
+[run] t=12.0001s out=57840270 in=2901399 data_frames=13468 echoes=678 mismatches=0 hb=11/12 hb_rtt_us=3176 zlp_out=0 zlp_in=0 device_stats=yes
+[run] t=13.0017s out=62384052 in=2901559 data_frames=14525 echoes=678 mismatches=0 hb=12/13 hb_rtt_us=10022 zlp_out=0 zlp_in=0 device_stats=yes
+[run] t=14.0008s out=67310105 in=2901575 data_frames=15673 echoes=678 mismatches=0 hb=13/14 hb_rtt_us=5583 zlp_out=0 zlp_in=0 device_stats=yes
+[run] t=15.0031s out=71548058 in=4809846 data_frames=16660 echoes=1123 mismatches=0 hb=14/15 hb_rtt_us=1166 zlp_out=0 zlp_in=0 device_stats=yes
+[run] t=16.0001s out=77620971 in=4869981 data_frames=18073 echoes=1137 mismatches=0 hb=14/16 hb_rtt_us=1166 zlp_out=0 zlp_in=0 device_stats=yes
+[run] t=17.0008s out=82164753 in=4870141 data_frames=19131 echoes=1137 mismatches=0 hb=15/17 hb_rtt_us=3721 zlp_out=0 zlp_in=0 device_stats=yes
+[run] t=18.0006s out=86206085 in=4870157 data_frames=20069 echoes=1137 mismatches=0 hb=16/18 hb_rtt_us=4802 zlp_out=0 zlp_in=0 device_stats=yes
+[run] t=19.0028s out=90542340 in=4870317 data_frames=21082 echoes=1137 mismatches=0 hb=17/19 hb_rtt_us=1403 zlp_out=0 zlp_in=0 device_stats=yes
+[run] t=20.0001s out=95315478 in=4870333 data_frames=22196 echoes=1137 mismatches=0 hb=18/20 hb_rtt_us=3582 zlp_out=0 zlp_in=0 device_stats=yes
+[cancel] issued IN rc=LIBUSB_SUCCESS / LIBUSB_TRANSFER_COMPLETED, OUT rc=LIBUSB_SUCCESS / LIBUSB_TRANSFER_COMPLETED; active=2
+[cleanup] active_transfers=0 after 0 ms; safe to release interface
+[result] handshake=ok echo=ok echoes=1137
+[result] cancel_wait_ms=0 in_status=CANCELLED out_status=CANCELLED active_on_release=0
+
+=== Probe summary ===
+handshake_ok=true
+echo_ok=true
+out_bytes=95315478
+in_bytes=4870333
+data_frames_sent=22196
+data_echoes_received=1137
+echo_mismatches=0
+unmatched_echoes=0
+pending_echoes_at_stop=21059
+zlp_out_scheduled=0
+zlp_out_completed=0
+zlp_in_completed=0
+heartbeats_sent=20
+heartbeat_acks=18
+heartbeat_last_rtt_us=3582
+heartbeat_max_rtt_us=10022
+heartbeat_loss_events=0
+cancellation_requested=true
+cancellation_ok=true
+cancel_wait_ms=0
+cancel_issue_gap_us=78
+in_callback_after_cancel_us=179
+out_callback_after_cancel_us=197
+active_on_release=0
+cleanup_safe=true
+device_stats_seen=true
+device.zero_reads=0
+device.poll_wakeups=8291
+device.bytes_read=86282559
+device.bytes_written=4870157
+device.zero_writes=143
+device.parse_errors=7794
+
+Gate 1 conclusion: NOT EVALUATED
+A transport run is not a Gate 1 pass. Reference Environment and
+direct-link topology must be documented and the full matrix repeated.

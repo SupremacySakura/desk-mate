@@ -7,6 +7,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
 add_library(gate1_core
+    src/handshake.cpp
     src/protocol.cpp
     src/transfer_set.cpp
 )
@@ -24,6 +25,12 @@ add_executable(gate1_core_tests
     tests/test_main.cpp
 )
 target_link_libraries(gate1_core_tests PRIVATE gate1_core)
+target_include_directories(gate1_core_tests PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/../device/entry/src/main/cpp"
+)
+target_compile_definitions(gate1_core_tests PRIVATE
+    GATE1_MAIN_SOURCE_PATH="${CMAKE_CURRENT_SOURCE_DIR}/src/main.cpp"
+)
 
 if(MSVC)
     target_compile_options(gate1_core_tests PRIVATE /W4 /WX)

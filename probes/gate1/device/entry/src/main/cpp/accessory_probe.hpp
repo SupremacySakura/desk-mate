@@ -34,10 +34,14 @@ private:
     void process_input(const std::uint8_t* data, std::size_t size);
     void build_frame_response(const struct Frame& frame, std::vector<std::uint8_t>& output);
     void append_stats_response(std::vector<std::uint8_t>& output, std::uint32_t seq);
-    bool write_all(const std::uint8_t* data, std::size_t size);
+    void enqueue_output(const std::vector<std::uint8_t>& bytes);
+    bool flush_pending();
+    bool make_accessory_nonblocking();
+    void restore_accessory_flags();
     bool write_zero_length();
     void record_wake(const char* reason);
     void record_exit(const char* reason);
+    void set_phase(const char* phase);
     bool wait_for_worker_join(std::chrono::milliseconds timeout);
     void close_event_fd_if_idle();
     static WakeMode parse_mode(const std::string& mode);
@@ -63,6 +67,11 @@ private:
     std::atomic<std::int64_t> stop_requested_ns_{0};
     std::atomic<std::int64_t> wake_observed_ns_{0};
     std::atomic<std::int64_t> worker_exit_ns_{0};
+    std::atomic<int> last_read_errno_{0};
+    std::atomic<int> last_poll_revents_{0};
+    std::atomic<std::size_t> last_read_size_{65536};
+    std::mutex phase_mutex_;
+    std::string phase_ = "idle";
 
     std::atomic<std::uint64_t> zero_reads_{0};
     std::atomic<std::uint64_t> poll_wakeups_{0};
@@ -80,6 +89,14 @@ private:
     std::atomic<std::uint64_t> read_errors_{0};
     std::atomic<std::uint64_t> zero_writes_{0};
     std::atomic<std::uint64_t> parse_errors_{0};
+    std::atomic<std::uint64_t> would_block_writes_{0};
+    std::atomic<std::uint64_t> backpressure_skips_{0};
+    std::atomic<std::uint64_t> pending_output_bytes_{0};
+
+    std::vector<std::uint8_t> pending_out_;
+    std::size_t pending_offset_ = 0;
+    std::uint64_t pending_frames_ = 0;
+    int saved_accessory_flags_ = -1;
     FrameDecoder decoder_;
 };
 

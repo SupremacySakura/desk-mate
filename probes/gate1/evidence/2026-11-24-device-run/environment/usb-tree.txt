@@ -1,0 +1,10 @@
++-o Root  <class IORegistryEntry, id 0x100000100, retain 32>
+  +-o AppleT8132USBXHCI@00000000  <class AppleT8132USBXHCI, id 0x1000004c4, registered, matched, active, busy 0 (710 ms), retain 37>
+  +-o AppleT8132USBXHCI@01000000  <class AppleT8132USBXHCI, id 0x100000334, registered, matched, active, busy 0 (7502 ms), retain 270>
+    +-o USB2.1 Hub@01100000  <class IOUSBHostDevice, id 0x1000085bd, registered, matched, active, busy 0 (5883 ms), retain 43>
+    | +-o Hid Device@01150000  <class IOUSBHostDevice, id 0x10000860f, registered, matched, active, busy 0 (128 ms), retain 51>
+    | +-o USB2.1 Hub@01140000  <class IOUSBHostDevice, id 0x100008611, registered, matched, active, busy 0 (38 ms), retain 37>
+    | +-o "HDC Device"@01130000  <class IOUSBHostDevice, id 0x10000ba6d, registered, matched, active, busy 0 (15 ms), retain 38>
+    +-o USB3.2 Hub@01200000  <class IOUSBHostDevice, id 0x1000085bf, registered, matched, active, busy 0 (191 ms), retain 40>
+      +-o USB 10/100/1G/2.5G LAN@01210000  <class IOUSBHostDevice, id 0x1000085d6, registered, matched, active, busy 0 (135 ms), retain 90>
+      +-o USB3.1 Hub@01240000  <class IOUSBHostDevice, id 0x1000085e6, registered, matched, active, busy 0 (50 ms), retain 37>

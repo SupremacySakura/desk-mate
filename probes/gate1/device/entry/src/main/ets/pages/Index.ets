@@ -1,13 +1,14 @@
-import { AccessoryProbe, WakeMode } from '../probe/AccessoryProbe';
+import { AccessoryProbe, gate1Probe, WakeMode } from '../probe/AccessoryProbe';
 
 @Entry
 @Component
 struct Index {
-  private probe: AccessoryProbe = new AccessoryProbe();
+  private probe: AccessoryProbe = gate1Probe;
   @State accessoryInfo: string = 'not authorized';
   @State nativeResult: string = '';
   @State stats: string = '{}';
   @State logs: string[] = [];
+  @State opening: boolean = false;
 
   private append(message: string): void {
     const timestamp: string = new Date().toISOString();
@@ -16,12 +17,18 @@ struct Index {
   }
 
   private async openAccessory(): Promise<void> {
+    if (this.opening) {
+      return;
+    }
+    this.opening = true;
     try {
       this.accessoryInfo = await this.probe.authorizeAndOpen();
       this.append('accessory opened');
     } catch (error) {
       this.accessoryInfo = String(error);
       this.append(this.accessoryInfo);
+    } finally {
+      this.opening = false;
     }
   }
 
@@ -97,6 +104,7 @@ struct Index {
 
       Row({ space: 8 }) {
         Button('1. 授权并打开')
+          .enabled(!this.opening)
           .onClick(() => { this.openAccessory(); })
         Button('关闭空闲句柄')
           .onClick(() => { this.closeIdle(); })

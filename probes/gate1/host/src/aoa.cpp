@@ -103,26 +103,21 @@ bool find_one_selector_match(
     return true;
 }
 
-bool append_utf16le(
+bool append_aoa_string(
     const std::string& input,
     std::vector<std::uint8_t>& output,
     std::string& error)
 {
     for (std::size_t i = 0; i < input.size();) {
         const std::uint8_t lead = static_cast<std::uint8_t>(input[i]);
-        std::uint32_t codepoint = 0;
         std::size_t extra = 0;
         if (lead < 0x80) {
-            codepoint = lead;
             extra = 0;
         } else if ((lead & 0xE0) == 0xC0) {
-            codepoint = lead & 0x1F;
             extra = 1;
         } else if ((lead & 0xF0) == 0xE0) {
-            codepoint = lead & 0x0F;
             extra = 2;
         } else if ((lead & 0xF8) == 0xF0) {
-            codepoint = lead & 0x07;
             extra = 3;
         } else {
             error = "accessory string is not valid UTF-8";
@@ -138,29 +133,10 @@ bool append_utf16le(
                 error = "invalid UTF-8 continuation byte";
                 return false;
             }
-            codepoint = (codepoint << 6) | (continuation & 0x3F);
         }
         i += extra + 1;
-
-        if (codepoint > 0x10FFFF ||
-            (codepoint >= 0xD800 && codepoint <= 0xDFFF)) {
-            error = "invalid Unicode code point in accessory string";
-            return false;
-        }
-        if (codepoint <= 0xFFFF) {
-            output.push_back(static_cast<std::uint8_t>(codepoint & 0xFF));
-            output.push_back(static_cast<std::uint8_t>((codepoint >> 8) & 0xFF));
-        } else {
-            const std::uint32_t value = codepoint - 0x10000;
-            const std::uint16_t high = static_cast<std::uint16_t>(0xD800 + (value >> 10));
-            const std::uint16_t low = static_cast<std::uint16_t>(0xDC00 + (value & 0x3FF));
-            output.push_back(static_cast<std::uint8_t>(high & 0xFF));
-            output.push_back(static_cast<std::uint8_t>((high >> 8) & 0xFF));
-            output.push_back(static_cast<std::uint8_t>(low & 0xFF));
-            output.push_back(static_cast<std::uint8_t>((low >> 8) & 0xFF));
-        }
     }
-    output.push_back(0);
+    output.assign(input.begin(), input.end());
     output.push_back(0);
     return true;
 }
@@ -171,11 +147,11 @@ bool send_aoa_string(
     const std::string& value,
     std::string& error)
 {
-    std::vector<std::uint8_t> utf16;
-    if (!append_utf16le(value, utf16, error)) {
+    std::vector<std::uint8_t> utf8;
+    if (!append_aoa_string(value, utf8, error)) {
         return false;
     }
-    if (utf16.size() > 256) {
+    if (utf8.size() > 256) {
         error = "AOA string exceeds 256 bytes";
         return false;
     }
@@ -185,8 +161,8 @@ bool send_aoa_string(
         52,
         0,
         index,
-        utf16.data(),
-        static_cast<std::uint16_t>(utf16.size()),
+        utf8.data(),
+        static_cast<std::uint16_t>(utf8.size()),
         kControlTimeoutMs);
     if (rc < 0) {
         error = "AOA SEND_STRING(request 52, index " + std::to_string(index) +
@@ -200,8 +176,15 @@ bool find_bulk_endpoints(
     libusb_device* device,
     int preferred_interface,
     int& interface_number,
+    int& alternate_setting,
+    int& interface_endpoints,
     std::uint8_t& endpoint_in,
     std::uint8_t& endpoint_out,
+    std::uint16_t& endpoint_in_max_packet,
+    std::uint16_t& endpoint_out_max_packet,
+    std::uint8_t& endpoint_in_attributes,
+    std::uint8_t& endpoint_out_attributes,
+    std::string& descriptor_dump,
     std::string& error)
 {
     libusb_config_descriptor* config = nullptr;
@@ -215,16 +198,39 @@ bool find_bulk_endpoints(
     }
 
     bool found = false;
+    std::ostringstream dump;
+    dump << "configs=" << static_cast<int>(config->bNumInterfaces)
+         << " configuration=" << static_cast<int>(config->bConfigurationValue);
     for (uint8_t i = 0; i < config->bNumInterfaces && !found; ++i) {
         const libusb_interface& iface = config->interface[i];
         for (int alt = 0; alt < iface.num_altsetting && !found; ++alt) {
             const libusb_interface_descriptor& descriptor = iface.altsetting[alt];
+            dump << " | if=" << static_cast<int>(descriptor.bInterfaceNumber)
+                 << " alt=" << static_cast<int>(descriptor.bAlternateSetting)
+                 << " class=" << static_cast<int>(descriptor.bInterfaceClass)
+                 << " sub=" << static_cast<int>(descriptor.bInterfaceSubClass)
+                 << " proto=" << static_cast<int>(descriptor.bInterfaceProtocol)
+                 << " eps=" << static_cast<int>(descriptor.bNumEndpoints);
+            for (uint8_t ep = 0; ep < descriptor.bNumEndpoints; ++ep) {
+                const libusb_endpoint_descriptor& endpoint = descriptor.endpoint[ep];
+                dump << " [ep=0x" << std::hex
+                     << static_cast<int>(endpoint.bEndpointAddress)
+                     << " attr=0x" << static_cast<int>(endpoint.bmAttributes)
+                     << " max=" << std::dec << endpoint.wMaxPacketSize
+                     << " interval=" << static_cast<int>(endpoint.bInterval) << "]";
+            }
             if (preferred_interface >= 0 &&
                 descriptor.bInterfaceNumber != preferred_interface) {
                 continue;
             }
             int candidate_in = -1;
             int candidate_out = -1;
+            int candidate_alt = alt;
+            int candidate_count = static_cast<int>(descriptor.bNumEndpoints);
+            std::uint16_t in_max_packet = 0;
+            std::uint16_t out_max_packet = 0;
+            std::uint8_t in_attributes = 0;
+            std::uint8_t out_attributes = 0;
             for (uint8_t ep = 0; ep < descriptor.bNumEndpoints; ++ep) {
                 const libusb_endpoint_descriptor& endpoint = descriptor.endpoint[ep];
                 if ((endpoint.bmAttributes & 0x03U) != LIBUSB_TRANSFER_TYPE_BULK) {
@@ -233,15 +239,25 @@ bool find_bulk_endpoints(
                 if ((endpoint.bEndpointAddress & LIBUSB_ENDPOINT_DIR_MASK) != 0) {
                     if (candidate_in < 0) {
                         candidate_in = endpoint.bEndpointAddress;
+                        in_max_packet = endpoint.wMaxPacketSize;
+                        in_attributes = endpoint.bmAttributes;
                     }
                 } else if (candidate_out < 0) {
                     candidate_out = endpoint.bEndpointAddress;
+                    out_max_packet = endpoint.wMaxPacketSize;
+                    out_attributes = endpoint.bmAttributes;
                 }
             }
             if (candidate_in >= 0 && candidate_out >= 0) {
                 interface_number = descriptor.bInterfaceNumber;
+                alternate_setting = candidate_alt;
+                interface_endpoints = candidate_count;
                 endpoint_in = static_cast<std::uint8_t>(candidate_in);
                 endpoint_out = static_cast<std::uint8_t>(candidate_out);
+                endpoint_in_max_packet = in_max_packet;
+                endpoint_out_max_packet = out_max_packet;
+                endpoint_in_attributes = in_attributes;
+                endpoint_out_attributes = out_attributes;
                 found = true;
             }
         }
@@ -252,6 +268,7 @@ bool find_bulk_endpoints(
         error = "accessory interface has no paired bulk IN/OUT endpoints";
         return false;
     }
+    descriptor_dump = dump.str();
     return true;
 }
 
@@ -475,14 +492,28 @@ bool wait_for_accessory(
         }
 
         int interface_number = -1;
+        int alternate_setting = -1;
+        int interface_endpoints = 0;
         std::uint8_t endpoint_in = 0;
         std::uint8_t endpoint_out = 0;
+        std::uint16_t endpoint_in_max_packet = 0;
+        std::uint16_t endpoint_out_max_packet = 0;
+        std::uint8_t endpoint_in_attributes = 0;
+        std::uint8_t endpoint_out_attributes = 0;
+        std::string descriptor_dump;
         if (!find_bulk_endpoints(
                 candidate,
                 -1,
                 interface_number,
+                alternate_setting,
+                interface_endpoints,
                 endpoint_in,
                 endpoint_out,
+                endpoint_in_max_packet,
+                endpoint_out_max_packet,
+                endpoint_in_attributes,
+                endpoint_out_attributes,
+                descriptor_dump,
                 error)) {
             libusb_close(handle);
             libusb_free_device_list(devices, 1);
@@ -491,8 +522,15 @@ bool wait_for_accessory(
 
         accessory.handle = handle;
         accessory.interface_number = interface_number;
+        accessory.alternate_setting = alternate_setting;
+        accessory.interface_endpoints = interface_endpoints;
         accessory.endpoint_in = endpoint_in;
         accessory.endpoint_out = endpoint_out;
+        accessory.endpoint_in_max_packet = endpoint_in_max_packet;
+        accessory.endpoint_out_max_packet = endpoint_out_max_packet;
+        accessory.endpoint_in_attributes = endpoint_in_attributes;
+        accessory.endpoint_out_attributes = endpoint_out_attributes;
+        accessory.descriptor_dump = descriptor_dump;
         accessory.vendor_id = descriptor.idVendor;
         accessory.product_id = descriptor.idProduct;
         accessory.bus = libusb_get_bus_number(candidate);
