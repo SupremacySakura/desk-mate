@@ -1,0 +1,248 @@
+[
+  {
+    "argv": [
+      "sw_vers"
+    ],
+    "id": "sw-vers",
+    "returncode": 0,
+    "stderr_path": null,
+    "stdout_path": "sw-vers.txt"
+  },
+  {
+    "argv": [
+      "sysctl",
+      "-n",
+      "hw.model"
+    ],
+    "id": "hw-model",
+    "returncode": 0,
+    "stderr_path": null,
+    "stdout_path": "sysctl-hw-model.txt"
+  },
+  {
+    "argv": [
+      "sysctl",
+      "-n",
+      "hw.memsize"
+    ],
+    "id": "hw-memsize",
+    "returncode": 0,
+    "stderr_path": null,
+    "stdout_path": "sysctl-hw-memsize.txt"
+  },
+  {
+    "argv": [
+      "sysctl",
+      "-n",
+      "machdep.cpu.brand_string"
+    ],
+    "id": "cpu-brand",
+    "returncode": 0,
+    "stderr_path": null,
+    "stdout_path": "sysctl-cpu-brand.txt"
+  },
+  {
+    "argv": [
+      "uname",
+      "-m"
+    ],
+    "id": "uname",
+    "returncode": 0,
+    "stderr_path": null,
+    "stdout_path": "uname.txt"
+  },
+  {
+    "argv": [
+      "system_profiler",
+      "SPUSBDataType",
+      "-json"
+    ],
+    "id": "system-profiler-usb",
+    "returncode": 0,
+    "stderr_path": null,
+    "stdout_path": "system-profiler-usb.json"
+  },
+  {
+    "argv": [
+      "ioreg",
+      "-p",
+      "IOUSB",
+      "-w0",
+      "-l"
+    ],
+    "id": "ioreg-usb",
+    "returncode": 0,
+    "stderr_path": null,
+    "stdout_path": "ioreg-usb.txt"
+  },
+  {
+    "argv": [
+      "ioreg",
+      "-r",
+      "-c",
+      "IOUSBHostInterface",
+      "-l"
+    ],
+    "id": "ioreg-interfaces",
+    "returncode": 0,
+    "stderr_path": null,
+    "stdout_path": "ioreg-interfaces.txt"
+  },
+  {
+    "argv": [
+      "ioreg",
+      "-r",
+      "-c",
+      "AppleUSBNCMControl",
+      "-l"
+    ],
+    "id": "ioreg-ncm",
+    "returncode": 0,
+    "stderr_path": null,
+    "stdout_path": "ioreg-ncm.txt"
+  },
+  {
+    "argv": [
+      "ioreg",
+      "-r",
+      "-c",
+      "AppleUSBECMControl",
+      "-l"
+    ],
+    "id": "ioreg-ecm",
+    "returncode": 0,
+    "stderr_path": null,
+    "stdout_path": "ioreg-ecm.txt"
+  },
+  {
+    "argv": [
+      "networksetup",
+      "-listallhardwareports"
+    ],
+    "id": "networksetup-hardware-ports",
+    "returncode": 0,
+    "stderr_path": null,
+    "stdout_path": "networksetup-hardware-ports.txt"
+  },
+  {
+    "argv": [
+      "networksetup",
+      "-listallnetworkservices"
+    ],
+    "id": "networksetup-services",
+    "returncode": 0,
+    "stderr_path": null,
+    "stdout_path": "networksetup-services.txt"
+  },
+  {
+    "argv": [
+      "ifconfig",
+      "-a"
+    ],
+    "id": "ifconfig",
+    "returncode": 0,
+    "stderr_path": null,
+    "stdout_path": "ifconfig.txt"
+  },
+  {
+    "argv": [
+      "/Applications/DevEco-Studio.app/Contents/sdk/default/openharmony/toolchains/hdc",
+      "list",
+      "targets",
+      "-v"
+    ],
+    "id": "hdc-targets",
+    "returncode": 0,
+    "stderr_path": null,
+    "stdout_path": "hdc-targets.txt"
+  },
+  {
+    "argv": [
+      "/Applications/DevEco-Studio.app/Contents/sdk/default/openharmony/toolchains/hdc",
+      "-t",
+      "59GYD25716204513",
+      "shell",
+      "param",
+      "get",
+      "const.product.model"
+    ],
+    "id": "hdc-model",
+    "returncode": 0,
+    "stderr_path": null,
+    "stdout_path": "hdc-model.txt"
+  },
+  {
+    "argv": [
+      "/Applications/DevEco-Studio.app/Contents/sdk/default/openharmony/toolchains/hdc",
+      "-t",
+      "59GYD25716204513",
+      "shell",
+      "param",
+      "get",
+      "const.product.name"
+    ],
+    "id": "hdc-product_name",
+    "returncode": 0,
+    "stderr_path": null,
+    "stdout_path": "hdc-product_name.txt"
+  },
+  {
+    "argv": [
+      "/Applications/DevEco-Studio.app/Contents/sdk/default/openharmony/toolchains/hdc",
+      "-t",
+      "59GYD25716204513",
+      "shell",
+      "param",
+      "get",
+      "const.product.software.version"
+    ],
+    "id": "hdc-software_version",
+    "returncode": 0,
+    "stderr_path": null,
+    "stdout_path": "hdc-software_version.txt"
+  },
+  {
+    "argv": [
+      "/Applications/DevEco-Studio.app/Contents/sdk/default/openharmony/toolchains/hdc",
+      "-t",
+      "59GYD25716204513",
+      "shell",
+      "param",
+      "get",
+      "const.product.os.dist.version"
+    ],
+    "id": "hdc-os_version",
+    "returncode": 0,
+    "stderr_path": null,
+    "stdout_path": "hdc-os_version.txt"
+  },
+  {
+    "argv": [
+      "/Applications/DevEco-Studio.app/Contents/sdk/default/openharmony/toolchains/hdc",
+      "-t",
+      "59GYD25716204513",
+      "shell",
+      "param",
+      "get",
+      "const.ohos.apiversion"
+    ],
+    "id": "hdc-api_version",
+    "returncode": 0,
+    "stderr_path": null,
+    "stdout_path": "hdc-api_version.txt"
+  },
+  {
+    "argv": [
+      "/Applications/DevEco-Studio.app/Contents/sdk/default/openharmony/toolchains/hdc",
+      "-t",
+      "59GYD25716204513",
+      "shell",
+      "ifconfig",
+      "-a"
+    ],
+    "id": "hdc-ifconfig",
+    "returncode": 0,
+    "stderr_path": null,
+    "stdout_path": "hdc-ifconfig.txt"
+  }
+]

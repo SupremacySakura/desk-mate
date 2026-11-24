@@ -1,0 +1,6 @@
+An asterisk (*) denotes that a network service is disabled.
+USB 10/100/1G/2.5G LAN
+M3
+Thunderbolt Bridge
+Wi-Fi
+iPhone USB

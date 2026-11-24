@@ -1,0 +1,26 @@
+{
+  "api_version": "26",
+  "interface_names": [
+    "lo",
+    "dummy0",
+    "ifb0",
+    "ifb1",
+    "ip_vti0",
+    "ip6_vti0",
+    "sit0",
+    "ip6tnl0",
+    "Hisilicon0",
+    "wlan0",
+    "p2p0",
+    "wlan1",
+    "chba0",
+    "nan0",
+    "ancowlan0",
+    "anco-wlan1"
+  ],
+  "model": "MRDI-W00",
+  "os_version": "7.0.0",
+  "product_name": "HUAWEI MatePad Pro",
+  "serial": "59GYD25716204513",
+  "software_version": "MRDIL-W00 7.0.0.111(SP8C00E111R6P3)"
+}
