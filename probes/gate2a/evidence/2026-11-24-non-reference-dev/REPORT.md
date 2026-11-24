@@ -26,7 +26,7 @@ USB 仅协商 `480 Mbps`，且 HDC 路径包含 USB Hub。因此本次记录不�
 | Host | `Mac16,12`，Apple M4，16 GB | `sysctl` |
 | macOS | `27.3`，build `26C5047e`，`arm64` | `sw_vers` / `uname` |
 | Device | `MRDI-W00`，`HUAWEI MatePad Pro` | `hdc` 只读参数 |
-| Device 序列号 | `59GYD25716204513` | `hdc` / USB serial |
+| Device 序列号 | `<redacted-serial>` | `hdc` / USB serial |
 | Device 系统 | `MRDIL-W00 7.0.0.111(SP8C00E111R6P3)` | `const.product.software.version` |
 | OpenHarmony / API | `7.0.0` / `26` | `hdc` 只读参数 |
 | USB 连接 | `USB` / `Connected` | `hdc list targets -v` |
@@ -45,7 +45,7 @@ USB 仅协商 `480 Mbps`，且 HDC 路径包含 USB Hub。因此本次记录不�
 | 目标 USB 设备 | `HDC Device` |
 | Vendor | `HISILICON` |
 | VID / PID | `4817` / `20480`（`0x12D1` / `0x5000`） |
-| USB 序列号 | `59GYD25716204513` |
+| USB 序列号 | `<redacted-serial>` |
 | 协商速率 | `480 Mbps` |
 | USB owner | `pid 67816, hdc` |
 | Device 暴露接口 | `HDC Interface`，class `255`，subclass `80`，protocol `1` |
@@ -147,12 +147,12 @@ networksetup -listallhardwareports
 networksetup -listallnetworkservices
 ifconfig -a
 hdc list targets -v
-hdc -t 59GYD25716204513 shell param get const.product.model
-hdc -t 59GYD25716204513 shell param get const.product.name
-hdc -t 59GYD25716204513 shell param get const.product.software.version
-hdc -t 59GYD25716204513 shell param get const.product.os.dist.version
-hdc -t 59GYD25716204513 shell param get const.ohos.apiversion
-hdc -t 59GYD25716204513 shell ifconfig -a
+hdc -t <redacted-serial> shell param get const.product.model
+hdc -t <redacted-serial> shell param get const.product.name
+hdc -t <redacted-serial> shell param get const.product.software.version
+hdc -t <redacted-serial> shell param get const.product.os.dist.version
+hdc -t <redacted-serial> shell param get const.ohos.apiversion
+hdc -t <redacted-serial> shell ifconfig -a
 ```
 
 `system_profiler SPUSBDataType -json` 返回空 `SPUSBDataType` 数组；USB 结论来自

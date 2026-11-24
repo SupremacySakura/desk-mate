@@ -20,7 +20,7 @@
 | Mac | MacBook Air `Mac16,12`，Apple M4，16 GB | `sysctl` / `system_profiler SPHardwareDataType` |
 | macOS | 27.3，build `26C5047e` | `sw_vers` |
 | Device | HUAWEI MatePad Pro `MRDI-W00` | 操作者现场记录 |
-| Serial | `59GYD25716204513` | `ioreg` 与 `hdc` 现场记录 |
+| Serial | `<redacted-serial>` | `ioreg` 与 `hdc` 现场记录 |
 | HarmonyOS | 7.0.0.111，API 26，tablet | 操作者现场记录 |
 | Display | 2800×1840，active 60Hz；支持 120/144Hz | 操作者现场记录 |
 | DevEco | 26.0；SDK root `/Applications/DevEco-Studio.app/Contents/sdk/default` | 本机安装 |
@@ -36,8 +36,8 @@
 `probes/gate1/scripts/capture_environment.sh` 采集。`device-topology.txt` 原始内容：
 
 ```text
-serial=59GYD25716204513
-matched_line=    |       "kUSBSerialNumberString" = "59GYD25716204513"
+serial=<redacted-serial>
+matched_line=    |       "kUSBSerialNumberString" = "<redacted-serial>"
 ancestor_path:
   +-o Root
     +-o AppleT8132USBXHCI@01000000
@@ -124,7 +124,7 @@ PASS: Device ownership/wake static boundary checks
   ```
 
 - 当前 Device 已处于 AOA 模式，`hdc list targets -v` 返回 `[Empty]`；
-  `hdc -t 59GYD25716204513 shell bm get -u` 返回
+  `hdc -t <redacted-serial> shell bm get -u` 返回
   `[Fail]Not match target founded, check connect-key please`。
 - 因此 `requestAccessoryRight`、`openAccessory`、持续双向授权均未执行。
 

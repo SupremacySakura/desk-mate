@@ -1,6 +1,6 @@
 {
   "developer_mode_required": null,
-  "device_serial": "59GYD25716204513",
+  "device_serial": "<redacted-serial>",
   "evidence": [],
   "notes": "Do not mark verified until the exact Device UI path and absence of Developer Mode are observed.",
   "observed_at_utc": null,

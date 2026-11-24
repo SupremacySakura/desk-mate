@@ -1,6 +1,6 @@
 # Gate 3 device runbook
 
-Target: HUAWEI MatePad Pro `MRDI-W00`, serial `59GYD25716204513`,
+Target: HUAWEI MatePad Pro `MRDI-W00`, serial `<redacted-serial>`,
 OpenHarmony `7.0.0.111`, API 26, 2800x1840. The current USB path is through a
 Hub at USB 2.0 and is **not** a Reference Link.
 
@@ -36,9 +36,9 @@ failed probe.
 ```sh
 HDC=/Applications/DevEco-Studio.app/Contents/sdk/default/openharmony/toolchains/hdc
 "$HDC" list targets
-"$HDC" -t 59GYD25716204513 shell param get const.product.model
-"$HDC" -t 59GYD25716204513 shell param get const.ohos.fullname
-"$HDC" -t 59GYD25716204513 shell hidumper -s RenderService -a screen
+"$HDC" -t <redacted-serial> shell param get const.product.model
+"$HDC" -t <redacted-serial> shell param get const.ohos.fullname
+"$HDC" -t <redacted-serial> shell hidumper -s RenderService -a screen
 ```
 
 Record the exact output. Do not substitute the task-brief identity for a live
@@ -49,7 +49,7 @@ query. If hdc cannot reach the target, the install attempt is `not executed`.
 Make exactly one attempt with the built artifact:
 
 ```sh
-timeout 60 "$HDC" -t 59GYD25716204513 install -r "$HAP"
+timeout 60 "$HDC" -t <redacted-serial> install -r "$HAP"
 ```
 
 Record the command, exit status, and complete output.
@@ -61,9 +61,9 @@ Record the command, exit status, and complete output.
 ## 4. Launch
 
 ```sh
-"$HDC" -t 59GYD25716204513 shell aa start -a EntryAbility -b com.deskmate.gate3
-"$HDC" -t 59GYD25716204513 shell hilog -r
-"$HDC" -t 59GYD25716204513 shell hilog | grep -i -E 'Gate3|deskmate|avcodec'
+"$HDC" -t <redacted-serial> shell aa start -a EntryAbility -b com.deskmate.gate3
+"$HDC" -t <redacted-serial> shell hilog -r
+"$HDC" -t <redacted-serial> shell hilog | grep -i -E 'Gate3|deskmate|avcodec'
 ```
 
 The page loads `gate3-testsrc.h264` from rawfile and publishes the device

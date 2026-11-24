@@ -49,7 +49,7 @@ cd probes/gate2a
 make test
 make validate
 
-SERIAL=59GYD25716204513 make capture
+SERIAL=<redacted-serial> make capture
 ```
 
 `make capture` 默认写入
@@ -87,7 +87,7 @@ measurement 引用的 ping/iperf3 原始文件以及手动入口证据一并加�
 
 - Host：`Mac16,12`，Apple M4，16 GB，macOS `27.3` / `26C5047e`。
 - Device：`MRDI-W00`，`HUAWEI MatePad Pro`，序列号
-  `59GYD25716204513`，OpenHarmony `7.0.0` / API `26`。
+  `<redacted-serial>`，OpenHarmony `7.0.0` / API `26`。
 - 当前 Device 由 `hdc` 占用 HDC Interface，USB 协商 `480 Mbps`。
 - HDC 祖先路径含 Bridgesil `USB2.1 Hub`；同一扩展坞树中还枚举了
   GenesysLogic `USB2.1 Hub`，但它不是当前 HDC 路径的祖先。

@@ -7,7 +7,7 @@
     "productModel": "HUAWEI MatePad Pro MRDI-W00",
     "product_name_live": "HUAWEI MatePad Pro",
     "product_model_live": "MRDI-W00",
-    "serial": "59GYD25716204513",
+    "serial": "<redacted-serial>",
     "osFullName": "OpenHarmony-7.0.0.111",
     "software_version_live": "MRDIL-W00 7.0.0.111(SP8C00E111R6P3)",
     "sdkApiVersion": 26,
@@ -32,7 +32,7 @@
   },
   "install": {
     "state": "not executed",
-    "command": "/Applications/DevEco-Studio.app/Contents/sdk/default/openharmony/toolchains/hdc -t 59GYD25716204513 install -r probes/gate3/app/entry/build/default/outputs/default/entry-default-unsigned.hap",
+    "command": "/Applications/DevEco-Studio.app/Contents/sdk/default/openharmony/toolchains/hdc -t <redacted-serial> install -r probes/gate3/app/entry/build/default/outputs/default/entry-default-unsigned.hap",
     "attempted_hap_sha256": "de568985124ee9bd63a3a2833ad640e31141f91228583c5f23f12c7e792b7c49",
     "hdc_process_exit_code": 0,
     "output": "[Info]App install path:/private/tmp/deskmate-wt/07-gate3/probes/gate3/app/entry/build/default/outputs/default/entry-default-unsigned.hap msg:error: failed to install bundle. code:9568320 error: no signature file. \nAppMod finish",

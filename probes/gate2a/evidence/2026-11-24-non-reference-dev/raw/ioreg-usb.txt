@@ -170,14 +170,14 @@
     | |   
     | +-o "HDC Device"@01130000  <class IOUSBHostDevice, id 0x10000ba6d, registered, matched, active, busy 0 (15 ms), retain 38>
     |     {
-    |       "kUSBSerialNumberString" = "59GYD25716204513"
+    |       "kUSBSerialNumberString" = "<redacted-serial>"
     |       "bDeviceClass" = 0
     |       "UsbLinkSpeed" = 480000000
     |       "bDeviceSubClass" = 0
     |       "iSerialNumber" = 3
     |       "IOServiceDEXTEntitlements" = (("com.apple.developer.driverkit.transport.usb"))
     |       "iProduct" = 2
-    |       "USB Serial Number" = "59GYD25716204513"
+    |       "USB Serial Number" = "<redacted-serial>"
     |       "USB Vendor Name" = "HISILICON"
     |       "USBSpeed" = 3
     |       "IOPowerManagement" = {"PowerOverrideOn"=Yes,"DevicePowerState"=2,"CurrentPowerState"=2,"CapabilityFlags"=32768,"MaxPowerState"=2,"DriverPowerState"=0}

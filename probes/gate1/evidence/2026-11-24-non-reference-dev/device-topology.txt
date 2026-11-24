@@ -1,5 +1,5 @@
-serial=59GYD25716204513
-matched_line=    |       "kUSBSerialNumberString" = "59GYD25716204513"
+serial=<redacted-serial>
+matched_line=    |       "kUSBSerialNumberString" = "<redacted-serial>"
 ancestor_path:
   +-o Root  <class IORegistryEntry, id 0x100000100, retain 32>
     +-o AppleT8132USBXHCI@01000000  <class AppleT8132USBXHCI, id 0x100000334, registered, matched, active, busy 0 (7365 ms), retain 251>

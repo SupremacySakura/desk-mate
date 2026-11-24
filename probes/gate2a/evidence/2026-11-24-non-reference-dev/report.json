@@ -115,7 +115,7 @@
     "native_bundled_driver": false,
     "network_driver_bundle_id": null,
     "network_driver_class": null,
-    "reason": "native NCM/ECM interfaces were found, but they are not associated with target device serial 59GYD25716204513",
+    "reason": "native NCM/ECM interfaces were found, but they are not associated with target device serial <redacted-serial>",
     "rndis_detected": false
   },
   "generated_at_utc": "2026-11-24T04:57:11Z",
@@ -448,7 +448,7 @@
       "model": "MRDI-W00",
       "os_version": "7.0.0",
       "product_name": "HUAWEI MatePad Pro",
-      "serial": "59GYD25716204513",
+      "serial": "<redacted-serial>",
       "software_version": "MRDIL-W00 7.0.0.111(SP8C00E111R6P3)"
     },
     "host": {
@@ -547,7 +547,7 @@
       "name": "HDC Device",
       "owner": "pid 67816, hdc",
       "product": "HDC Device",
-      "serial": "59GYD25716204513",
+      "serial": "<redacted-serial>",
       "vendor": "HISILICON"
     }
   }

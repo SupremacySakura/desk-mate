@@ -3,7 +3,7 @@
 ## 0. 前置条件
 
 - Reference Mac：`Mac16,12` / Apple M4 / 16 GB / macOS `27.3` `26C5047e`。
-- Reference Device：MatePad Pro `MRDI-W00` / `59GYD25716204513` /
+- Reference Device：MatePad Pro `MRDI-W00` / `<redacted-serial>` /
   OpenHarmony `7.0.0.111` / API 26。
 - python3。
 - `hdc`，用于只读读取 Device 参数与接口清单。
@@ -22,7 +22,7 @@
 ```json
 {
   "status": "verified",
-  "device_serial": "59GYD25716204513",
+  "device_serial": "<redacted-serial>",
   "observed_at_utc": "2026-11-24T00:00:00Z",
   "operator": "name",
   "user_operable": true,
@@ -51,7 +51,7 @@ RUN=evidence/reference-$(date -u +%Y%m%dT%H%M%SZ)
 mkdir -p "$RUN"
 cp /path/to/device-entry.json "$RUN/device-entry.json"
 cp /path/to/device-entry.png "$RUN/device-entry.png"
-SERIAL=59GYD25716204513 make capture \
+SERIAL=<redacted-serial> make capture \
   EVIDENCE="$RUN" \
   DEVICE_ENTRY="$RUN/device-entry.json"
 ```
@@ -147,7 +147,7 @@ summary 的 min/avg/max/stddev。
 ```sh
 python3 gate2a.py compose \
   --raw-dir evidence/<run>/raw \
-  --device-serial 59GYD25716204513 \
+  --device-serial <redacted-serial> \
   --device-entry evidence/<run>/device-entry.json \
   --measurement evidence/<run>/measurement/link-measurement.json \
   --output evidence/<run>/report.json

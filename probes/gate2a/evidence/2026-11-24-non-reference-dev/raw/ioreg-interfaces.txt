@@ -537,7 +537,7 @@
   |   "idVendor" = 4817
   |   "IOServiceDEXTEntitlements" = (("com.apple.developer.driverkit.transport.usb"))
   |   "bNumEndpoints" = 2
-  |   "USB Serial Number" = "59GYD25716204513"
+  |   "USB Serial Number" = "<redacted-serial>"
   | }
   | 
   +-o hdc  <class AppleUSBHostInterfaceUserClient, id 0x10000bb29, !registered, !matched, active, busy 0, retain 6>

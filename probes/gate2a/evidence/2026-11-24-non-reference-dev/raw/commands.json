@@ -160,7 +160,7 @@
     "argv": [
       "/Applications/DevEco-Studio.app/Contents/sdk/default/openharmony/toolchains/hdc",
       "-t",
-      "59GYD25716204513",
+      "<redacted-serial>",
       "shell",
       "param",
       "get",
@@ -175,7 +175,7 @@
     "argv": [
       "/Applications/DevEco-Studio.app/Contents/sdk/default/openharmony/toolchains/hdc",
       "-t",
-      "59GYD25716204513",
+      "<redacted-serial>",
       "shell",
       "param",
       "get",
@@ -190,7 +190,7 @@
     "argv": [
       "/Applications/DevEco-Studio.app/Contents/sdk/default/openharmony/toolchains/hdc",
       "-t",
-      "59GYD25716204513",
+      "<redacted-serial>",
       "shell",
       "param",
       "get",
@@ -205,7 +205,7 @@
     "argv": [
       "/Applications/DevEco-Studio.app/Contents/sdk/default/openharmony/toolchains/hdc",
       "-t",
-      "59GYD25716204513",
+      "<redacted-serial>",
       "shell",
       "param",
       "get",
@@ -220,7 +220,7 @@
     "argv": [
       "/Applications/DevEco-Studio.app/Contents/sdk/default/openharmony/toolchains/hdc",
       "-t",
-      "59GYD25716204513",
+      "<redacted-serial>",
       "shell",
       "param",
       "get",
@@ -235,7 +235,7 @@
     "argv": [
       "/Applications/DevEco-Studio.app/Contents/sdk/default/openharmony/toolchains/hdc",
       "-t",
-      "59GYD25716204513",
+      "<redacted-serial>",
       "shell",
       "ifconfig",
       "-a"

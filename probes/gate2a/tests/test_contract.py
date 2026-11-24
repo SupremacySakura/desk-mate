@@ -30,7 +30,7 @@ def direct_ncm_capture(interfaces=None, network_interfaces=None):
     return {
         "usb_device": {
             "name": "MatePad Composite",
-            "serial": "59GYD25716204513",
+            "serial": "<redacted-serial>",
             "vendor": "HISILICON",
             "product": "MatePad",
             "id_vendor": 4817,
@@ -58,7 +58,7 @@ def direct_ncm_capture(interfaces=None, network_interfaces=None):
                 "driver_bundle_id": "com.apple.driver.usb.cdc.ncm",
                 "usb_id_vendor": 4817,
                 "usb_id_product": 20480,
-                "usb_serial": "59GYD25716204513",
+                "usb_serial": "<redacted-serial>",
                 "descriptor_family": "ncm",
             }
         ],
@@ -94,7 +94,7 @@ def valid_pending_report():
             "device": {
                 "model": "MRDI-W00",
                 "product_name": "HUAWEI MatePad Pro",
-                "serial": "59GYD25716204513",
+                "serial": "<redacted-serial>",
                 "software_version": "MRDIL-W00 7.0.0.111(SP8C00E111R6P3)",
                 "os_version": "7.0.0",
                 "api_version": "26",
@@ -105,7 +105,7 @@ def valid_pending_report():
                 "name": "HDC Device",
                 "vendor": "HISILICON",
                 "product": "HDC Device",
-                "serial": "59GYD25716204513",
+                "serial": "<redacted-serial>",
                 "id_vendor": 4817,
                 "id_product": 20480,
                 "interfaces": [],
@@ -188,7 +188,7 @@ def valid_passed_report():
                 "name": "MatePad Composite",
                 "vendor": "HISILICON",
                 "product": "MatePad",
-                "serial": "59GYD25716204513",
+                "serial": "<redacted-serial>",
                 "id_vendor": 4817,
                 "id_product": 20480,
                 "interfaces": [
@@ -240,7 +240,7 @@ def valid_passed_report():
     }
     report["device_entry"] = {
         "status": "verified",
-        "device_serial": "59GYD25716204513",
+        "device_serial": "<redacted-serial>",
         "observed_at_utc": "2026-11-24T00:00:00Z",
         "operator": "operator",
         "user_operable": True,
@@ -333,7 +333,7 @@ def archive_passed_evidence(report, directory):
             {
                 "model": "MRDI-W00",
                 "product_name": "HUAWEI MatePad Pro",
-                "serial": "59GYD25716204513",
+                "serial": "<redacted-serial>",
                 "software_version": "MRDIL-W00 7.0.0.111(SP8C00E111R6P3)",
                 "os_version": "7.0.0",
                 "api_version": "26",
@@ -388,7 +388,7 @@ def archive_passed_evidence(report, directory):
         "device-entry.json": json.dumps(
             {
                 "status": "verified",
-                "device_serial": "59GYD25716204513",
+                "device_serial": "<redacted-serial>",
                 "observed_at_utc": "2026-11-24T00:00:00Z",
                 "operator": "operator",
                 "user_operable": True,
@@ -422,7 +422,7 @@ def archive_passed_evidence(report, directory):
     report["usb_topology"] = reported_topology(
         gate2a.discover_topology(
             evidence["raw/ioreg-usb.txt"],
-            "59GYD25716204513",
+            "<redacted-serial>",
         )
     )
     network_inventory = gate2a.build_network_inventory(
@@ -431,7 +431,7 @@ def archive_passed_evidence(report, directory):
             ("ncm", evidence["raw/ioreg-ncm.txt"]),
             ("ecm", evidence["raw/ioreg-ecm.txt"]),
         ],
-        "59GYD25716204513",
+        "<redacted-serial>",
     )
     target = report["usb_topology"]["target_device"]
     classification = gate2a.classify(
@@ -558,8 +558,8 @@ def ioreg_direct_ncm_usb_fixture():
   +-o AppleT8132USBXHCI@00000000  <class AppleT8132USBXHCI, id 0x2, retain 20>
     +-o "MatePad Composite"@01100000  <class IOUSBHostDevice, id 0x3, retain 38>
       | {
-      |   "kUSBSerialNumberString" = "59GYD25716204513"
-      |   "USB Serial Number" = "59GYD25716204513"
+      |   "kUSBSerialNumberString" = "<redacted-serial>"
+      |   "USB Serial Number" = "<redacted-serial>"
       |   "USB Vendor Name" = "HISILICON"
       |   "USB Product Name" = "MatePad"
       |   "UsbLinkSpeed" = 5000000000
@@ -630,8 +630,8 @@ def ioreg_usb_fixture(include_interface=True):
     | |
     | | +-o "HDC Device"@01130000  <class IOUSBHostDevice, id 0x5, retain 38>
     | |   | {
-    | |   |   "kUSBSerialNumberString" = "59GYD25716204513"
-    | |   |   "USB Serial Number" = "59GYD25716204513"
+    | |   |   "kUSBSerialNumberString" = "<redacted-serial>"
+    | |   |   "USB Serial Number" = "<redacted-serial>"
     | |   |   "USB Vendor Name" = "HISILICON"
     | |   |   "USB Product Name" = ""HDC Device""
     | |   |   "UsbLinkSpeed" = 480000000
@@ -656,7 +656,7 @@ def ioreg_usb_fixture(include_interface=True):
 def ioreg_interfaces_fixture():
     return """+-o HDC Interface@0  <class IOUSBHostInterface, id 0x6, retain 11>
   | {
-  |   "USB Serial Number" = "59GYD25716204513"
+  |   "USB Serial Number" = "<redacted-serial>"
   |   "USB Vendor Name" = "HISILICON"
   |   "USB Product Name" = ""HDC Device""
   |   "idVendor" = 4817
@@ -789,7 +789,7 @@ class Gate2AContractTests(unittest.TestCase):
                     "driver_bundle_id": "com.example.vendor.ncm",
                     "usb_id_vendor": 4817,
                     "usb_id_product": 20480,
-                    "usb_serial": "59GYD25716204513",
+                    "usb_serial": "<redacted-serial>",
                     "descriptor_family": "ncm",
                 }
             ]
@@ -936,7 +936,7 @@ round-trip min/avg/max/stddev = 1.000/2.750/5.000/1.479 ms
                 "--ioreg",
                 ioreg_path,
                 "--serial",
-                "59GYD25716204513",
+                "<redacted-serial>",
                 "--output",
                 output_path,
             )
@@ -945,7 +945,7 @@ round-trip min/avg/max/stddev = 1.000/2.750/5.000/1.479 ms
             topology = json.loads(output_path.read_text(encoding="utf-8"))
             self.assertEqual(topology["target_device"]["name"], "HDC Device")
             self.assertEqual(topology["target_device"]["vendor"], "HISILICON")
-            self.assertEqual(topology["target_device"]["serial"], "59GYD25716204513")
+            self.assertEqual(topology["target_device"]["serial"], "<redacted-serial>")
             self.assertEqual(topology["target_device"]["link_speed_mbps"], 480)
             self.assertEqual(topology["target_device"]["owner"], "pid 67816, hdc")
             self.assertEqual(
@@ -990,7 +990,7 @@ round-trip min/avg/max/stddev = 1.000/2.750/5.000/1.479 ms
                 "--interfaces-ioreg",
                 interfaces_path,
                 "--serial",
-                "59GYD25716204513",
+                "<redacted-serial>",
                 "--output",
                 output_path,
             )
@@ -1018,7 +1018,7 @@ round-trip min/avg/max/stddev = 1.000/2.750/5.000/1.479 ms
                 "--ncm-ioreg",
                 ncm_path,
                 "--device-serial",
-                "59GYD25716204513",
+                "<redacted-serial>",
                 "--output",
                 output_path,
             )
@@ -1594,7 +1594,7 @@ round-trip min/avg/max/stddev = 1.000/2.750/5.000/1.479 ms
                     {
                         "model": "MRDI-W00",
                         "product_name": "HUAWEI MatePad Pro",
-                        "serial": "59GYD25716204513",
+                        "serial": "<redacted-serial>",
                         "software_version": "MRDIL-W00 7.0.0.111(SP8C00E111R6P3)",
                         "os_version": "7.0.0",
                         "api_version": "26",
@@ -1640,7 +1640,7 @@ round-trip min/avg/max/stddev = 1.000/2.750/5.000/1.479 ms
                 "--raw-dir",
                 raw_dir,
                 "--device-serial",
-                "59GYD25716204513",
+                "<redacted-serial>",
                 "--output",
                 output_path,
             )
@@ -1696,7 +1696,7 @@ round-trip min/avg/max/stddev = 1.000/2.750/5.000/1.479 ms
                 "--raw-dir",
                 raw_dir,
                 "--device-serial",
-                "59GYD25716204513",
+                "<redacted-serial>",
                 "--measurement",
                 measurement_path,
                 "--output",
@@ -1726,7 +1726,7 @@ round-trip min/avg/max/stddev = 1.000/2.750/5.000/1.479 ms
                 "--raw-dir",
                 run_dir / "raw",
                 "--device-serial",
-                "59GYD25716204513",
+                "<redacted-serial>",
                 "--device-entry",
                 run_dir / "device-entry.json",
                 "--measurement",
@@ -1794,7 +1794,7 @@ round-trip min/avg/max/stddev = 1.000/2.750/5.000/1.479 ms
                 "--raw-dir",
                 run_dir / "raw",
                 "--device-serial",
-                "59GYD25716204513",
+                "<redacted-serial>",
                 "--device-entry",
                 run_dir / "device-entry.json",
                 "--measurement",
@@ -1823,7 +1823,7 @@ round-trip min/avg/max/stddev = 1.000/2.750/5.000/1.479 ms
                 "--raw-dir",
                 run_dir / "raw",
                 "--device-serial",
-                "59GYD25716204513",
+                "<redacted-serial>",
                 "--device-entry",
                 run_dir / "device-entry.json",
                 "--measurement",
@@ -1849,7 +1849,7 @@ round-trip min/avg/max/stddev = 1.000/2.750/5.000/1.479 ms
                 "--raw-dir",
                 run_dir / "raw",
                 "--device-serial",
-                "59GYD25716204513",
+                "<redacted-serial>",
                 "--device-entry",
                 entry_path,
                 "--measurement",
