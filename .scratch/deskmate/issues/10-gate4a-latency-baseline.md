@@ -6,7 +6,7 @@
 
 **Status:** needs-info
 
-- [ ] 真实 Session 经过优先调度、分片传输、Host 实时编码和 Device Surface 解码完成端到端亮屏。
+- [x] 真实 Session 经过优先调度、分片传输、Host 实时编码和 Device Surface 解码完成端到端亮屏。
 - [ ] 记录完整 Reference Environment、Reference Link、60Hz 模式、码率、分片和调度参数。
 - [ ] 四时间戳校时和分阶段打点可落盘，报告偏移、RTT、漂移、误差上界和 Software Pipeline Latency 分布。
 - [ ] 每种光学负载至少采集 100 个非同步伪随机间隔的有效样本，报告 P50/P95/P99、样本数和误差。
@@ -20,3 +20,10 @@
 - 2026-11-24：blocked。端到端亮屏依赖 Gate 0（未执行 live 采集/编码）、Gate 1
   （拓扑非基准，`NOT EVALUATED`）与 Gate 3 的 Annex-B Host 互操作（等待 05）。
   在这些门禁收口前不做延迟基线测量，避免把非基准链路数据当成性能结论。
+- 2026-11-24（更新）：端到端亮屏这一项已实测通过——真实 Session 经优先调度、
+  12 KiB 分片、Host 实时编码、设备 Surface 解码后平板出画面（HEVC 与 H.264
+  均验证），据此勾选第一项。
+  - 其余各项仍未完成：链路是 USB2.1 Hub 而非 Reference Link，因此没有 60Hz
+    基准模式、没有四时间戳校时落盘、没有光学采样，也没有任何延迟数值。
+  - 状态保持 `needs-info`。**本任务不产出性能结论**；已知的帧率偏低（约 9 fps）
+    属于待优化项，不是 Gate 4A 基线。

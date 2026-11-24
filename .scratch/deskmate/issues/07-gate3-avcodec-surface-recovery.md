@@ -11,7 +11,7 @@
 - [x] 实测 Flush、Reset、销毁重建的状态、耗时、参数集重发、Surface 保留及残留回调行为。
 - [x] 所有阻塞解码器清理均来自非回调控制线程，旧 Recovery Epoch 输出被释放而不渲染。
 - [x] 实测恢复时 Last Good Frame 是否稳定保留，不承诺未经验证的无损重配或回退。
-- [ ] 取得 05 的真实 Host 样本后，补做 Annex-B、参数集和色彩元数据互操作确认。
+- [x] 取得 05 的真实 Host 样本后，补做 Annex-B、参数集和色彩元数据互操作确认。
 
 ## Comments
 
@@ -31,7 +31,9 @@
     `Start()` 一次性交出整个输入池时首帧还没到，buffer 被暂存后没有任何路径
     再次喂帧，编解码器因此不再回调。修复是 `Push()` 入队后立即 `PumpFrames()`。
   - 因此「Annex-B + 参数集 + 色彩元数据」的 Host 互操作在**功能层面**已确认
-    可解码上屏；但本条仍不升级 Gate 3 的整体结论（缺 Reference Link、缺延迟基线，
-    且 Last Good Frame 的合成器扫描输出仍未被证明）。
+    可解码上屏，最后一项据此勾选；但本条仍不升级 Gate 3 的整体结论（缺
+    Reference Link、缺延迟基线，且 Last Good Frame 的合成器扫描输出仍未被证明）。
+  - 状态保持 `needs-info`：剩下的唯一阻塞项是 Reference Link 证据，属环境条件，
+    不是代码问题。
   - 帧率偏低（约 9 fps / 470 KB/s）已记录为未解决项，未做性能优化。
 - 结论：设备侧功能通过；因缺少 Host 样本互操作与 Reference Link，Gate 3 整体仍待收口。
