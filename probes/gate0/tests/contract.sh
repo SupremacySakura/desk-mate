@@ -52,6 +52,22 @@ set -e
 grep -q -- '--allow-create-display' <<<"$live_output" || fail "missing display opt-in error"
 grep -q -- '--allow-screen-capture' <<<"$live_output" || fail "missing capture opt-in error"
 
+echo "ok - attach mode replaces display creation but still needs capture opt-in"
+set +e
+attach_missing_capture="$("$BIN" --live --attach-display 41 --json 2>&1)"
+attach_missing_status=$?
+set -e
+[[ $attach_missing_status -ne 0 ]] || fail "attach mode without capture opt-in unexpectedly succeeded"
+grep -q -- '--allow-screen-capture' <<<"$attach_missing_capture" || fail "attach mode did not require capture opt-in"
+grep -q -- '--allow-create-display' <<<"$attach_missing_capture" && fail "attach mode still demanded display creation"
+
+set +e
+attach_bad_id="$("$BIN" --live --attach-display not-a-number --allow-screen-capture --json 2>&1)"
+attach_bad_status=$?
+set -e
+[[ $attach_bad_status -ne 0 ]] || fail "non-numeric display id was accepted"
+grep -q -- '--attach-display must be a positive display ID' <<<"$attach_bad_id" || fail "invalid display id error is not explicit"
+
 echo "ok - dry-run and live modes cannot be combined in either order"
 set +e
 mode_output="$("$BIN" --dry-run --live --json 2>&1)"

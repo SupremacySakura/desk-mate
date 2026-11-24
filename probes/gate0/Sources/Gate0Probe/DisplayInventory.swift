@@ -24,6 +24,24 @@ struct DisplayInventoryReport: Codable {
 }
 
 enum DisplayInventory {
+    // CGDisplayIsOnline answers -1 for an ID that no longer exists, which is
+    // truthy; membership in the online list is the only reliable check.
+    static func isOnline(_ displayID: UInt32) -> Bool {
+        var count: UInt32 = 0
+        guard CGGetOnlineDisplayList(0, nil, &count) == .success, count > 0 else {
+            return false
+        }
+        var identifiers = [CGDirectDisplayID](repeating: 0, count: Int(count))
+        var actualCount: UInt32 = 0
+        let result = identifiers.withUnsafeMutableBufferPointer { buffer in
+            CGGetOnlineDisplayList(count, buffer.baseAddress, &actualCount)
+        }
+        guard result == .success else {
+            return false
+        }
+        return identifiers.prefix(Int(actualCount)).contains(displayID)
+    }
+
     static func probe() -> DisplayInventoryReport {
         var count: UInt32 = 0
         CGGetOnlineDisplayList(0, nil, &count)

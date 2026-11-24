@@ -81,6 +81,8 @@ enum ReportFactory {
             privateAPI: privateAPI,
             display: DisplayRecord(
                 created: false,
+                provider: "none",
+                attachedExisting: false,
                 displayID: nil,
                 requestedLogicalWidth: options.logicalWidth,
                 requestedLogicalHeight: options.logicalHeight,
@@ -92,11 +94,12 @@ enum ReportFactory {
                 isMainDisplay: nil,
                 isMirroring: nil,
                 destroyed: nil,
+                stillOnlineAfterRun: nil,
                 failure: nil
             ),
             capture: CaptureRecord(
                 started: false,
-                target: "created-extended-display-only",
+                target: "explicit-display-id-only",
                 displayID: nil,
                 width: nil,
                 height: nil,

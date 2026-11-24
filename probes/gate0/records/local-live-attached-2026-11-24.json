@@ -1,0 +1,286 @@
+{
+  "artifactPlan" : [
+    {
+      "annexB" : true,
+      "codec" : "hevc",
+      "colorMetadata" : [
+        "colorPrimaries",
+        "transferFunction",
+        "yCbCrMatrix"
+      ],
+      "container" : "annex-b",
+      "noBFrames" : true,
+      "parameterSets" : [
+        "VPS",
+        "SPS",
+        "PPS"
+      ],
+      "realTime" : true
+    },
+    {
+      "annexB" : true,
+      "codec" : "h264",
+      "colorMetadata" : [
+        "colorPrimaries",
+        "transferFunction",
+        "yCbCrMatrix"
+      ],
+      "container" : "annex-b",
+      "noBFrames" : true,
+      "parameterSets" : [
+        "SPS",
+        "PPS"
+      ],
+      "realTime" : true
+    }
+  ],
+  "artifacts" : [
+    {
+      "codec" : "hevc",
+      "colorMetadata" : {
+        "colorPrimaries" : "ITU_R_709_2",
+        "format.CVImageBufferColorPrimaries" : "ITU_R_709_2",
+        "format.CVImageBufferTransferFunction" : "ITU_R_709_2",
+        "format.CVImageBufferYCbCrMatrix" : "ITU_R_709_2",
+        "transferFunction" : "ITU_R_709_2",
+        "yCbCrMatrix" : "ITU_R_709_2"
+      },
+      "frameCount" : 97,
+      "keyFrameCount" : 2,
+      "metadataPath" : "/tmp/gate0-attached/gate0-hevc-20261124-095259.json",
+      "noBFramePropertyVerified" : true,
+      "outputPTSMonotonic" : true,
+      "parameterSetCount" : 3,
+      "path" : "/tmp/gate0-attached/gate0-hevc-20261124-095259.h265"
+    },
+    {
+      "codec" : "h264",
+      "colorMetadata" : {
+        "colorPrimaries" : "ITU_R_709_2",
+        "format.CVImageBufferColorPrimaries" : "ITU_R_709_2",
+        "format.CVImageBufferTransferFunction" : "ITU_R_709_2",
+        "format.CVImageBufferYCbCrMatrix" : "ITU_R_709_2",
+        "transferFunction" : "ITU_R_709_2",
+        "yCbCrMatrix" : "ITU_R_709_2"
+      },
+      "frameCount" : 97,
+      "keyFrameCount" : 2,
+      "metadataPath" : "/tmp/gate0-attached/gate0-h264-20261124-095259.json",
+      "noBFramePropertyVerified" : true,
+      "outputPTSMonotonic" : true,
+      "parameterSetCount" : 2,
+      "path" : "/tmp/gate0-attached/gate0-h264-20261124-095259.h264"
+    }
+  ],
+  "capture" : {
+    "audioEnabled" : false,
+    "audioOutputAdded" : false,
+    "audioRequested" : false,
+    "displayID" : 41,
+    "frameRate" : 60,
+    "framesReceived" : 97,
+    "height" : 2560,
+    "started" : true,
+    "target" : "created-extended-display-only",
+    "width" : 3840
+  },
+  "decision" : "pending",
+  "decisionReason" : "Live checks that ran did not fail, but Gate 0 remains pending for: developer-id, notarization-and-gatekeeper, lock-sleep-recovery.",
+  "display" : {
+    "actualMode" : "1920x1280 pt / 3840x2560 px @ 120.00 Hz",
+    "attachedExisting" : true,
+    "created" : false,
+    "displayID" : 41,
+    "isMainDisplay" : false,
+    "isMirroring" : false,
+    "provider" : "external-attached",
+    "refreshRate" : 120,
+    "requestedLogicalHeight" : 920,
+    "requestedLogicalWidth" : 1400,
+    "requestedPixelHeight" : 1840,
+    "requestedPixelWidth" : 2800,
+    "scale" : 2,
+    "stillOnlineAfterRun" : true
+  },
+  "environment" : {
+    "architecture" : "arm64",
+    "buildVersion" : "26C5047e",
+    "chip" : "Apple M4",
+    "kernelRelease" : "27.3.0",
+    "modelIdentifier" : "Mac16,12",
+    "modelName" : "MacBook Air",
+    "productName" : "macOS",
+    "productVersion" : "27.3",
+    "xcodeBuild" : "27B52",
+    "xcodeVersion" : "27.2"
+  },
+  "generatedAt" : "2026-11-24T09:53:10.102Z",
+  "issue" : ".scratch/deskmate/issues/05-gate0-host-display-capture-encode-distribution.md",
+  "lifecycle" : {
+    "behavior" : "Registered distributed lock/unlock and NSWorkspace sleep/wake observers. No lock or sleep event was observed during this run.",
+    "eventsObserved" : [
+
+    ],
+    "hooksImplemented" : true,
+    "hooksRegistered" : true,
+    "manualSteps" : [
+      "Start a live probe with a duration longer than the manual test.",
+      "Lock the Mac and confirm the report contains screenIsLocked and cleanup completed.",
+      "Unlock the Mac, rerun the live probe, and confirm exactly one new Extended Display appears.",
+      "Put the Mac to sleep and wake it, then confirm the previous Extended Display disappeared.",
+      "Repeat with System Settings > Displays open and verify no stale DeskMate display remains."
+    ]
+  },
+  "mode" : "live",
+  "notExecuted" : [
+    "Create and verify a non-mirrored HiDPI Extended Display.",
+    "Exercise lock and sleep to prove teardown behavior.",
+    "Recreate after unlock/wake and verify no ghost display remains.",
+    "Sign with Developer ID.",
+    "Notarize, staple, and launch through Gatekeeper."
+  ],
+  "prerequisites" : [
+    {
+      "detail" : "Observed model/build match the supplied Reference Mac values.",
+      "id" : "reference-mac",
+      "state" : "passed"
+    },
+    {
+      "detail" : "Screen Recording preflight passed for this invocation.",
+      "id" : "screen-recording-permission",
+      "state" : "passed"
+    },
+    {
+      "detail" : "No Developer ID Application identity is installed; cannot sign or submit this probe.",
+      "id" : "developer-id",
+      "state" : "pending"
+    },
+    {
+      "detail" : "No signed, notarized, stapled artifact was submitted to Gatekeeper.",
+      "id" : "notarization-and-gatekeeper",
+      "state" : "pending"
+    },
+    {
+      "detail" : "Attached to the externally created non-mirrored HiDPI display 41, captured 97 frame(s), encoded selected codecs, and left the display online.",
+      "id" : "live-display-and-capture",
+      "state" : "passed"
+    },
+    {
+      "detail" : "No lock or sleep event was exercised in this run. Use the manual lifecycle steps.",
+      "id" : "lock-sleep-recovery",
+      "state" : "pending"
+    }
+  ],
+  "privateAPI" : {
+    "classes" : {
+      "CGVirtualDisplay" : true,
+      "CGVirtualDisplayDescriptor" : true,
+      "CGVirtualDisplayMode" : true,
+      "CGVirtualDisplaySettings" : true
+    },
+    "frameworkPath" : "/System/Library/Frameworks/CoreGraphics.framework/CoreGraphics",
+    "liveCreation" : "not-used",
+    "notes" : [
+      "Availability is observed on this exact macOS build only.",
+      "The classes are private and have no compatibility or distribution guarantee.",
+      "Static presence does not prove display creation, HiDPI mode switching, or cleanup.",
+      "Attach mode: display 41 was created by an external tool, not by CGVirtualDisplay."
+    ],
+    "requiredSelectors" : {
+      "CGVirtualDisplay" : {
+        "applySettings:" : true,
+        "displayID" : true,
+        "hiDPI" : true,
+        "initWithDescriptor:" : true,
+        "modes" : true
+      },
+      "CGVirtualDisplayDescriptor" : {
+        "init" : true,
+        "setBluePrimary:" : true,
+        "setGreenPrimary:" : true,
+        "setMaxPixelsHigh:" : true,
+        "setMaxPixelsWide:" : true,
+        "setName:" : true,
+        "setProductID:" : true,
+        "setQueue:" : true,
+        "setRedPrimary:" : true,
+        "setSerialNum:" : true,
+        "setSizeInMillimeters:" : true,
+        "setVendorID:" : true,
+        "setWhitePoint:" : true
+      },
+      "CGVirtualDisplayMode" : {
+        "height" : true,
+        "initWithWidth:height:refreshRate:" : true,
+        "refreshRate" : true,
+        "width" : true
+      },
+      "CGVirtualDisplaySettings" : {
+        "setHiDPI:" : true,
+        "setModes:" : true,
+        "setRotation:" : true
+      }
+    },
+    "staticAvailability" : "available"
+  },
+  "probe" : "deskmate-gate0",
+  "referenceEnvironment" : {
+    "confirmed" : true,
+    "detail" : "Observed model/build match the supplied Reference Mac values.",
+    "expectedBuild" : "26C5047e",
+    "expectedModel" : "Mac16,12",
+    "observedBuild" : "26C5047e",
+    "observedModel" : "Mac16,12"
+  },
+  "safety" : {
+    "audioCaptureDisabledByDesign" : true,
+    "displayCreationAuthorized" : true,
+    "liveActionsExecuted" : true,
+    "mainDisplayFallbackUsed" : false,
+    "screenCaptureAuthorized" : true
+  },
+  "schemaVersion" : 1,
+  "signing" : {
+    "detail" : "No Developer ID Application identity is installed; cannot sign or submit this probe.",
+    "developerIDAvailable" : false,
+    "developerIDIdentityCount" : 0,
+    "gatekeeperAssessmentEnabled" : true,
+    "gatekeeperStatus" : "not-executed",
+    "notarizationStatus" : "pending",
+    "notarytoolAvailable" : true,
+    "signingStatus" : "pending"
+  },
+  "videoToolbox" : {
+    "candidates" : [
+      {
+        "codec" : "h264",
+        "encoderID" : "com.apple.videotoolbox.videoencoder.ave.avc",
+        "hardwareAccelerated" : true,
+        "name" : "Apple H.264 (HW)"
+      },
+      {
+        "codec" : "h264",
+        "encoderID" : "com.apple.videotoolbox.videoencoder.h264",
+        "name" : "Apple H.264 (SW)"
+      },
+      {
+        "codec" : "hevc",
+        "encoderID" : "com.apple.videotoolbox.videoencoder.ave.hevc",
+        "hardwareAccelerated" : true,
+        "name" : "Apple HEVC (HW)"
+      },
+      {
+        "codec" : "hevc",
+        "encoderID" : "com.apple.videotoolbox.videoencoder.hevc.vcp",
+        "name" : "Apple HEVC (SW)"
+      }
+    ],
+    "encoderListStatus" : 0,
+    "h264CandidateFound" : true,
+    "hardwareH264CandidateFound" : true,
+    "hardwareHEVCCandidateFound" : true,
+    "hevcCandidateFound" : true,
+    "note" : "The encoder list is advisory. A live VTCompressionSession is required to prove hardware HEVC/H.264 availability and accepted properties; an empty H.264/HEVC list is not by itself a gate failure.",
+    "reportedCandidateCount" : 27
+  }
+}

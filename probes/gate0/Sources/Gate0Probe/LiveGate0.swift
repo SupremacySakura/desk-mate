@@ -1,4 +1,5 @@
 import Foundation
+import CoreGraphics
 
 private enum LiveGate0Error: Error, CustomStringConvertible {
     case safety(String)
@@ -67,7 +68,8 @@ enum LiveGate0 {
             detail: "Screen Recording preflight passed for this invocation."
         )
 
-        guard baseline.privateAPI.staticAvailability == "available" else {
+        let attachDisplayID = options.attachDisplayID
+        if attachDisplayID == nil, baseline.privateAPI.staticAvailability != "available" {
             let detail = "The required CGVirtualDisplay classes or selectors are unavailable on this macOS build. Live display creation was not attempted."
             replacePrerequisite(
                 &prerequisites,
@@ -99,18 +101,36 @@ enum LiveGate0 {
         var pipeline: CaptureEncodePipeline?
 
         do {
-            let active = try ActiveVirtualDisplay.create(options: options)
+            let active: ActiveVirtualDisplay
+            if let attachDisplayID {
+                active = try ActiveVirtualDisplay.attach(options: options, displayID: attachDisplayID)
+            } else {
+                active = try ActiveVirtualDisplay.create(options: options)
+            }
             activeDisplay = active
             displayRecord = active.record
             safety.liveActionsExecuted = true
-            privateAPI = PrivateAPIRecord(
-                frameworkPath: baseline.privateAPI.frameworkPath,
-                classes: baseline.privateAPI.classes,
-                requiredSelectors: baseline.privateAPI.requiredSelectors,
-                staticAvailability: baseline.privateAPI.staticAvailability,
-                liveCreation: "passed",
-                notes: baseline.privateAPI.notes
-            )
+            if attachDisplayID == nil {
+                privateAPI = PrivateAPIRecord(
+                    frameworkPath: baseline.privateAPI.frameworkPath,
+                    classes: baseline.privateAPI.classes,
+                    requiredSelectors: baseline.privateAPI.requiredSelectors,
+                    staticAvailability: baseline.privateAPI.staticAvailability,
+                    liveCreation: "passed",
+                    notes: baseline.privateAPI.notes
+                )
+            } else {
+                privateAPI = PrivateAPIRecord(
+                    frameworkPath: baseline.privateAPI.frameworkPath,
+                    classes: baseline.privateAPI.classes,
+                    requiredSelectors: baseline.privateAPI.requiredSelectors,
+                    staticAvailability: baseline.privateAPI.staticAvailability,
+                    liveCreation: "not-used",
+                    notes: baseline.privateAPI.notes + [
+                        "Attach mode: display \(attachDisplayID!) was created by an external tool, not by CGVirtualDisplay."
+                    ]
+                )
+            }
 
             guard active.record.isMainDisplay == false else {
                 throw LiveGate0Error.safety("created display is the main display")
@@ -119,8 +139,18 @@ enum LiveGate0 {
                 throw LiveGate0Error.safety("created display is mirroring another display")
             }
 
-            let pixelWidth = options.logicalWidth * options.scale
-            let pixelHeight = options.logicalHeight * options.scale
+            let pixelWidth: Int
+            let pixelHeight: Int
+            if attachDisplayID == nil {
+                pixelWidth = options.logicalWidth * options.scale
+                pixelHeight = options.logicalHeight * options.scale
+            } else {
+                guard let mode = CGDisplayCopyDisplayMode(active.displayID) else {
+                    throw LiveGate0Error.safety("attached display \(active.displayID) has no readable mode")
+                }
+                pixelWidth = Int(mode.pixelWidth)
+                pixelHeight = Int(mode.pixelHeight)
+            }
             let capturePipeline = try CaptureEncodePipeline(
                 options: options,
                 displayID: active.displayID,
@@ -183,8 +213,8 @@ enum LiveGate0 {
         lifecycleMonitor.stop()
 
         let displayAndCapturePassed =
-            displayRecord.created &&
-            displayRecord.destroyed == true &&
+            (displayRecord.created || displayRecord.attachedExisting) &&
+            (displayRecord.destroyed == true || displayRecord.stillOnlineAfterRun == true) &&
             captureRecord.started &&
             captureRecord.framesReceived > 0 &&
             artifacts.count > 0 &&
@@ -197,7 +227,9 @@ enum LiveGate0 {
             id: "live-display-and-capture",
             state: displayAndCapturePassed ? .passed : .failed,
             detail: displayAndCapturePassed
-                ? "Created a non-mirrored HiDPI display, captured \(captureRecord.framesReceived) frame(s), encoded selected codecs, and destroyed the display."
+                ? (displayRecord.attachedExisting
+                    ? "Attached to the externally created non-mirrored HiDPI display \(displayRecord.displayID ?? 0), captured \(captureRecord.framesReceived) frame(s), encoded selected codecs, and left the display online."
+                    : "Created a non-mirrored HiDPI display, captured \(captureRecord.framesReceived) frame(s), encoded selected codecs, and destroyed the display.")
                 : (runtimeFailures.isEmpty
                     ? "Live display/capture was not completed."
                     : runtimeFailures.joined(separator: "; "))

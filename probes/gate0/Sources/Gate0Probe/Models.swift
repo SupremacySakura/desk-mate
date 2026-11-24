@@ -65,6 +65,8 @@ struct PrivateAPIRecord: Codable {
 
 struct DisplayRecord: Codable {
     let created: Bool
+    let provider: String
+    let attachedExisting: Bool
     let displayID: UInt32?
     let requestedLogicalWidth: Int
     let requestedLogicalHeight: Int
@@ -76,6 +78,7 @@ struct DisplayRecord: Codable {
     let isMainDisplay: Bool?
     let isMirroring: Bool?
     let destroyed: Bool?
+    let stillOnlineAfterRun: Bool?
     let failure: String?
 }
 
@@ -201,6 +204,7 @@ struct ProbeOptions {
     var codecs: CodecSelection = .both
     var referenceModel: String?
     var referenceBuild: String?
+    var attachDisplayID: UInt32?
 }
 
 struct CLIError: Error, CustomStringConvertible {

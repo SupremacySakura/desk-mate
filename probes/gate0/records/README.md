@@ -8,6 +8,11 @@
 - `local-live-2026-11-24.json`：Reference Host 上的第一次 live 尝试，`decision = failed`。
   虚拟屏创建成功、销毁成功（无幽灵副屏），但 macOS 27.3 只发布 1x 模式，
   所以 HiDPI 校验失败，采集与编码从未启动。这是失败证据，不是通过证据。
+- `local-live-attached-2026-11-24.json`：同一 Host 上以 `--attach-display 41`
+  借用 BetterDisplay 的 HiDPI 虚拟屏。显示/采集/编码首次全部通过
+  （3840x2560、97 帧、HEVC 与 H.264 均硬件编码且无 B 帧），运行后该屏仍在线，
+  探针没有销毁它。`decision` 仍为 `pending`：显示由第三方工具创建，
+  `developer-id`、公证与锁屏/睡眠恢复三项未执行。
 
 在 Reference Host 上完成 Screen Recording、live 显示/采集/编码、锁屏/睡眠重建和 Developer ID 公证后，应新增独立的 live、lifecycle 与 distribution 记录。不要把多个部分记录的“已执行”拼成没有真实 `passed` 证据的 Gate 0 结论。
 

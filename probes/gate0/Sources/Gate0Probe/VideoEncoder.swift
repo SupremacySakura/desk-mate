@@ -60,8 +60,11 @@ struct EncodedFrameMetadata: Codable {
     let index: Int
     let presentationTimeValue: Int64
     let presentationTimeScale: Int32
-    let presentationSeconds: Double
-    let durationSeconds: Double
+    // VideoToolbox can hand back an indefinite duration or an invalid
+    // presentation time. JSONEncoder refuses non-finite doubles, which used to
+    // fail the whole metadata write after a successful encode.
+    let presentationSeconds: Double?
+    let durationSeconds: Double?
     let byteCount: Int
     let keyFrame: Bool
 }
@@ -597,12 +600,14 @@ final class Gate0Encoder {
         } catch {
             throw Gate0EncoderError.write(error.localizedDescription)
         }
+        let presentationSeconds = CMTimeGetSeconds(presentationTime)
+        let durationSeconds = CMTimeGetSeconds(duration)
         frames.append(EncodedFrameMetadata(
             index: frameIndex,
             presentationTimeValue: presentationTime.value,
             presentationTimeScale: presentationTime.timescale,
-            presentationSeconds: CMTimeGetSeconds(presentationTime),
-            durationSeconds: CMTimeGetSeconds(duration),
+            presentationSeconds: presentationSeconds.isFinite ? presentationSeconds : nil,
+            durationSeconds: durationSeconds.isFinite ? durationSeconds : nil,
             byteCount: annexB.count,
             keyFrame: keyFrame
         ))

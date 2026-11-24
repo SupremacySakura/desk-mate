@@ -136,6 +136,12 @@ func parseOptions(_ arguments: [String]) throws -> ProbeOptions {
             options.mode = .live
         case "--allow-create-display":
             options.allowCreateDisplay = true
+        case "--attach-display":
+            let raw = try value(for: "--attach-display")
+            guard let displayID = UInt32(raw), displayID > 0 else {
+                throw CLIError(description: "--attach-display must be a positive display ID from --list-displays")
+            }
+            options.attachDisplayID = displayID
         case "--allow-screen-capture":
             options.allowScreenCapture = true
         case "--request-screen-recording-permission":
@@ -205,7 +211,7 @@ func parseOptions(_ arguments: [String]) throws -> ProbeOptions {
             throw CLIError(description: "Gate 0 live mode requires --scale 2 (HiDPI)")
         }
         var missing: [String] = []
-        if !options.allowCreateDisplay {
+        if !options.allowCreateDisplay && options.attachDisplayID == nil {
             missing.append("--allow-create-display")
         }
         if !options.allowScreenCapture {
@@ -234,6 +240,7 @@ func printHelp() {
           gate0-probe --self-test [--json]
           gate0-probe --list-displays [--json]
           gate0-probe --live --allow-create-display --allow-screen-capture [options]
+          gate0-probe --live --attach-display ID --allow-screen-capture [options]
 
         Live options:
           --duration SECONDS         Capture duration, default 10
@@ -245,12 +252,16 @@ func printHelp() {
           --output DIRECTORY         Annex-B output directory, default artifacts
           --reference-model ID       Expected Reference Mac model identifier
           --reference-build BUILD    Expected macOS build
+          --attach-display ID        Capture an existing external HiDPI display (for
+                                     example a BetterDisplay virtual screen) instead
+                                     of creating one. The probe never destroys it.
           --request-screen-recording-permission
                                     Explicitly prompt for Screen Recording access
 
         Safety:
-          Live display/capture never runs without both --allow-create-display and
-          --allow-screen-capture. Main-display fallback is not supported.
+          Live display/capture never runs without --allow-screen-capture and either
+          --allow-create-display or --attach-display. Main-display fallback is not
+          supported.
         """
     )
 }

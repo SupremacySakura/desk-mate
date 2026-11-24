@@ -40,3 +40,21 @@
     把每次正常销毁都误报成幽灵屏；已改为查询在线显示列表。
   - **需要决策**：改用仍支持该私有 API HiDPI 的 macOS 版本，或改用其他已获许可的
     虚拟显示器实现。这不是继续写代码能解决的问题。
+
+- 2026-11-24（第三次，attach 外部 HiDPI 显示）：**显示/采集/编码首次全部通过，
+  但 Gate 0 结论仍为 `pending`。**
+  - 新增 `--attach-display ID`：借用第三方创建的显示，探针**绝不创建、绝不销毁**
+    它；运行后检查该 ID 仍在线。`destroy()` 对 attached 显示只做在线校验。
+  - 目标显示由 BetterDisplay 4.0.4 提供：id 41，`1920x1280 pt / 3840x2560 px @
+    120 Hz`，非主屏、非镜像，是真正的 2x HiDPI。这证明「macOS 27.3 的
+    `CGVirtualDisplay` 只有 1x」是**该私有 API 的限制**，不是系统缺少 HiDPI 能力。
+  - 实测（`records/local-live-attached-2026-11-24.json`）：
+    - `live-display-and-capture: passed`，`capture: 3840x2560`，97 帧，`started`；
+    - HEVC 97 帧 / 2 关键帧 / VPS+SPS+PPS / 硬件编码 / 无 B 帧 / 709 色彩；
+    - H.264 97 帧 / 2 关键帧 / SPS+PPS / 硬件编码 / 无 B 帧 / 709 色彩；
+    - `stillOnlineAfterRun: true`，探针没有销毁外部显示。
+  - 仍未通过：`developer-id`、`notarization-and-gatekeeper`、`lock-sleep-recovery`。
+  - 因此 `decision` 保持 `pending`：显示由第三方工具创建，探针只证明「采集+编码+
+    不破坏外部显示」这一半；HiDPI 显示本身的**产品化创建**仍未解决。
+  - 真实 Annex-B 样本已产出（HEVC 3.7 MB、H.264 772 KB），可用于 Gate 3 互操作；
+    样本本身未入库，只记录路径与 SHA-256。

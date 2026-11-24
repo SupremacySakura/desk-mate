@@ -168,7 +168,7 @@ final class CaptureEncodePipeline: NSObject, SCStreamOutput, SCStreamDelegate {
 
         let record = CaptureRecord(
             started: wasStarted,
-            target: "created-extended-display-only",
+            target: "explicit-display-id-only",
             displayID: displayID,
             width: width,
             height: height,

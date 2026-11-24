@@ -121,6 +121,32 @@ mkdir -p artifacts records
 
 只要虚拟显示没有出现在 ScreenCaptureKit 的 display 列表中，探针就失败；它不会使用 `CGMainDisplayID` 代替目标显示。
 
+### 2b. 借用外部 HiDPI 显示（`--attach-display`）
+
+macOS 27.3 的 `CGVirtualDisplay` 只发布 1x 模式，无法自建 HiDPI Extended
+Display。若已用其他工具（如 BetterDisplay）创建了 HiDPI 虚拟屏，可以借用它验证
+采集与编码：
+
+```bash
+./build/gate0-probe --list-displays --json          # 找到目标 display id
+./build/gate0-probe --live --attach-display 41 \
+  --allow-screen-capture \
+  --logical-width 1920 --logical-height 1280 --scale 2 \
+  --fps 60 --duration 20 --codec both \
+  --output /tmp/gate0-attached --json \
+  --report "$PWD/records/local-live-attached-$(date +%F).json"
+```
+
+attach 模式**绝不创建、绝不销毁**目标显示；结束时只检查该 ID 仍在线。因此
+`display.created = false`、`display.destroyed = false` 是预期值，通过条件改为：
+
+- `display.provider = external-attach`、`display.attachedExisting = true`；
+- `display.stillOnlineAfterRun = true`；
+- 其余采集、编码与色彩条件与自建模式相同。
+
+attach 模式不能证明 Gate 0 的 HiDPI 显示创建能力，只能证明「采集 + 编码 +
+不破坏外部显示」。`privateAPI.liveCreation` 会记录为 `not-used`。
+
 ### 3. 验证样本
 
 每次 live run 在 `--output` 目录生成：
