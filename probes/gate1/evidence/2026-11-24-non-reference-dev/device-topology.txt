@@ -1,0 +1,7 @@
+serial=59GYD25716204513
+matched_line=    |       "kUSBSerialNumberString" = "59GYD25716204513"
+ancestor_path:
+  +-o Root  <class IORegistryEntry, id 0x100000100, retain 32>
+    +-o AppleT8132USBXHCI@01000000  <class AppleT8132USBXHCI, id 0x100000334, registered, matched, active, busy 0 (7365 ms), retain 251>
+      +-o USB2.1 Hub@01100000  <class IOUSBHostDevice, id 0x1000085bd, registered, matched, active, busy 0 (5754 ms), retain 40>
+      | +-o "HDC Device"@01130000  <class IOUSBHostDevice, id 0x10000b8c3, registered, matched, active, busy 0 (15 ms), retain 25>

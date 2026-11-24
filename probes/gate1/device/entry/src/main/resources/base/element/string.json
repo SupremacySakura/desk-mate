@@ -1,0 +1,16 @@
+{
+  "string": [
+    {
+      "name": "module_desc",
+      "value": "DeskMate Gate 1 AOA probe"
+    },
+    {
+      "name": "entry_desc",
+      "value": "AOA duplex and cancellation probe"
+    },
+    {
+      "name": "app_label",
+      "value": "DeskMate Gate 1"
+    }
+  ]
+}

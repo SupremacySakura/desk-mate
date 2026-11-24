@@ -1,0 +1,51 @@
+DevEco contents: /Applications/DevEco-Studio.app/Contents
+SDK root:        /Applications/DevEco-Studio.app/Contents/sdk
+hvigorw:         /Applications/DevEco-Studio.app/Contents/tools/hvigor/bin/hvigorw
+Node:            /Applications/DevEco-Studio.app/Contents/tools/node
+Java:            /Applications/DevEco-Studio.app/Contents/jbr/Contents/Home
+> hvigor [32mUP-TO-DATE :entry:default@PreBuild...  [39m
+> hvigor [32mFinished :entry:default@CreateModuleInfo... after 1 ms [39m
+> hvigor [32mUP-TO-DATE :entry:default@GenerateMetadata...  [39m
+> hvigor [32mFinished :entry:default@ConfigureCmake... after 5 ms [39m
+> hvigor [32mUP-TO-DATE :entry:default@MergeProfile...  [39m
+> hvigor [32mUP-TO-DATE :entry:default@CreateBuildProfile...  [39m
+> hvigor [32mFinished :entry:default@PreCheckSyscap... after 1 ms [39m
+> hvigor [32mFinished :entry:default@GeneratePkgSdkInfo... after 1 ms [39m
+> hvigor [32mFinished :entry:default@ProcessIntegratedHsp... after 1 ms [39m
+> hvigor [32mFinished :entry:default@BuildNativeWithCmake... after 4 ms [39m
+> hvigor [32mUP-TO-DATE :entry:default@MakePackInfo...  [39m
+> hvigor [32mFinished :entry:default@SyscapTransform... after 5 ms [39m
+> hvigor [32mUP-TO-DATE :entry:default@GeneratePkgContextInfo...  [39m
+> hvigor [32mUP-TO-DATE :entry:default@ProcessProfile...  [39m
+> hvigor [32mUP-TO-DATE :entry:default@ProcessRouterMap...  [39m
+> hvigor [32mUP-TO-DATE :entry:default@ProcessShareConfig...  [39m
+> hvigor [32mFinished :entry:default@ProcessStartupConfig... after 1 ms [39m
+> hvigor [32mUP-TO-DATE :entry:default@ProcessResource...  [39m
+> hvigor [32mUP-TO-DATE :entry:default@GenerateLoaderJson...  [39m
+> hvigor [32mUP-TO-DATE :entry:default@CompileResource...  [39m
+> hvigor [32mUP-TO-DATE :entry:default@CompileArkTS...  [39m
+> hvigor [32mFinished :entry:default@BuildJS... after 1 ms [39m
+> hvigor [33mWARN: When performing compilation for the arm64-v8a architecture:
+[33mclang++: warning: argument unused during compilation: '--gcc-toolchain=/Applications/DevEco-Studio.app/Contents/sdk/default/openharmony/native/llvm' [-Wunused-command-line-argument][33m[39m
+[39m
+> hvigor [32mFinished :entry:default@BuildNativeWithNinja... after 726 ms [39m
+> hvigor [32mFinished :entry:default@ProcessLibs... after 9 ms [39m
+> hvigor [32mFinished :entry:default@DoNativeStrip... after 24 ms [39m
+> hvigor [32mFinished :entry:default@CacheNativeLibs... after 2 ms [39m
+> hvigor [32mUP-TO-DATE :entry:default@GeneratePkgModuleJson...  [39m
+> hvigor [32mFinished :entry:default@ProcessCompiledResources... after 1 ms [39m
+> hvigor [32mFinished :entry:default@PackageHap... after 274 ms [39m
+> hvigor [32mFinished :entry:default@PackingCheck... after 2 ms [39m
+> hvigor [33mWARN: No signingConfig found for product default[39m
+> hvigor [32mFinished :entry:default@SignHap... after 1 ms [39m
+> hvigor [32mFinished :entry:default@CollectDebugSymbol... after 1 ms [39m
+> hvigor [32mFinished :entry:assembleHap... after 1 ms [39m
+> hvigor [32mBUILD SUCCESSFUL in 1 s 786 ms [39m
+
+33 tasks in total: 19 executed, 14 up-to-date
+
+Build artifacts:
+a388d26d2fe5af2dd6b2d65b5fef2f898a50e6ae7b3ee8f1caa6384c8059efa8  /private/tmp/deskmate-wt/06-gate1/probes/gate1/device/entry/build/default/outputs/default/entry-default-unsigned.hap
+77aa4542c17b1e8ebd9bd118ce950a94daf4670bd1a1afd59519bcf40d376efe  /private/tmp/deskmate-wt/06-gate1/probes/gate1/device/entry/build/default/intermediates/libs/default/arm64-v8a/libgate1_probe.so
+
+Unsigned HAP: install requires matching signing material and is not proven.

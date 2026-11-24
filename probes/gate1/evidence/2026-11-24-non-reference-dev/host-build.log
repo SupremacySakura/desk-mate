@@ -1,0 +1,19 @@
+CMake:       /Applications/DevEco-Studio.app/Contents/sdk/default/openharmony/native/build-tools/cmake/bin/cmake
+Build dir:   /private/tmp/deskmate-wt/06-gate1/probes/gate1/host/build-real
+Mode:        real
+-- libusb found: host probe enabled
+-- Configuring done (0.0s)
+-- Generating done (0.0s)
+-- Build files have been written to: /tmp/deskmate-wt/06-gate1/probes/gate1/host/build-real
+[ 33%] Built target gate1_core
+[ 55%] Built target gate1_core_tests
+[100%] Built target gate1_host
+Internal ctest changing into directory: /tmp/deskmate-wt/06-gate1/probes/gate1/host/build-real
+Test project /tmp/deskmate-wt/06-gate1/probes/gate1/host/build-real
+    Start 1: gate1_core_tests
+1/1 Test #1: gate1_core_tests .................   Passed    0.00 sec
+
+100% tests passed, 0 tests failed out of 1
+
+Total Test time (real) =   0.00 sec
+RUNTIME PROBE: /private/tmp/deskmate-wt/06-gate1/probes/gate1/host/build-real/gate1_host
