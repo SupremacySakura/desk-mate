@@ -116,6 +116,7 @@ final class AppController: NSObject, NSApplicationDelegate {
     private var selectedSource: UInt32?
     private var autoVirtualDisplay = true
     private var displayPosition: DisplayPosition = .right
+    private var preferredFrameRateHz = 0
     private var videoEnabled = true
     private var allowInput = true
     private var touchInputMode: TouchInputMode = .compatibleGestures
@@ -131,6 +132,7 @@ final class AppController: NSObject, NSApplicationDelegate {
     private static let displayPreference = "preferredExtendedDisplayID"
     private static let autoVirtualPreference = "autoVirtualDisplay"
     private static let positionPreference = "virtualDisplayPosition"
+    private static let frameRatePreference = "preferredFrameRateHz"
     private static let inputPreference = "allowReverseInput"
     private static let touchModePreference = "touchInputMode"
     private static let autoStartPreference = "autoStartService"
@@ -176,6 +178,13 @@ final class AppController: NSObject, NSApplicationDelegate {
            let parsedPos = DisplayPosition(rawValue: rawPos) {
             self.displayPosition = parsedPos
         }
+        if options.frameRateExplicit {
+            self.preferredFrameRateHz = Self.normalizePreferredFrameRate(Int(options.frameRate.rounded()))
+        } else if UserDefaults.standard.object(forKey: Self.frameRatePreference) != nil {
+            self.preferredFrameRateHz = Self.normalizePreferredFrameRate(UserDefaults.standard.integer(forKey: Self.frameRatePreference))
+        } else {
+            self.preferredFrameRateHz = 0
+        }
         if UserDefaults.standard.object(forKey: Self.inputPreference) != nil {
             self.allowInput = UserDefaults.standard.bool(forKey: Self.inputPreference)
         } else {
@@ -217,6 +226,14 @@ final class AppController: NSObject, NSApplicationDelegate {
             self.startupStatus = self.startupManager.currentStatus()
             self.refreshPermissions(force: true)
             self.syncWindow()
+        }
+
+        NotificationCenter.default.addObserver(
+            forName: NSApplication.didChangeScreenParametersNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            self?.syncWindow()
         }
 
         startTimer()
@@ -599,6 +616,39 @@ final class AppController: NSObject, NSApplicationDelegate {
         syncWindow()
     }
 
+    private static func normalizePreferredFrameRate(_ hz: Int) -> Int {
+        switch hz {
+        case 30, 60, 90, 120:
+            return hz
+        default:
+            return 0
+        }
+    }
+
+    private func setPreferredFrameRate(_ hz: Int) {
+        let normalized = Self.normalizePreferredFrameRate(hz)
+        preferredFrameRateHz = normalized
+        UserDefaults.standard.set(normalized, forKey: Self.frameRatePreference)
+        if let bridge {
+            dm_bridge_set_preferred_refresh_hz(bridge, Int32(normalized))
+        }
+        let allChannels = allActiveChannelsSorted()
+        Task { @MainActor in
+            for channel in allChannels {
+                if let pipeline = channel.capture {
+                    channel.capture = nil
+                    await pipeline.stop()
+                }
+            }
+            for channel in allChannels where channel.captureWanted {
+                await self.startCaptureIfNeeded(for: channel)
+            }
+            self.syncWindow()
+            self.updateStatusIcon()
+        }
+        syncWindow()
+    }
+
     private func setPosition(_ position: DisplayPosition, for linkID: UInt64?) {
         if let linkID, let channel = channels[linkID] {
             channel.position = position
@@ -680,7 +730,7 @@ final class AppController: NSObject, NSApplicationDelegate {
     }
 
     private func installWindow() {
-        let frame = NSRect(x: 0, y: 0, width: 900, height: 590)
+        let frame = NSRect(x: 0, y: 0, width: 960, height: 620)
         let window = NSWindow(
             contentRect: frame,
             styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
@@ -693,7 +743,7 @@ final class AppController: NSObject, NSApplicationDelegate {
         window.isMovableByWindowBackground = true
         window.appearance = NSAppearance(named: .aqua)
         window.backgroundColor = NSColor(srgbRed: 0.988, green: 0.984, blue: 0.973, alpha: 1.0)
-        window.contentMinSize = NSSize(width: 780, height: 520)
+        window.contentMinSize = NSSize(width: 820, height: 520)
         window.isReleasedWhenClosed = false
         window.center()
 
@@ -703,9 +753,12 @@ final class AppController: NSObject, NSApplicationDelegate {
             setAutoVirtual: { [weak self] enabled in self?.setAutoVirtual(enabled) },
             setPosition: { [weak self] pos in self?.setPosition(pos, for: self?.activeTargetLinkID()) },
             setDefaultPosition: { [weak self] pos in self?.setDefaultPosition(pos) },
+            setPreferredFrameRate: { [weak self] hz in self?.setPreferredFrameRate(hz) },
             selectLink: { [weak self] linkID in self?.selectLink(linkID) },
             setLinkPosition: { [weak self] linkID, pos in self?.setPosition(pos, for: linkID) },
             disconnectLink: { [weak self] linkID in self?.disconnectLink(linkID) },
+            applyDisplayLayout: { [weak self] origins in self?.applyDisplayLayout(origins) },
+            refreshDisplays: { [weak self] in self?.syncWindow() },
             setVideo: { [weak self] enabled in self?.setVideo(enabled) },
             setInput: { [weak self] enabled in self?.setInput(enabled) },
             setTouchInputMode: { [weak self] mode in self?.setTouchInputMode(mode) },
@@ -1105,6 +1158,12 @@ final class AppController: NSObject, NSApplicationDelegate {
         view.touchCapability = touchCapability
         view.autoVirtualDisplay = autoVirtualDisplay
         view.position = targetChannel?.position ?? displayPosition
+        view.preferredFrameRateHz = preferredFrameRateHz
+        if let targetChannel, targetChannel.linkID > 0, let bridge {
+            view.negotiatedRefreshHz = Int(dm_bridge_negotiated_refresh_hz_for_link(bridge, targetChannel.linkID))
+        } else {
+            view.negotiatedRefreshHz = 0
+        }
         view.liveFps = totalFps
         view.liveBitrateMbps = totalBitrate
         view.inputEventCount = totalInputs
@@ -1117,6 +1176,7 @@ final class AppController: NSObject, NSApplicationDelegate {
         view.update = updateManager.snapshot()
         view.pairedDevices = pairedStore.devices
         view.activeSessions = activeSessions
+        view.topologyDisplays = DisplayInventory.snapshotTopologyDisplays(sessions: activeSessions)
         view.selectedLinkID = selectedLinkID ?? activeSessions.first?.linkID
         view.connectedDeviceIDs = Set(activeSessions.map(\.deviceID).filter { !$0.isEmpty })
         view.connectedDeviceID = targetChannel?.deviceID.isEmpty == false ? targetChannel?.deviceID : nil
@@ -1237,7 +1297,8 @@ final class AppController: NSObject, NSApplicationDelegate {
                 channelDiagnostics += " captureError=\(capErr)"
             }
         }
-        view.diagnostic = "服务：\(serviceRunning ? "运行中" : "已停止")（登录启动=\(view.launchAtLogin)，自动启动=\(autoStartService)）\n在线连接数：\(activeSessions.count)（已记录 \(view.pairedDevices.count) 台）\n显示来源：\(view.source)\(channelDiagnostics)\n触控：mode=\(touchInputMode.rawValue) backend=\(touchCapability.activeBackendLabel) allow=\(allowInput) ax=\(cachedAXPermission) postEvent=\(cachedPostEventPermission) totalEvents=\(totalInputs)\n\(fatalError ?? "")\n\(lastRawSnapshot)"
+        let fpsModeText = preferredFrameRateHz > 0 ? "\(preferredFrameRateHz)Hz" : "auto"
+        view.diagnostic = "服务：\(serviceRunning ? "运行中" : "已停止")（登录启动=\(view.launchAtLogin)，自动启动=\(autoStartService)，帧率=\(fpsModeText)）\n在线连接数：\(activeSessions.count)（已记录 \(view.pairedDevices.count) 台）\n显示来源：\(view.source)\(channelDiagnostics)\n触控：mode=\(touchInputMode.rawValue) backend=\(touchCapability.activeBackendLabel) allow=\(allowInput) ax=\(cachedAXPermission) postEvent=\(cachedPostEventPermission) totalEvents=\(totalInputs)\n\(fatalError ?? "")\n\(lastRawSnapshot)"
 
         if windowModel.state != view {
             windowModel.state = view
@@ -1295,7 +1356,13 @@ final class AppController: NSObject, NSApplicationDelegate {
         config.device_selector = nil
         config.width = Int32(options.width)
         config.height = Int32(options.height)
-        config.refresh_hz = Int32(options.frameRate.rounded())
+        if preferredFrameRateHz > 0 {
+            config.refresh_hz = Int32(preferredFrameRateHz)
+        } else if options.frameRateExplicit {
+            config.refresh_hz = Int32(options.frameRate.rounded())
+        } else {
+            config.refresh_hz = 120
+        }
         config.prefer_hevc = options.codec == "hevc" ? 1 : 0
         config.auto_match_device_resolution = (autoVirtualDisplay && !options.sizeExplicit) ? 1 : 0
 
@@ -1304,6 +1371,7 @@ final class AppController: NSObject, NSApplicationDelegate {
             fail("failed to create USB bridge")
             return
         }
+        dm_bridge_set_preferred_refresh_hz(bridge, Int32(preferredFrameRateHz))
         self.bridge = bridge
         dm_bridge_set_log(bridge, { message, _ in
             guard let message else { return }
@@ -1524,6 +1592,33 @@ final class AppController: NSObject, NSApplicationDelegate {
         }
     }
 
+    private func applyDisplayLayout(_ origins: [(displayID: UInt32, origin: CGPoint)]) {
+        guard !origins.isEmpty else { return }
+        Task { @MainActor in
+            let ok = (try? await DisplayConfigCoordinator.shared.run {
+                DisplayInventory.applyDisplayLayout(origins)
+            }) ?? false
+            guard ok else {
+                self.syncWindow()
+                return
+            }
+            let updated = DisplayInventory.snapshotTopologyDisplays(sessions: self.windowModel.state.activeSessions)
+            if let primary = updated.first(where: \.isPrimary) ?? updated.first {
+                for channel in self.channels.values {
+                    if let did = channel.displaySession?.info.displayID,
+                       let match = updated.first(where: { $0.id == did }) {
+                        let inferred = DisplayTopologySolver.inferCardinalPosition(primary: primary, target: match)
+                        channel.position = inferred
+                        if !channel.deviceID.isEmpty {
+                            self.pairedStore.setPreferredPosition(id: channel.deviceID, position: inferred)
+                        }
+                    }
+                }
+            }
+            self.syncWindow()
+        }
+    }
+
     private func virtualDisplayName(for channel: DeviceChannel) -> String {
         let base = pairedStore.displayName(for: channel.deviceID) ?? channel.deviceName
         let trimmed = base.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -1560,7 +1655,16 @@ final class AppController: NSObject, NSApplicationDelegate {
 
         let captureWidth = negotiatedW > 0 ? negotiatedW : options.width
         let captureHeight = negotiatedH > 0 ? negotiatedH : options.height
-        let captureFrameRate = negotiatedHz > 0 ? Double(negotiatedHz) : targetFrameRate(for: channel)
+        let captureFrameRate: Double
+        if preferredFrameRateHz > 0 {
+            captureFrameRate = Double(preferredFrameRateHz)
+        } else if options.frameRateExplicit {
+            captureFrameRate = options.frameRate
+        } else if negotiatedHz > 0 {
+            captureFrameRate = Double(negotiatedHz)
+        } else {
+            captureFrameRate = targetFrameRate(for: channel)
+        }
         let captureCodec: String
         switch negotiatedCodecRaw {
         case 1: captureCodec = "h264"

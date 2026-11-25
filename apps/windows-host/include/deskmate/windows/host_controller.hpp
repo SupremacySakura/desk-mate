@@ -26,6 +26,7 @@ struct HostOptions {
   std::uint16_t width{1920};
   std::uint16_t height{1200};
   std::uint16_t refresh_hz{60};
+  bool refresh_hz_explicit{false};
   bool hevc{true};
   bool codec_explicit{false};
   bool size_explicit{false};
@@ -53,10 +54,13 @@ class HostController {
   void set_input_enabled(bool enabled);
   void set_touch_input_mode(TouchInputMode mode);
   void set_auto_virtual_display(bool enabled);
+  void set_preferred_refresh_hz(int hz);
   void choose_monitor(std::uintptr_t handle);
   void set_default_position(DisplayPosition pos);
   void select_link(std::uint64_t link_id);
   void set_link_position(std::uint64_t link_id, DisplayPosition pos);
+  void apply_display_layout(const std::vector<MonitorPlacement>& placements);
+  void refresh_displays();
   void disconnect_link(std::uint64_t link_id);
   void set_launch_at_login(bool enabled);
   void open_startup_settings();
@@ -74,6 +78,7 @@ class HostController {
   void install_available_update();
   void set_auto_check_updates(bool enabled);
   void set_update_mirror_prefix(const std::string& prefix);
+  void cleanup_legacy_update_files();
 
   [[nodiscard]] HostUiState snapshot_ui_state();
   [[nodiscard]] std::string diagnostic_text();
@@ -88,12 +93,16 @@ class HostController {
     DisplayPosition position{DisplayPosition::Right};
 
     std::shared_ptr<LinkSession> session;
+    mutable std::mutex capture_mutex;
     std::unique_ptr<CaptureEncoder> capture;
+    std::atomic<bool> capture_active{false};
+    std::atomic<bool> capture_dirty{true};
     std::unique_ptr<InputInjector> injector;
     std::uintptr_t monitor_handle{};
     std::uint32_t monitor_display_id{};
     bool owns_virtual_display{false};
     std::optional<deskmate::protocol::StreamProfile> capture_profile;
+    int capture_refresh_hz{0};
     std::string capture_error;
     std::string last_error;
     std::chrono::steady_clock::time_point retry_after{};
@@ -126,6 +135,7 @@ class HostController {
   void restart_all_captures();
   void rearrange_monitors();
   void refresh_monitors_locked();
+  void refresh_environment_if_stale(bool force = false);
   const MonitorInfo* pick_monitor_locked(
       const std::shared_ptr<LinkChannel>& target) const;
   DisplayPosition default_position_for_new_channel_locked(
@@ -154,16 +164,19 @@ class HostController {
   mutable std::mutex mutex_;
   bool started_{false};
   bool service_running_{false};
-  bool video_enabled_{true};
-  bool allow_input_{true};
+  std::atomic<bool> video_enabled_{true};
+  std::atomic<bool> allow_input_{true};
   TouchInputMode touch_mode_{TouchInputMode::CompatibleGestures};
   bool auto_virtual_display_{true};
   DisplayPosition default_position_{DisplayPosition::Right};
+  std::atomic<int> preferred_refresh_hz_{0};
   bool auto_start_service_{true};
   std::uintptr_t selected_monitor_{0};
   std::uint64_t selected_link_id_{0};
   std::uint64_t next_link_id_{1};
 
+  VirtualDisplayStatus cached_vdd_status_;
+  std::chrono::steady_clock::time_point last_env_refresh_{};
   std::vector<MonitorInfo> monitors_;
   std::unordered_map<std::uint64_t, std::shared_ptr<LinkChannel>> channels_;
   std::vector<std::shared_ptr<LinkChannel>> finished_channels_;

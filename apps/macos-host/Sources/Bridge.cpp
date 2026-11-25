@@ -565,6 +565,7 @@ struct DMBridge {
   bool discovery_wakeup{false};
   std::atomic<bool> stop_requested{false};
   std::atomic<bool> auto_match_resolution{false};
+  std::atomic<std::int32_t> preferred_refresh_hz{0};
 
   std::mutex device_policy_mutex;
   std::unordered_set<std::string> blocked_device_ids;
@@ -1008,7 +1009,9 @@ void start_session(const std::shared_ptr<DeviceLink> &link) {
       deskmate::protocol::PixelFormat::Nv12};
   const auto width = static_cast<std::uint16_t>(bridge->config.width);
   const auto height = static_cast<std::uint16_t>(bridge->config.height);
-  const auto target_hz = static_cast<std::uint16_t>(bridge->config.refresh_hz);
+  const int32_t pref_hz = bridge->preferred_refresh_hz.load();
+  const auto target_hz = static_cast<std::uint16_t>(
+      pref_hz > 0 ? pref_hz : bridge->config.refresh_hz);
   session_config.capabilities.resolutions.push_back(
       deskmate::protocol::DisplayResolution{width, height, target_hz});
   if (target_hz > 90) {
@@ -1705,6 +1708,23 @@ void dm_bridge_set_auto_match_resolution(DMBridge *bridge, int32_t enabled) {
     return;
   }
   bridge->auto_match_resolution.store(enabled != 0);
+}
+
+void dm_bridge_set_preferred_refresh_hz(DMBridge *bridge, int32_t refresh_hz) {
+  if (bridge == nullptr) {
+    return;
+  }
+  switch (refresh_hz) {
+    case 30:
+    case 60:
+    case 90:
+    case 120:
+      bridge->preferred_refresh_hz.store(refresh_hz);
+      break;
+    default:
+      bridge->preferred_refresh_hz.store(0);
+      break;
+  }
 }
 
 void dm_bridge_set_log(DMBridge *bridge, DMLogCallback callback, void *context) {

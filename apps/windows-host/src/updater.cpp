@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cctype>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
@@ -29,6 +30,89 @@
 
 namespace deskmate::windows {
 namespace {
+
+std::string to_lower_ascii_str(std::string s) {
+  for (char& ch : s) {
+    ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
+  }
+  return s;
+}
+
+bool starts_with_str(const std::string& s, const char* prefix) {
+  const std::size_t len = std::strlen(prefix);
+  return s.size() >= len && s.compare(0, len, prefix) == 0;
+}
+
+bool ends_with_str(const std::string& s, const char* suffix) {
+  const std::size_t len = std::strlen(suffix);
+  return s.size() >= len && s.compare(s.size() - len, len, suffix) == 0;
+}
+
+bool is_legacy_app_dir_filename(const std::string& lower_name) {
+  if (starts_with_str(lower_name, "deskmate") &&
+      (ends_with_str(lower_name, ".old") || ends_with_str(lower_name, ".bak"))) {
+    return true;
+  }
+  if (starts_with_str(lower_name, "deskmatehost-v") &&
+      ends_with_str(lower_name, ".exe")) {
+    return true;
+  }
+  if ((starts_with_str(lower_name, "deskmate-v") &&
+       lower_name.find("-windows-") != std::string::npos &&
+       ends_with_str(lower_name, ".zip")) ||
+      (starts_with_str(lower_name, "deskmate-windows-host-") &&
+       ends_with_str(lower_name, ".zip"))) {
+    return true;
+  }
+  return false;
+}
+
+std::uint64_t directory_size_bytes(const std::filesystem::path& dir) {
+  std::error_code ec;
+  std::uint64_t total = 0;
+  for (const auto& entry :
+       std::filesystem::recursive_directory_iterator(dir, ec)) {
+    if (entry.is_regular_file(ec)) {
+      const auto sz = entry.file_size(ec);
+      if (!ec) {
+        total += sz;
+      }
+    }
+  }
+  return total;
+}
+
+bool is_pid_alive_os(std::uint32_t pid) {
+  if (pid == 0) {
+    return false;
+  }
+#ifdef _WIN32
+  HANDLE proc = OpenProcess(SYNCHRONIZE, FALSE, pid);
+  if (proc == nullptr) {
+    return false;
+  }
+  const DWORD wait = WaitForSingleObject(proc, 0);
+  CloseHandle(proc);
+  return wait == WAIT_TIMEOUT;
+#else
+  return false;
+#endif
+}
+
+std::string format_bytes_human(std::uint64_t bytes) {
+  char buf[32]{};
+  if (bytes >= 1024ULL * 1024ULL) {
+    std::snprintf(buf, sizeof(buf), "%.1f MB",
+                  static_cast<double>(bytes) / (1024.0 * 1024.0));
+  } else if (bytes >= 1024ULL) {
+    std::snprintf(buf, sizeof(buf), "%.1f KB",
+                  static_cast<double>(bytes) / 1024.0);
+  } else {
+    std::snprintf(buf, sizeof(buf), "%llu B",
+                  static_cast<unsigned long long>(bytes));
+  }
+  return std::string(buf);
+}
 
 #ifdef _WIN32
 
@@ -619,9 +703,10 @@ void UpdateManager::download_and_install(
       return;
     }
 
-    const std::wstring relaunch_cmd = quote_arg(current_exe.wstring()) +
-                                      L" --cleanup-old " +
-                                      quote_arg(backup_exe.wstring());
+    const std::wstring relaunch_cmd =
+        quote_arg(current_exe.wstring()) + L" --cleanup-old " +
+        quote_arg(backup_exe.wstring()) + L" --cleanup-pid " +
+        std::to_wstring(GetCurrentProcessId());
     std::wstring mutable_relaunch = relaunch_cmd;
     STARTUPINFOW si{};
     si.cb = sizeof(si);
@@ -647,34 +732,214 @@ void UpdateManager::download_and_install(
   }).detach();
 }
 
-void cleanup_old_executable_if_present(const std::string& explicit_old_path) {
+void cleanup_old_executable_if_present(const std::string& explicit_old_path,
+                                       std::uint32_t wait_pid,
+                                       std::function<void()> on_done) {
 #ifdef _WIN32
   std::wstring target = utf8_to_wide(explicit_old_path);
-  if (target.empty()) {
-    wchar_t exe_buf[MAX_PATH]{};
-    const DWORD len = GetModuleFileNameW(nullptr, exe_buf, MAX_PATH);
-    if (len > 0 && len < MAX_PATH) {
-      target = std::wstring(exe_buf) + L".old";
-    }
+  wchar_t exe_buf[MAX_PATH]{};
+  const DWORD len = GetModuleFileNameW(nullptr, exe_buf, MAX_PATH);
+  const std::filesystem::path current_exe =
+      (len > 0 && len < MAX_PATH) ? std::filesystem::path(exe_buf)
+                                  : std::filesystem::path{};
+  if (target.empty() && !current_exe.empty()) {
+    target = current_exe.wstring() + L".old";
   }
-  if (target.empty()) {
-    return;
-  }
-  std::error_code ec;
-  if (!std::filesystem::exists(target, ec)) {
-    return;
-  }
-  std::thread([target]() {
-    for (int i = 0; i < 20; ++i) {
-      if (DeleteFileW(target.c_str()) != FALSE) {
-        break;
+
+  std::thread([target, current_exe, wait_pid,
+               on_done = std::move(on_done)]() {
+    if (wait_pid != 0) {
+      HANDLE old_proc = OpenProcess(SYNCHRONIZE, FALSE, wait_pid);
+      if (old_proc != nullptr) {
+        WaitForSingleObject(old_proc, 15000);
+        CloseHandle(old_proc);
       }
-      std::this_thread::sleep_for(std::chrono::milliseconds(250));
+    }
+    if (!target.empty()) {
+      std::error_code ec;
+      if (std::filesystem::exists(target, ec)) {
+        for (int i = 0; i < 60; ++i) {
+          if (DeleteFileW(target.c_str()) != FALSE) {
+            break;
+          }
+          std::this_thread::sleep_for(std::chrono::milliseconds(500));
+        }
+      }
+    }
+    if (!current_exe.empty()) {
+      std::error_code ec;
+      const auto tmp = std::filesystem::temp_directory_path(ec);
+      (void)cleanup_legacy_update_files_in_dirs(
+          current_exe.parent_path(), current_exe, tmp, GetCurrentProcessId());
+    }
+    if (on_done) {
+      on_done();
     }
   }).detach();
 #else
   (void)explicit_old_path;
+  (void)wait_pid;
+  if (on_done) {
+    on_done();
+  }
 #endif
+}
+
+std::vector<LegacyUpdateArtifact> scan_legacy_update_files_in_dirs(
+    const std::filesystem::path& app_dir,
+    const std::filesystem::path& current_exe_path,
+    const std::filesystem::path& temp_dir, std::uint32_t current_pid) {
+  std::vector<LegacyUpdateArtifact> found;
+  std::error_code ec;
+
+  std::filesystem::path canonical_cur;
+  if (!current_exe_path.empty()) {
+    canonical_cur = std::filesystem::weakly_canonical(current_exe_path, ec);
+    if (ec) {
+      canonical_cur = current_exe_path;
+      ec.clear();
+    }
+  }
+
+  if (!app_dir.empty() && std::filesystem::is_directory(app_dir, ec)) {
+    for (const auto& entry :
+         std::filesystem::directory_iterator(app_dir, ec)) {
+      if (!entry.is_regular_file(ec)) {
+        continue;
+      }
+      if (!canonical_cur.empty()) {
+        std::error_code cmp_ec;
+        auto cand = std::filesystem::weakly_canonical(entry.path(), cmp_ec);
+        if (cmp_ec) {
+          cand = entry.path();
+        }
+        if (cand == canonical_cur) {
+          continue;
+        }
+      }
+      const std::string lower_name =
+          to_lower_ascii_str(entry.path().filename().string());
+      if (is_legacy_app_dir_filename(lower_name)) {
+        const auto sz = entry.file_size(ec);
+        found.push_back(
+            {entry.path().string(), ec ? 0ULL : sz, false});
+        ec.clear();
+      }
+    }
+  }
+
+  ec.clear();
+  if (!temp_dir.empty() && std::filesystem::is_directory(temp_dir, ec)) {
+    for (const auto& entry :
+         std::filesystem::directory_iterator(temp_dir, ec)) {
+      if (!entry.is_directory(ec)) {
+        continue;
+      }
+      const std::string fname = entry.path().filename().string();
+      if (!starts_with_str(fname, "DeskMateUpdate-")) {
+        continue;
+      }
+      const std::string suffix = fname.substr(std::strlen("DeskMateUpdate-"));
+      std::uint32_t dir_pid = 0;
+      if (!suffix.empty() &&
+          std::all_of(suffix.begin(), suffix.end(), [](unsigned char c) {
+            return std::isdigit(c) != 0;
+          })) {
+        dir_pid = static_cast<std::uint32_t>(std::strtoul(suffix.c_str(), nullptr, 10));
+      }
+      if (dir_pid != 0 &&
+          ((current_pid != 0 && dir_pid == current_pid) ||
+           is_pid_alive_os(dir_pid))) {
+        continue;
+      }
+      found.push_back({entry.path().string(),
+                       directory_size_bytes(entry.path()), true});
+    }
+  }
+
+  return found;
+}
+
+LegacyCleanupSummary cleanup_legacy_update_files_in_dirs(
+    const std::filesystem::path& app_dir,
+    const std::filesystem::path& current_exe_path,
+    const std::filesystem::path& temp_dir, std::uint32_t current_pid) {
+  const auto artifacts = scan_legacy_update_files_in_dirs(
+      app_dir, current_exe_path, temp_dir, current_pid);
+  LegacyCleanupSummary summary;
+  summary.scanned_count = artifacts.size();
+  for (const auto& item : artifacts) {
+    summary.scanned_bytes += item.size_bytes;
+    std::error_code ec;
+    if (item.is_directory) {
+      std::filesystem::remove_all(item.path, ec);
+    } else {
+      std::filesystem::remove(item.path, ec);
+    }
+    if (!ec) {
+      ++summary.deleted_count;
+      summary.freed_bytes += item.size_bytes;
+    } else {
+      ++summary.failed_count;
+    }
+  }
+  if (summary.scanned_count == 0) {
+    summary.message = "未发现旧版本或临时更新残留";
+  } else if (summary.failed_count == 0) {
+    summary.message = "已清理 " + std::to_string(summary.deleted_count) +
+                      " 个旧文件，释放 " +
+                      format_bytes_human(summary.freed_bytes);
+  } else {
+    summary.message = "已清理 " + std::to_string(summary.deleted_count) +
+                      " 个，仍有 " + std::to_string(summary.failed_count) +
+                      " 个被系统占用（可稍后重试）";
+  }
+  return summary;
+}
+
+void UpdateManager::refresh_legacy_artifacts() {
+#ifdef _WIN32
+  wchar_t exe_buf[MAX_PATH]{};
+  const DWORD len = GetModuleFileNameW(nullptr, exe_buf, MAX_PATH);
+  if (len == 0 || len >= MAX_PATH) {
+    return;
+  }
+  const std::filesystem::path current_exe(exe_buf);
+  std::error_code ec;
+  const auto items = scan_legacy_update_files_in_dirs(
+      current_exe.parent_path(), current_exe,
+      std::filesystem::temp_directory_path(ec), GetCurrentProcessId());
+  std::uint64_t total = 0;
+  for (const auto& it : items) {
+    total += it.size_bytes;
+  }
+  std::lock_guard lock(mutex_);
+  state_.legacy_file_count = items.size();
+  state_.legacy_total_bytes = total;
+#endif
+}
+
+LegacyCleanupSummary UpdateManager::cleanup_legacy_artifacts() {
+  LegacyCleanupSummary summary;
+#ifdef _WIN32
+  wchar_t exe_buf[MAX_PATH]{};
+  const DWORD len = GetModuleFileNameW(nullptr, exe_buf, MAX_PATH);
+  if (len > 0 && len < MAX_PATH) {
+    const std::filesystem::path current_exe(exe_buf);
+    std::error_code ec;
+    summary = cleanup_legacy_update_files_in_dirs(
+        current_exe.parent_path(), current_exe,
+        std::filesystem::temp_directory_path(ec), GetCurrentProcessId());
+  }
+#else
+  summary.message = "仅 Windows 端支持本地旧版本文件清理";
+#endif
+  refresh_legacy_artifacts();
+  {
+    std::lock_guard lock(mutex_);
+    state_.legacy_cleanup_message = summary.message;
+  }
+  return summary;
 }
 
 }  // namespace deskmate::windows

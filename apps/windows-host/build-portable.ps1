@@ -8,16 +8,19 @@
 #   powershell -ExecutionPolicy Bypass -File build-portable.ps1 `
 #     -ToolchainDir C:\dm\llvm-mingw-20261117-ucrt-x86_64 `
 #     -LibusbSource C:\dm\libusb-1.0.30 `
-#     -OutputDir    C:\dm\build
+#     -OutputDir    C:\dm\dist\windows
 param(
     [Parameter(Mandatory = $true)][string]$ToolchainDir,
     [Parameter(Mandatory = $true)][string]$LibusbSource,
-    [string]$OutputDir = (Join-Path $PSScriptRoot "build"),
+    [string]$OutputDir = "",
+    [string]$WorkDir = "",
     [string]$ObjDir = ""
 )
 
 $ErrorActionPreference = "Stop"
 $RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..\..")).Path
+if (-not $OutputDir) { $OutputDir = Join-Path $RepoRoot "dist\windows" }
+if (-not $WorkDir) { $WorkDir = Join-Path $PSScriptRoot "build\portable-work" }
 $Bin = Join-Path $ToolchainDir "bin"
 $Clang = Join-Path $Bin "clang.exe"
 $ClangPP = Join-Path $Bin "clang++.exe"
@@ -25,16 +28,21 @@ $Ar = Join-Path $Bin "llvm-ar.exe"
 foreach ($tool in @($Clang, $ClangPP, $Ar)) {
     if (-not (Test-Path $tool)) { throw "missing toolchain binary: $tool" }
 }
+$Windres = $null
+foreach ($candidate in @("llvm-windres.exe", "x86_64-w64-mingw32-windres.exe", "windres.exe")) {
+    $p = Join-Path $Bin $candidate
+    if (Test-Path $p) { $Windres = $p; break }
+}
 if (-not (Test-Path (Join-Path $LibusbSource "libusb\core.c"))) {
     throw "LibusbSource must point at an extracted libusb-1.0.x tree"
 }
 
-if (-not $ObjDir) { $ObjDir = Join-Path $OutputDir "obj" }
-New-Item -ItemType Directory -Force -Path $OutputDir, $ObjDir | Out-Null
+if (-not $ObjDir) { $ObjDir = Join-Path $WorkDir "obj" }
+New-Item -ItemType Directory -Force -Path $OutputDir, $WorkDir, $ObjDir | Out-Null
 
 # libusb expects a configure-generated config.h. Only the Windows-relevant
 # defines are needed; the POSIX ones stay undefined.
-$LibusbCfg = Join-Path $OutputDir "libusb-cfg"
+$LibusbCfg = Join-Path $WorkDir "libusb-cfg"
 New-Item -ItemType Directory -Force -Path $LibusbCfg | Out-Null
 @'
 #ifndef DESKMATE_LIBUSB_CONFIG_H
@@ -55,12 +63,12 @@ New-Item -ItemType Directory -Force -Path $LibusbCfg | Out-Null
 
 # The host includes <libusb-1.0/libusb.h> (vcpkg layout); the source tree keeps
 # the header at libusb/libusb.h. Mirror it instead of patching the source.
-$Shim = Join-Path $OutputDir "include\libusb-1.0"
+$Shim = Join-Path $WorkDir "include\libusb-1.0"
 New-Item -ItemType Directory -Force -Path $Shim | Out-Null
 Copy-Item (Join-Path $LibusbSource "libusb\libusb.h") (Join-Path $Shim "libusb.h") -Force
 
 Write-Host "==> libusb"
-$LibusbOut = Join-Path $OutputDir "libusb"
+$LibusbOut = Join-Path $WorkDir "libusb"
 New-Item -ItemType Directory -Force -Path $LibusbOut | Out-Null
 $LibusbSources = @(
     "libusb\core.c", "libusb\descriptor.c", "libusb\hotplug.c", "libusb\io.c",
@@ -77,7 +85,7 @@ foreach ($rel in $LibusbSources) {
     if ($LASTEXITCODE -ne 0) { throw "libusb compile failed: $rel" }
     $LibusbObjs += $obj
 }
-$LibusbLib = Join-Path $OutputDir "libusb.a"
+$LibusbLib = Join-Path $WorkDir "libusb.a"
 & $Ar rcs $LibusbLib @LibusbObjs
 if ($LASTEXITCODE -ne 0) { throw "llvm-ar failed" }
 
@@ -86,7 +94,7 @@ $Includes = @(
     "-I", (Join-Path $RepoRoot "core\include"),
     "-I", (Join-Path $RepoRoot "apps\common\include"),
     "-I", (Join-Path $RepoRoot "apps\windows-host\include"),
-    "-I", (Join-Path $OutputDir "include")
+    "-I", (Join-Path $WorkDir "include")
 )
 # _WIN32_WINNT gates DXGI Desktop Duplication, Media Foundation and
 # SetProcessDpiAwarenessContext.
@@ -106,9 +114,20 @@ foreach ($src in $Sources) {
     $Objs += $obj
 }
 
+$ResObjs = @()
+$RcPath = Join-Path $RepoRoot "apps\windows-host\resources\DeskMateHost.rc"
+if ($Windres -and (Test-Path $RcPath)) {
+    Write-Host "==> Windows icon & version resource"
+    $ResObj = Join-Path $ObjDir "DeskMateHost.res.o"
+    & $Windres -O coff -I (Join-Path $RepoRoot "apps\windows-host\resources") `
+        -I (Join-Path $RepoRoot "apps\windows-host\include") $RcPath $ResObj
+    if ($LASTEXITCODE -ne 0) { throw "windres failed: $RcPath" }
+    $ResObjs += $ResObj
+}
+
 $Exe = Join-Path $OutputDir "DeskMateHost.exe"
 # Windows GUI subsystem (WinMain): attaches console automatically for --headless/--list-monitors.
-& $ClangPP -std=c++20 -O2 -mwindows -o $Exe @Objs $LibusbLib `
+& $ClangPP -std=c++20 -O2 -mwindows -o $Exe @Objs @ResObjs $LibusbLib `
     -ld2d1 -ldwrite -ldwmapi `
     -ld3d11 -ldxgi -ld3dcompiler -ldxguid `
     -lmfplat -lmfreadwrite -lmfuuid -lwmcodecdspuuid `

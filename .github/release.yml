@@ -1,0 +1,24 @@
+changelog:
+  categories:
+    - title: "✨ 新增功能"
+      labels:
+        - enhancement
+        - feature
+        - feat
+    - title: "⚡ 性能与体验优化"
+      labels:
+        - performance
+        - perf
+        - ux
+    - title: "🐛 问题修复"
+      labels:
+        - bug
+        - fix
+        - bugfix
+    - title: "📚 文档与规范"
+      labels:
+        - documentation
+        - docs
+    - title: "🔧 其他变更"
+      labels:
+        - "*"

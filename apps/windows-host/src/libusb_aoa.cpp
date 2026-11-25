@@ -45,7 +45,7 @@ namespace {
 
 constexpr unsigned kControlTimeoutMs = 3000;
 constexpr unsigned kReaderTimeoutMs = 25;
-constexpr unsigned kWriteTimeoutMs = 20;
+constexpr unsigned kWriteTimeoutMs = 50;
 constexpr std::size_t kMaxRxBufferBytes = 256U * 1024U;
 constexpr auto kAoaSwitchCooldown = std::chrono::seconds(5);
 constexpr auto kExpectedIdentityTtl = std::chrono::seconds(20);
@@ -669,6 +669,9 @@ deskmate::protocol::IoResult LibusbBulkTransport::write(
       handle_, endpoint_out_, const_cast<unsigned char*>(source.data()),
       static_cast<int>(source.size()), &transferred, kWriteTimeoutMs);
   if (rc == LIBUSB_SUCCESS || rc == LIBUSB_ERROR_TIMEOUT) {
+    if (rc == LIBUSB_ERROR_TIMEOUT) {
+      write_timeouts_.fetch_add(1, std::memory_order_relaxed);
+    }
     consecutive_write_errors_.store(0, std::memory_order_relaxed);
     if (transferred <= 0) {
       write_blocked_.store(true, std::memory_order_relaxed);
@@ -717,6 +720,9 @@ bool LibusbBulkTransport::alive() const {
 }
 
 void LibusbBulkTransport::reader_loop() {
+#ifdef _WIN32
+  SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_ABOVE_NORMAL);
+#endif
   std::array<std::uint8_t, 16384> chunk{};
   int consecutive_errors = 0;
   while (!stop_.load(std::memory_order_acquire)) {

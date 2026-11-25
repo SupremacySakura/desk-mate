@@ -56,6 +56,8 @@ int32_t dm_bridge_start(DMBridge *bridge);
 void dm_bridge_stop(DMBridge *bridge);
 /* Updates whether new sessions auto-accept the connected device's resolution. */
 void dm_bridge_set_auto_match_resolution(DMBridge *bridge, int32_t enabled);
+/* Updates preferred host refresh rate (0 = auto/negotiated cap at 120 Hz). */
+void dm_bridge_set_preferred_refresh_hz(DMBridge *bridge, int32_t refresh_hz);
 
 /* Queues one Annex-B access unit. Safe to call from any thread. */
 int32_t dm_bridge_submit_video(DMBridge *bridge, const uint8_t *data, size_t size,

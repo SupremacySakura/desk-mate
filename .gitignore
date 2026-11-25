@@ -12,9 +12,12 @@ apps/android-client/captures/
 *.apk
 *.aab
 
-# Local release staging / Windows portable zips
+# Local release staging / packaged deliverables
 dist/
-DeskMate-Windows-Host-*.zip
+*.dmg
+*.hap
+*.exe
+DeskMate-*.zip
 
 # Private signing keys & certificates
 *.key

@@ -11,6 +11,7 @@ int run_studio_ui(HostController&) { return 0; }
 #else
 
 #include "deskmate/windows/host_controller.hpp"
+#include "deskmate/windows/resource_ids.h"
 
 #include <d2d1.h>
 #include <dwmapi.h>
@@ -728,13 +729,30 @@ class StudioWindowController {
     init_fonts();
     state_ = controller_.snapshot_ui_state();
 
+    HINSTANCE hinst = GetModuleHandleW(nullptr);
+    app_icon_big_ = static_cast<HICON>(LoadImageW(
+        hinst, MAKEINTRESOURCEW(IDI_DESKMATE_APP), IMAGE_ICON,
+        GetSystemMetrics(SM_CXICON), GetSystemMetrics(SM_CYICON),
+        LR_DEFAULTCOLOR));
+    app_icon_small_ = static_cast<HICON>(LoadImageW(
+        hinst, MAKEINTRESOURCEW(IDI_DESKMATE_APP), IMAGE_ICON,
+        GetSystemMetrics(SM_CXSMICON), GetSystemMetrics(SM_CYSMICON),
+        LR_DEFAULTCOLOR));
+    if (app_icon_big_ == nullptr) {
+      app_icon_big_ = create_tray_hicon(false, false);
+    }
+    if (app_icon_small_ == nullptr) {
+      app_icon_small_ = create_tray_hicon(false, false);
+    }
+
     WNDCLASSEXW wc{};
     wc.cbSize = sizeof(wc);
     wc.style = CS_HREDRAW | CS_VREDRAW;
     wc.lpfnWndProc = &StudioWindowController::main_wnd_proc;
-    wc.hInstance = GetModuleHandleW(nullptr);
+    wc.hInstance = hinst;
     wc.hCursor = LoadCursorW(nullptr, IDC_ARROW);
-    wc.hIcon = create_tray_hicon(false, false);
+    wc.hIcon = app_icon_big_;
+    wc.hIconSm = app_icon_small_;
     wc.lpszClassName = L"DeskMateStudioMainWindow";
     RegisterClassExW(&wc);
 
@@ -742,7 +760,7 @@ class StudioWindowController {
     pwc.cbSize = sizeof(pwc);
     pwc.style = CS_HREDRAW | CS_VREDRAW;
     pwc.lpfnWndProc = &StudioWindowController::popover_wnd_proc;
-    pwc.hInstance = GetModuleHandleW(nullptr);
+    pwc.hInstance = hinst;
     pwc.hCursor = LoadCursorW(nullptr, IDC_ARROW);
     pwc.lpszClassName = L"DeskMateStudioTrayPopover";
     RegisterClassExW(&pwc);
@@ -753,9 +771,9 @@ class StudioWindowController {
     const int avail_w = std::max(720, static_cast<int>(work.right - work.left) - 24);
     const int avail_h = std::max(520, static_cast<int>(work.bottom - work.top) - 24);
     const int win_w =
-        std::min(avail_w, static_cast<int>(std::lround(980.0F * scale)));
+        std::min(avail_w, static_cast<int>(std::lround(1020.0F * scale)));
     const int win_h =
-        std::min(avail_h, static_cast<int>(std::lround(670.0F * scale)));
+        std::min(avail_h, static_cast<int>(std::lround(680.0F * scale)));
     const int pos_x = work.left + ((work.right - work.left) - win_w) / 2;
     const int pos_y = work.top + ((work.bottom - work.top) - win_h) / 2;
 
@@ -765,6 +783,14 @@ class StudioWindowController {
         wc.hInstance, this);
     if (main_hwnd_ == nullptr) {
       return 1;
+    }
+    if (app_icon_big_ != nullptr) {
+      SendMessageW(main_hwnd_, WM_SETICON, ICON_BIG,
+                   reinterpret_cast<LPARAM>(app_icon_big_));
+    }
+    if (app_icon_small_ != nullptr) {
+      SendMessageW(main_hwnd_, WM_SETICON, ICON_SMALL,
+                   reinterpret_cast<LPARAM>(app_icon_small_));
     }
 
     const BOOL dark_false = FALSE;
@@ -855,6 +881,14 @@ class StudioWindowController {
     if (tray_hicon_ != nullptr) {
       DestroyIcon(tray_hicon_);
       tray_hicon_ = nullptr;
+    }
+    if (app_icon_big_ != nullptr) {
+      DestroyIcon(app_icon_big_);
+      app_icon_big_ = nullptr;
+    }
+    if (app_icon_small_ != nullptr) {
+      DestroyIcon(app_icon_small_);
+      app_icon_small_ = nullptr;
     }
     if (main_hwnd_ != nullptr) {
       WTSUnRegisterSessionNotification(main_hwnd_);
@@ -1413,13 +1447,13 @@ class StudioWindowController {
                 DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
     t.add_hit(copy_btn_r, [this] { copy_diagnostic(); });
 
-    // 3. Left Topology Column (326 DIPs)
+    // 3. Left Topology Column (368 DIPs)
     const float body_top = top_h + 12.0F;
     const float body_bottom = whisper_y - 10.0F;
-    draw_left_topology_column(t, 20.0F, body_top, 326.0F);
+    draw_left_topology_column(t, 20.0F, body_top, 368.0F);
 
     // 4. Right Content Column (scrollable + clipped)
-    const float right_x = 20.0F + 326.0F + 20.0F;
+    const float right_x = 20.0F + 368.0F + 20.0F;
     const float right_w = std::max(300.0F, sz.width - right_x - 20.0F);
     const D2D1_RECT_F right_clip =
         D2D1::RectF(right_x, body_top, right_x + right_w, body_bottom);
@@ -1511,9 +1545,16 @@ class StudioWindowController {
     }
   }
 
+  std::string topology_role_label(const TopologyDisplayItem& item) const {
+    if (item.is_ghost_preview) return "副屏位置预览";
+    if (item.is_deskmate_virtual) return "DeskMate 虚拟屏";
+    if (item.is_primary) return "WIN 主屏";
+    if (item.is_virtual) return "虚拟显示器";
+    return "物理扩展屏";
+  }
+
   void draw_left_topology_column(const RenderTarget& t, float x, float y,
                                  float w) {
-    // SpatialDisplayArrangerView Card
     const bool streaming =
         state_.badge == "会话已建立" ||
         state_.badge.find("运行中") != std::string::npos ||
@@ -1529,8 +1570,126 @@ class StudioWindowController {
       selected = &state_.active_sessions.front();
     }
 
-    const float footer_h = (streaming && state_.live_fps > 0) ? 72.0F : 52.0F;
-    const float card_h = 33.0F + 204.0F + footer_h;
+    // Build base display items (all physical monitors + DeskMate virtual displays)
+    std::vector<TopologyDisplayItem> base_items = state_.topology_displays;
+    if (base_items.empty()) {
+      TopologyDisplayItem fallback;
+      fallback.id = 1;
+      fallback.index_number = 1;
+      fallback.name = "WIN 主屏";
+      fallback.x = 0.0;
+      fallback.y = 0.0;
+      fallback.width = 1920.0;
+      fallback.height = 1080.0;
+      fallback.pixel_width = 1920;
+      fallback.pixel_height = 1080;
+      fallback.refresh_hz = 60;
+      fallback.is_primary = true;
+      base_items.push_back(std::move(fallback));
+    }
+    bool has_dm = false;
+    for (const auto& item : base_items) {
+      if (item.is_deskmate_virtual) {
+        has_dm = true;
+        break;
+      }
+    }
+    if (state_.active_sessions.empty() && state_.auto_virtual_display &&
+        !has_dm) {
+      const TopologyDisplayItem* primary = &base_items.front();
+      double bb_min_x = primary->x;
+      double bb_min_y = primary->y;
+      double bb_max_x = primary->max_x();
+      double bb_max_y = primary->max_y();
+      for (const auto& d : base_items) {
+        if (d.is_primary) {
+          primary = &d;
+        }
+        bb_min_x = std::min(bb_min_x, d.x);
+        bb_min_y = std::min(bb_min_y, d.y);
+        bb_max_x = std::max(bb_max_x, d.max_x());
+        bb_max_y = std::max(bb_max_y, d.max_y());
+      }
+      const double gw = std::max(900.0, std::round(primary->width * 0.72));
+      const double gh = std::max(600.0, std::round(primary->height * 0.72));
+      double gx = bb_max_x;
+      double gy = primary->y + (primary->height - gh) * 0.5;
+      switch (state_.position) {
+        case DisplayPosition::Right:
+          gx = bb_max_x;
+          gy = primary->y + (primary->height - gh) * 0.5;
+          break;
+        case DisplayPosition::Left:
+          gx = bb_min_x - gw;
+          gy = primary->y + (primary->height - gh) * 0.5;
+          break;
+        case DisplayPosition::Top:
+          gx = primary->x + (primary->width - gw) * 0.5;
+          gy = bb_min_y - gh;
+          break;
+        case DisplayPosition::Bottom:
+          gx = primary->x + (primary->width - gw) * 0.5;
+          gy = bb_max_y;
+          break;
+      }
+      TopologyDisplayItem ghost;
+      ghost.id = kGhostPreviewDisplayId;
+      ghost.index_number = static_cast<int>(base_items.size() + 1);
+      ghost.name = "副屏预览";
+      ghost.x = gx;
+      ghost.y = gy;
+      ghost.width = gw;
+      ghost.height = gh;
+      ghost.is_virtual = true;
+      ghost.is_deskmate_virtual = true;
+      ghost.is_ghost_preview = true;
+      base_items.push_back(std::move(ghost));
+    }
+
+    topo_base_items_ = base_items;
+    const std::vector<TopologyDisplayItem>& items =
+        (topo_dragging_ && !topo_preview_.empty()) ? topo_preview_ : base_items;
+    const std::vector<TopologyDisplayItem>& vp_src =
+        (topo_dragging_ && !topo_drag_start_.empty()) ? topo_drag_start_
+                                                      : items;
+
+    int physical_count = 0;
+    for (const auto& it : base_items) {
+      if (!it.is_ghost_preview) ++physical_count;
+    }
+
+    const TopologyDisplayItem* active_sel = nullptr;
+    if (selected != nullptr) {
+      for (const auto& it : items) {
+        if (it.link_id == selected->link_id) {
+          active_sel = &it;
+          break;
+        }
+      }
+    }
+    if (active_sel == nullptr && topo_selected_display_id_ != 0) {
+      for (const auto& it : items) {
+        if (it.id == topo_selected_display_id_) {
+          active_sel = &it;
+          break;
+        }
+      }
+    }
+    if (active_sel == nullptr) {
+      for (const auto& it : items) {
+        if (it.is_deskmate_virtual) {
+          active_sel = &it;
+          break;
+        }
+      }
+    }
+    if (active_sel == nullptr && !items.empty()) {
+      active_sel = &items.front();
+    }
+
+    const float footer_h = (streaming && state_.live_fps > 0) ? 84.0F : 66.0F;
+    const float canvas_h = 248.0F;
+    const float card_h = 33.0F + canvas_h + footer_h;
     const D2D1_RECT_F card = D2D1::RectF(x, y, x + w, y + card_h);
     t.fill_round(card, 4.0F, palette::kCardSurface);
 
@@ -1539,272 +1698,264 @@ class StudioWindowController {
                 streaming ? palette::kCrimson
                           : (state_.linked ? palette::kChampagne
                                            : palette::kInkMuted));
-    t.draw_text("TOPOLOGY // 副屏拓扑布局",
-                D2D1::RectF(x + 25.0F, y + 8.0F, x + w - 96.0F, y + 25.0F),
+    t.draw_text("TOPOLOGY // 多屏拓扑布局",
+                D2D1::RectF(x + 25.0F, y + 8.0F, x + w - 108.0F, y + 25.0F),
                 f_mono_9_.Get(), palette::kInkMuted,
                 DWRITE_TEXT_ALIGNMENT_LEADING,
-                DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
-    const std::string mode_pill =
-        !state_.auto_virtual_display
-            ? "指定物理屏"
-            : (state_.vdd_active
-                   ? (state_.active_sessions.size() > 1
-                          ? (std::to_string(state_.active_sessions.size()) +
-                             " 台虚拟屏")
-                          : "虚拟扩展屏")
-                   : (state_.vdd_installed ? "自动虚拟屏" : "待装虚拟屏"));
+                DWRITE_PARAGRAPH_ALIGNMENT_CENTER, true);
+
+    const std::string count_pill = std::to_string(physical_count) + " 块屏幕";
     const float pill_w =
-        std::ceil(res_.measure(mode_pill, f_ui_10_.Get()).width) + 14.0F;
+        std::ceil(res_.measure(count_pill, f_ui_10_.Get()).width) + 14.0F;
+    const D2D1_RECT_F ref_btn =
+        D2D1::RectF(x + w - 34.0F, y + 7.5F, x + w - 14.0F, y + 25.5F);
     const D2D1_RECT_F pill_r =
-        D2D1::RectF(x + w - 14.0F - pill_w, y + 8.0F, x + w - 14.0F, y + 25.0F);
+        D2D1::RectF(ref_btn.left - 6.0F - pill_w, y + 7.5F, ref_btn.left - 6.0F,
+                    y + 25.5F);
     t.fill_round(pill_r, 2.0F, palette::kSubtleSurface);
     t.stroke_round(pill_r, 2.0F, palette::kHairline, 0.7F);
-    t.draw_text(mode_pill, pill_r, f_ui_10_.Get(), palette::kInkSecondary,
+    t.draw_text(count_pill, pill_r, f_ui_10_.Get(), palette::kInkSecondary,
                 DWRITE_TEXT_ALIGNMENT_CENTER,
                 DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+
+    t.fill_round(ref_btn, 2.0F,
+                 t.is_hovered(ref_btn) ? palette::kRoseWash
+                                       : palette::kSubtleSurface);
+    t.stroke_round(ref_btn, 2.0F, palette::kHairline, 0.7F);
+    t.draw_text("↻", ref_btn, f_ui_11_b_.Get(), palette::kInkSecondary,
+                DWRITE_TEXT_ALIGNMENT_CENTER,
+                DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+    t.add_hit(ref_btn, [this] {
+      controller_.refresh_displays();
+      refresh_now();
+    });
     t.line(x, y + 33.0F, x + w, y + 33.0F, palette::kSoftHairline, 0.8F);
 
-    // Interactive 3x3 Spatial Canvas (204 DIPs)
+    // Interactive Proportional Multi-Display Canvas (248 DIPs)
     const float canvas_y = y + 33.0F;
-    const float canvas_h = 204.0F;
-    t.fill_rect(D2D1::RectF(x + 0.5F, canvas_y, x + w - 0.5F, canvas_y + canvas_h),
-                palette::kCanvasMid);
+    const D2D1_RECT_F canvas_rect =
+        D2D1::RectF(x + 0.5F, canvas_y, x + w - 0.5F, canvas_y + canvas_h);
+    topo_canvas_rect_ = canvas_rect;
+    t.fill_rect(canvas_rect, palette::kCanvasMid);
 
-    // Corner registration ticks
-    const float ins = 10.0F;
-    const float tk = 6.0F;
-    t.line(x + ins, canvas_y + ins, x + ins + tk, canvas_y + ins, palette::kHairline);
-    t.line(x + ins, canvas_y + ins, x + ins, canvas_y + ins + tk, palette::kHairline);
-    t.line(x + w - ins - tk, canvas_y + ins, x + w - ins, canvas_y + ins, palette::kHairline);
-    t.line(x + w - ins, canvas_y + ins, x + w - ins, canvas_y + ins + tk, palette::kHairline);
-    t.line(x + ins, canvas_y + canvas_h - ins, x + ins + tk, canvas_y + canvas_h - ins, palette::kHairline);
-    t.line(x + ins, canvas_y + canvas_h - ins - tk, x + ins, canvas_y + canvas_h - ins, palette::kHairline);
-    t.line(x + w - ins - tk, canvas_y + canvas_h - ins, x + w - ins, canvas_y + canvas_h - ins, palette::kHairline);
-    t.line(x + w - ins, canvas_y + canvas_h - ins - tk, x + w - ins, canvas_y + canvas_h - ins, palette::kHairline);
-
-    const float cx = x + w * 0.5F;
-    const float cy = canvas_y + canvas_h * 0.5F;
-    t.line(x + 20.0F, cy, x + w - 20.0F, cy, palette::kSoftHairline, 0.8F, true);
-    t.line(cx, canvas_y + 14.0F, cx, canvas_y + canvas_h - 14.0F,
-           palette::kSoftHairline, 0.8F, true);
-
-    auto sessions_at = [&](DisplayPosition slot) {
-      std::vector<const ActiveSessionView*> list;
-      for (const auto& s : state_.active_sessions) {
-        if (s.position == slot) {
-          list.push_back(&s);
-        }
+    // Subtle 16-DIP dot grid
+    for (float gx = x + 12.0F; gx < x + w - 8.0F; gx += 16.0F) {
+      for (float gy = canvas_y + 12.0F; gy < canvas_y + canvas_h - 8.0F;
+           gy += 16.0F) {
+        t.fill_rect(D2D1::RectF(gx - 0.6F, gy - 0.6F, gx + 0.6F, gy + 0.6F),
+                    rgb(0xDCD6CC, 0.48F));
       }
-      return list;
-    };
-    auto is_occupied = [&](DisplayPosition slot) {
-      if (state_.active_sessions.empty()) {
-        return slot == state_.position;
-      }
-      return !sessions_at(slot).empty();
-    };
-
-    // Bridge lines
-    const DisplayPosition all_pos[] = {DisplayPosition::Top, DisplayPosition::Bottom,
-                                       DisplayPosition::Left, DisplayPosition::Right};
-    for (DisplayPosition slot : all_pos) {
-      if (!is_occupied(slot)) {
-        continue;
-      }
-      const auto slot_items = sessions_at(slot);
-      bool slot_stream = state_.active_sessions.empty() && streaming;
-      for (const auto* it : slot_items) {
-        if (it->streaming) {
-          slot_stream = true;
-          break;
-        }
-      }
-      const bool slot_linked =
-          !slot_items.empty() || (state_.active_sessions.empty() && state_.linked);
-      const D2D1_COLOR_F bcol =
-          slot_stream ? palette::kCrimson
-                      : (slot_linked ? palette::kChampagne : palette::kInkMuted);
-      const float bw = (slot_stream || slot_linked) ? 1.5F : 1.0F;
-      float mx = cx;
-      float my = cy;
-      switch (slot) {
-        case DisplayPosition::Top:
-          t.line(cx, cy - 28.0F, cx, cy - 42.0F, bcol, bw);
-          my = cy - 35.0F;
-          break;
-        case DisplayPosition::Bottom:
-          t.line(cx, cy + 30.0F, cx, cy + 42.0F, bcol, bw);
-          my = cy + 36.0F;
-          break;
-        case DisplayPosition::Left:
-          t.line(cx - 45.0F, cy, cx - 60.0F, cy, bcol, bw);
-          mx = cx - 52.5F;
-          break;
-        case DisplayPosition::Right:
-          t.line(cx + 45.0F, cy, cx + 60.0F, cy, bcol, bw);
-          mx = cx + 52.5F;
-          break;
-      }
-      t.fill_rect(D2D1::RectF(mx - 2.5F, my - 2.5F, mx + 2.5F, my + 2.5F), bcol);
     }
 
-    // Center WIN Primary monitor box
-    const D2D1_RECT_F win_box = D2D1::RectF(cx - 44.0F, cy - 27.0F, cx + 44.0F, cy + 23.0F);
-    t.fill_round(win_box, 3.0F, palette::kCardSurface);
-    t.stroke_round(win_box, 3.0F, rgb(0x232026, 0.78F), 1.0F);
-    t.fill_rect(D2D1::RectF(win_box.left + 1.0F, win_box.top + 1.0F,
-                            win_box.right - 1.0F, win_box.top + 6.0F),
-                palette::kSoftHairline);
-    t.draw_text("WIN 主屏",
-                D2D1::RectF(win_box.left, win_box.top + 11.0F, win_box.right,
-                            win_box.top + 28.0F),
-                f_ui_10_b_.Get(), palette::kInk, DWRITE_TEXT_ALIGNMENT_CENTER,
-                DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
-    t.draw_text("Primary",
-                D2D1::RectF(win_box.left, win_box.top + 27.0F, win_box.right,
-                            win_box.bottom - 3.0F),
-                f_mono_9_.Get(), palette::kInkMuted, DWRITE_TEXT_ALIGNMENT_CENTER,
-                DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
-    t.fill_rect(D2D1::RectF(cx - 0.8F, win_box.bottom, cx + 0.8F, win_box.bottom + 4.0F),
-                palette::kHairline);
-    t.fill_rect(D2D1::RectF(cx - 12.0F, win_box.bottom + 4.0F, cx + 12.0F,
-                            win_box.bottom + 5.5F),
-                palette::kInkMuted);
+    // Corner registration ticks
+    const float ins = 8.0F;
+    const float tk = 5.0F;
+    t.line(x + ins, canvas_y + ins, x + ins + tk, canvas_y + ins,
+           palette::kHairline);
+    t.line(x + ins, canvas_y + ins, x + ins, canvas_y + ins + tk,
+           palette::kHairline);
+    t.line(x + w - ins - tk, canvas_y + ins, x + w - ins, canvas_y + ins,
+           palette::kHairline);
+    t.line(x + w - ins, canvas_y + ins, x + w - ins, canvas_y + ins + tk,
+           palette::kHairline);
+    t.line(x + ins, canvas_y + canvas_h - ins, x + ins + tk,
+           canvas_y + canvas_h - ins, palette::kHairline);
+    t.line(x + ins, canvas_y + canvas_h - ins - tk, x + ins,
+           canvas_y + canvas_h - ins, palette::kHairline);
+    t.line(x + w - ins - tk, canvas_y + canvas_h - ins, x + w - ins,
+           canvas_y + canvas_h - ins, palette::kHairline);
+    t.line(x + w - ins, canvas_y + canvas_h - ins - tk, x + w - ins,
+           canvas_y + canvas_h - ins, palette::kHairline);
 
-    // 4 Cardinal Slots
-    auto draw_slot = [&](DisplayPosition slot, const D2D1_RECT_F& r) {
-      const auto slot_items = sessions_at(slot);
-      const bool occupied = is_occupied(slot);
-      bool contains_sel = state_.active_sessions.empty() && slot == state_.position;
-      bool slot_stream = state_.active_sessions.empty() && streaming;
-      for (const auto* it : slot_items) {
-        if (selected != nullptr && it->link_id == selected->link_id) {
-          contains_sel = true;
-        }
-        if (it->streaming) {
-          slot_stream = true;
-        }
-      }
-      const bool slot_linked =
-          !slot_items.empty() || (state_.active_sessions.empty() && state_.linked);
+    const TopologyViewport vp =
+        compute_topology_viewport(vp_src, w, canvas_h, 20.0);
+    topo_viewport_ = vp;
 
-      if (occupied) {
-        std::string title = "扩展副屏";
-        std::string sub =
-            streaming ? (state_.live_fps > 0
-                             ? (std::to_string(state_.live_fps) + " FPS")
-                             : "推流中")
-                      : (state_.linked ? "已连接" : "已预设");
-        if (slot_items.size() > 1) {
-          title = std::to_string(slot_items.size()) + " 台副屏";
-          int sum = 0;
-          for (const auto* it : slot_items) sum += it->live_fps;
-          sub = sum > 0 ? (std::to_string(sum) + " FPS") : "点击切换";
-        } else if (!slot_items.empty()) {
-          const ActiveSessionView* item = slot_items.front();
-          title = item->device_name;
-          sub = (item->streaming && item->live_fps > 0)
-                    ? (std::to_string(item->live_fps) + " FPS")
-                    : (item->streaming ? "推流中" : "已连接");
-        }
-        t.fill_round(r, 3.0F,
-                     slot_stream ? palette::kRoseWash
-                                 : (slot_linked ? palette::kSubtleSurface
-                                                : palette::kCardSurface));
-        const D2D1_COLOR_F border =
-            contains_sel
-                ? ((slot_stream || slot_linked) ? palette::kCrimson
-                                                : palette::kInk)
-                : palette::kChampagne;
-        t.stroke_round(r, 3.0F, border, contains_sel ? 1.3F : 1.0F);
-        t.draw_text(title,
-                    D2D1::RectF(r.left + 6.0F, r.top + 4.0F, r.right - 6.0F,
-                                r.top + 20.0F),
-                    f_ui_10_b_.Get(), palette::kInk, DWRITE_TEXT_ALIGNMENT_CENTER,
-                    DWRITE_PARAGRAPH_ALIGNMENT_CENTER, true);
-        t.draw_text(sub,
-                    D2D1::RectF(r.left + 4.0F, r.top + 20.0F, r.right - 4.0F,
-                                r.bottom - 3.0F),
-                    f_mono_9_.Get(),
-                    (slot_stream || slot_linked) ? palette::kCrimson
-                                                 : palette::kInkMuted,
-                    DWRITE_TEXT_ALIGNMENT_CENTER,
-                    DWRITE_PARAGRAPH_ALIGNMENT_CENTER, true);
-      } else {
-        t.fill_round(r, 3.0F, rgb(0xFFFFFF, 0.7F));
-        t.stroke_round(r, 3.0F, palette::kHairline, 0.85F, true);
-        t.draw_text("+ " + display_position_short_label(slot), r,
-                    f_ui_10_.Get(), palette::kInkMuted,
-                    DWRITE_TEXT_ALIGNMENT_CENTER,
-                    DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
-      }
+    main_rt_->PushAxisAlignedClip(canvas_rect,
+                                  D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
 
-      t.add_hit(r, [this, slot, slot_items] {
-        if (!slot_items.empty()) {
-          if (slot_items.size() > 1) {
-            for (std::size_t i = 0; i < slot_items.size(); ++i) {
-              if (slot_items[i]->link_id == state_.selected_link_id) {
-                controller_.select_link(
-                    slot_items[(i + 1) % slot_items.size()]->link_id);
-                refresh_now();
-                return;
-              }
-            }
-          }
-          controller_.select_link(slot_items.front()->link_id);
-          refresh_now();
+    // Alignment guides while dragging
+    if (topo_dragging_) {
+      const D2D1_COLOR_F gcol = topo_swap_preview_
+                                    ? palette::kChampagne
+                                    : rgb(0x9D193D, 0.72F);
+      for (const auto& g : topo_guides_) {
+        if (g.is_horizontal) {
+          const float gy = canvas_y + static_cast<float>(vp.to_canvas_y(g.pos));
+          t.line(x + static_cast<float>(vp.to_canvas_x(g.start)), gy,
+                 x + static_cast<float>(vp.to_canvas_x(g.end)), gy, gcol, 1.0F,
+                 true);
         } else {
-          if (state_.selected_link_id != 0) {
-            controller_.set_link_position(state_.selected_link_id, slot);
-          } else {
-            controller_.set_default_position(slot);
-          }
-          refresh_now();
+          const float gx = x + static_cast<float>(vp.to_canvas_x(g.pos));
+          t.line(gx, canvas_y + static_cast<float>(vp.to_canvas_y(g.start)), gx,
+                 canvas_y + static_cast<float>(vp.to_canvas_y(g.end)), gcol,
+                 1.0F, true);
         }
-      });
-    };
+      }
+    }
 
-    draw_slot(DisplayPosition::Top,
-              D2D1::RectF(cx - 52.0F, cy - 84.0F, cx + 52.0F, cy - 42.0F));
-    draw_slot(DisplayPosition::Left,
-              D2D1::RectF(cx - 140.0F, cy - 28.0F, cx - 60.0F, cy + 28.0F));
-    draw_slot(DisplayPosition::Right,
-              D2D1::RectF(cx + 60.0F, cy - 28.0F, cx + 140.0F, cy + 28.0F));
-    draw_slot(DisplayPosition::Bottom,
-              D2D1::RectF(cx - 52.0F, cy + 42.0F, cx + 52.0F, cy + 84.0F));
+    // Draw non-dragged tiles first, dragged tile on top
+    topo_tile_rects_.clear();
+    std::vector<const TopologyDisplayItem*> draw_order;
+    draw_order.reserve(items.size());
+    const TopologyDisplayItem* dragged_ptr = nullptr;
+    for (const auto& it : items) {
+      if (topo_dragging_ && it.id == topo_drag_candidate_id_) {
+        dragged_ptr = &it;
+      } else {
+        draw_order.push_back(&it);
+      }
+    }
+    if (dragged_ptr != nullptr) {
+      draw_order.push_back(dragged_ptr);
+    }
+
+    for (const auto* it : draw_order) {
+      const float tw = std::max(32.0F, static_cast<float>(it->width * vp.scale));
+      const float th =
+          std::max(24.0F, static_cast<float>(it->height * vp.scale));
+      const float tx = x + static_cast<float>(vp.to_canvas_x(it->x));
+      const float ty = canvas_y + static_cast<float>(vp.to_canvas_y(it->y));
+      const D2D1_RECT_F tr = D2D1::RectF(tx, ty, tx + tw, ty + th);
+      topo_tile_rects_.push_back({it->id, tr});
+
+      const bool is_dragged =
+          (topo_dragging_ && it->id == topo_drag_candidate_id_);
+      const bool is_sel = (active_sel != nullptr && active_sel->id == it->id);
+
+      const D2D1_COLOR_F fill =
+          it->is_ghost_preview
+              ? rgb(0xFFFFFF, 0.72F)
+              : (it->is_deskmate_virtual
+                     ? (it->streaming ? palette::kRoseWash
+                                      : palette::kSubtleSurface)
+                     : (it->is_primary ? palette::kCardSurface
+                                       : palette::kSubtleSurface));
+      const D2D1_COLOR_F border =
+          is_dragged
+              ? palette::kCrimson
+              : (it->is_ghost_preview
+                     ? palette::kHairline
+                     : (it->is_deskmate_virtual
+                            ? ((is_sel || it->streaming) ? palette::kCrimson
+                                                         : palette::kRoseBorder)
+                            : (is_sel ? palette::kInk
+                                      : (it->is_primary ? rgb(0x232026, 0.78F)
+                                                        : palette::kChampagne))));
+      const float bw = is_dragged ? 1.6F : (is_sel ? 1.35F : 0.95F);
+
+      t.fill_round(tr, 3.0F, fill);
+      t.stroke_round(tr, 3.0F, border, bw, it->is_ghost_preview);
+
+      if (it->is_primary && th > 16.0F) {
+        t.fill_rect(
+            D2D1::RectF(tr.left + 1.0F, tr.top + 1.0F, tr.right - 1.0F,
+                        tr.top + 5.0F),
+            palette::kSoftHairline);
+      }
+
+      const float top_pad = it->is_primary ? 7.0F : 4.0F;
+      const std::string num_str = std::to_string(it->index_number);
+      const float badge_w =
+          std::max(14.0F, std::ceil(res_.measure(num_str, f_mono_9_.Get()).width) +
+                              6.0F);
+      const D2D1_RECT_F nbadge =
+          D2D1::RectF(tr.left + 4.0F, tr.top + top_pad,
+                      tr.left + 4.0F + badge_w, tr.top + top_pad + 13.0F);
+      const D2D1_COLOR_F nbg =
+          it->is_deskmate_virtual
+              ? palette::kCrimson
+              : (it->is_primary ? palette::kInk : palette::kInkSecondary);
+      t.fill_round(nbadge, 2.0F, nbg);
+      t.draw_text(num_str, nbadge, f_mono_9_.Get(), palette::kWhite,
+                  DWRITE_TEXT_ALIGNMENT_CENTER,
+                  DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+
+      if (tw >= 54.0F) {
+        t.draw_text(it->name,
+                    D2D1::RectF(nbadge.right + 4.0F, tr.top + top_pad - 1.0F,
+                                tr.right - 4.0F, tr.top + top_pad + 14.0F),
+                    f_ui_10_b_.Get(),
+                    it->is_ghost_preview ? palette::kInkMuted : palette::kInk,
+                    DWRITE_TEXT_ALIGNMENT_LEADING,
+                    DWRITE_PARAGRAPH_ALIGNMENT_CENTER, true);
+      }
+
+      if (th >= 38.0F) {
+        std::string sub;
+        if (it->is_ghost_preview) {
+          sub = "拖动设定方位";
+        } else if (it->streaming && it->live_fps > 0) {
+          sub = std::to_string(it->live_fps) + " FPS";
+        } else if (it->is_deskmate_virtual) {
+          sub = "DeskMate 副屏";
+        } else if (it->is_primary) {
+          sub = "主显示器";
+        } else {
+          sub = std::to_string(it->pixel_width) + "×" +
+                std::to_string(it->pixel_height);
+        }
+        t.draw_text(sub,
+                    D2D1::RectF(tr.left + 4.0F, tr.bottom - 16.0F,
+                                tr.right - 4.0F, tr.bottom - 3.0F),
+                    f_mono_9_.Get(),
+                    (it->is_deskmate_virtual && !it->is_ghost_preview)
+                        ? palette::kCrimson
+                        : palette::kInkMuted,
+                    DWRITE_TEXT_ALIGNMENT_LEADING,
+                    DWRITE_PARAGRAPH_ALIGNMENT_CENTER, true);
+      }
+    }
+
+    main_rt_->PopAxisAlignedClip();
 
     // Footer inside topology card
     const float fy = canvas_y + canvas_h;
     t.line(x, fy, x + w, fy, palette::kSoftHairline, 0.8F);
-    const std::string layout_val =
-        selected != nullptr
-            ? (selected->device_name + " · " +
-               display_position_short_label(selected->position))
-            : ("主屏" + display_position_short_label(state_.position));
-    const std::string spec_val =
-        (selected != nullptr && !selected->stream_summary.empty())
-            ? selected->stream_summary
-            : (!state_.stream_summary.empty() ? state_.stream_summary
-                                              : state_.source);
 
-    t.draw_text(state_.active_sessions.size() > 1 ? "选中副屏" : "当前布局",
-                D2D1::RectF(x + 14.0F, fy + 8.0F, x + 90.0F, fy + 26.0F),
-                f_ui_11_.Get(), palette::kInkMuted);
-    t.draw_text(layout_val,
-                D2D1::RectF(x + 90.0F, fy + 8.0F, x + w - 14.0F, fy + 26.0F),
-                f_ui_11_b_.Get(), palette::kCrimson,
-                DWRITE_TEXT_ALIGNMENT_TRAILING,
-                DWRITE_PARAGRAPH_ALIGNMENT_NEAR, true);
+    if (active_sel != nullptr) {
+      const std::string left_lbl = "#" +
+                                   std::to_string(active_sel->index_number) +
+                                   " " + topology_role_label(*active_sel);
+      t.draw_text(left_lbl,
+                  D2D1::RectF(x + 14.0F, fy + 7.0F, x + 150.0F, fy + 24.0F),
+                  f_ui_10_b_.Get(), palette::kInkMuted,
+                  DWRITE_TEXT_ALIGNMENT_LEADING,
+                  DWRITE_PARAGRAPH_ALIGNMENT_NEAR, true);
+      t.draw_text(active_sel->name,
+                  D2D1::RectF(x + 150.0F, fy + 7.0F, x + w - 14.0F, fy + 24.0F),
+                  f_ui_11_b_.Get(),
+                  active_sel->is_deskmate_virtual ? palette::kCrimson
+                                                  : palette::kInk,
+                  DWRITE_TEXT_ALIGNMENT_TRAILING,
+                  DWRITE_PARAGRAPH_ALIGNMENT_NEAR, true);
 
-    t.draw_text(state_.auto_virtual_display ? "显示规格" : "输入源",
-                D2D1::RectF(x + 14.0F, fy + 28.0F, x + 90.0F, fy + 46.0F),
-                f_ui_11_.Get(), palette::kInkMuted);
-    t.draw_text(spec_val,
-                D2D1::RectF(x + 90.0F, fy + 28.0F, x + w - 14.0F, fy + 46.0F),
-                f_mono_10_.Get(), palette::kInkSecondary,
-                DWRITE_TEXT_ALIGNMENT_TRAILING,
-                DWRITE_PARAGRAPH_ALIGNMENT_NEAR, true);
+      const std::string coord_txt =
+          "坐标 (" + std::to_string(static_cast<int>(std::llround(active_sel->x))) +
+          ", " + std::to_string(static_cast<int>(std::llround(active_sel->y))) +
+          ")";
+      const std::string spec_txt =
+          active_sel->is_ghost_preview
+              ? (!state_.stream_summary.empty()
+                     ? state_.stream_summary
+                     : (state_.auto_virtual_display ? "按设备比例自动匹配"
+                                                    : state_.source))
+              : (std::to_string(active_sel->pixel_width) + "×" +
+                 std::to_string(active_sel->pixel_height) + " @ " +
+                 std::to_string(active_sel->refresh_hz) + "Hz");
+      t.draw_text(coord_txt,
+                  D2D1::RectF(x + 14.0F, fy + 25.0F, x + 155.0F, fy + 42.0F),
+                  f_mono_10_.Get(), palette::kInkMuted,
+                  DWRITE_TEXT_ALIGNMENT_LEADING,
+                  DWRITE_PARAGRAPH_ALIGNMENT_NEAR, true);
+      t.draw_text(spec_txt,
+                  D2D1::RectF(x + 155.0F, fy + 25.0F, x + w - 14.0F, fy + 42.0F),
+                  f_mono_10_.Get(), palette::kInkSecondary,
+                  DWRITE_TEXT_ALIGNMENT_TRAILING,
+                  DWRITE_PARAGRAPH_ALIGNMENT_NEAR, true);
+    }
 
+    float hint_y = fy + 45.0F;
     if (streaming && state_.live_fps > 0) {
       char perf[64]{};
       const std::string rate_txt = format_bitrate_mbps(state_.live_bitrate_mbps);
@@ -1815,14 +1966,23 @@ class StudioWindowController {
         std::snprintf(perf, sizeof(perf), "%d FPS", state_.live_fps);
       }
       t.draw_text(state_.active_sessions.size() > 1 ? "总输出" : "实时输出",
-                  D2D1::RectF(x + 14.0F, fy + 48.0F, x + 90.0F, fy + 66.0F),
+                  D2D1::RectF(x + 14.0F, fy + 44.0F, x + 90.0F, fy + 61.0F),
                   f_ui_11_.Get(), palette::kInkMuted);
       t.draw_text(perf,
-                  D2D1::RectF(x + 90.0F, fy + 48.0F, x + w - 14.0F, fy + 66.0F),
+                  D2D1::RectF(x + 90.0F, fy + 44.0F, x + w - 14.0F, fy + 61.0F),
                   f_mono_11_b_.Get(), palette::kCrimson,
                   DWRITE_TEXT_ALIGNMENT_TRAILING,
                   DWRITE_PARAGRAPH_ALIGNMENT_NEAR, true);
+      hint_y = fy + 63.0F;
     }
+
+    t.draw_text(
+        topo_swap_preview_ ? "松手将交换两块屏幕的排列顺序"
+                           : "拖动屏幕可调整排列位置与顺序，松手自动吸附生效",
+        D2D1::RectF(x + 14.0F, hint_y, x + w - 14.0F, hint_y + 16.0F),
+        f_ui_10_.Get(),
+        topo_swap_preview_ ? palette::kCrimson : palette::kInkMuted,
+        DWRITE_TEXT_ALIGNMENT_LEADING, DWRITE_PARAGRAPH_ALIGNMENT_NEAR, true);
 
     t.stroke_round(card, 4.0F, palette::kHairline, 0.85F);
 
@@ -2121,7 +2281,7 @@ class StudioWindowController {
                         f_mono_9_.Get(), f_ui_11_b_.Get());
     y += 22.0F;
     const float ctrl_top = y;
-    const float ctrl_h = 54.0F + 54.0F + 78.0F;
+    const float ctrl_h = 54.0F + 54.0F + 78.0F + 72.0F;
     const D2D1_RECT_F ctrl_r =
         D2D1::RectF(x, ctrl_top, x + w, ctrl_top + ctrl_h);
     t.fill_round(ctrl_r, 4.0F, palette::kCardSurface);
@@ -2157,6 +2317,24 @@ class StudioWindowController {
                                 controller_.set_default_position(p);
                                 refresh_now();
                               });
+    y += 45.0F;
+    t.line(x, y, x + w, y, palette::kSoftHairline, 0.8F);
+
+    t.draw_text("画面帧率",
+                D2D1::RectF(x + 14.0F, y + 9.0F, x + 120.0F, y + 27.0F),
+                f_ui_12_b_.Get(), palette::kInk);
+    t.draw_text(
+        fps_status_subtitle(state_.preferred_refresh_hz,
+                            state_.negotiated_refresh_hz),
+        D2D1::RectF(x + 120.0F, y + 10.0F, x + w - 14.0F, y + 27.0F),
+        f_ui_10_.Get(),
+        state_.preferred_refresh_hz > 0 ? palette::kCrimson : palette::kInkMuted,
+        DWRITE_TEXT_ALIGNMENT_TRAILING, DWRITE_PARAGRAPH_ALIGNMENT_NEAR, true);
+    draw_fps_segment_bar(t, x + 14.0F, y + 32.0F, w - 28.0F,
+                         state_.preferred_refresh_hz, [this](int hz) {
+                           controller_.set_preferred_refresh_hz(hz);
+                           refresh_now();
+                         });
     t.stroke_round(ctrl_r, 4.0F, palette::kHairline, 0.85F);
     return ctrl_top + ctrl_h + 12.0F;
   }
@@ -2592,7 +2770,7 @@ class StudioWindowController {
         (!state_.auto_virtual_display && !state_.choices.empty())
             ? (36.0F + static_cast<float>(state_.choices.size()) * 36.0F)
             : 0.0F;
-    const float disp_h = 54.0F + 72.0F + choices_h + 48.0F;
+    const float disp_h = 54.0F + 72.0F + 72.0F + choices_h + 48.0F;
     t.fill_round(D2D1::RectF(x, disp_top, x + w, disp_top + disp_h), 4.0F,
                  palette::kCardSurface);
     y = draw_toggle_row(
@@ -2616,6 +2794,24 @@ class StudioWindowController {
                                 controller_.set_default_position(p);
                                 refresh_now();
                               });
+    y += 72.0F;
+    t.line(x, y, x + w, y, palette::kSoftHairline, 0.8F);
+
+    t.draw_text("画面帧率",
+                D2D1::RectF(x + 14.0F, y + 9.0F, x + 120.0F, y + 27.0F),
+                f_ui_12_b_.Get(), palette::kInk);
+    t.draw_text(
+        fps_status_subtitle(state_.preferred_refresh_hz,
+                            state_.negotiated_refresh_hz),
+        D2D1::RectF(x + 120.0F, y + 10.0F, x + w - 14.0F, y + 27.0F),
+        f_ui_10_.Get(),
+        state_.preferred_refresh_hz > 0 ? palette::kCrimson : palette::kInkMuted,
+        DWRITE_TEXT_ALIGNMENT_TRAILING, DWRITE_PARAGRAPH_ALIGNMENT_NEAR, true);
+    draw_fps_segment_bar(t, x + 14.0F, y + 32.0F, w - 28.0F,
+                         state_.preferred_refresh_hz, [this](int hz) {
+                           controller_.set_preferred_refresh_hz(hz);
+                           refresh_now();
+                         });
     y += 72.0F;
 
     if (!state_.auto_virtual_display && !state_.choices.empty()) {
@@ -2773,8 +2969,9 @@ class StudioWindowController {
     const float top_row_h = show_prog ? 72.0F : 58.0F;
     const float notes_h = show_notes ? 42.0F : 0.0F;
     const float mirror_row_h = editing_mirror_ ? 72.0F : 56.0F;
+    const float legacy_row_h = 56.0F;
     const float upd_top = y;
-    const float upd_h = top_row_h + notes_h + 54.0F + mirror_row_h;
+    const float upd_h = top_row_h + notes_h + 54.0F + mirror_row_h + legacy_row_h;
     t.fill_round(D2D1::RectF(x, upd_top, x + w, upd_top + upd_h), 4.0F,
                  palette::kCardSurface);
 
@@ -2931,6 +3128,57 @@ class StudioWindowController {
           [this, cur = upd.mirror_prefix] { begin_mirror_edit(cur); },
           62.0F);
     }
+    y += mirror_row_h;
+    t.line(x, y, x + w, y, palette::kSoftHairline, 0.8F);
+
+    std::string legacy_badge = "已清理";
+    Tone legacy_tone = Tone::Positive;
+    if (upd.legacy_file_count > 0) {
+      char sz_buf[32]{};
+      if (upd.legacy_total_bytes >= 1024ULL * 1024ULL) {
+        std::snprintf(sz_buf, sizeof(sz_buf), "%.1f MB",
+                      static_cast<double>(upd.legacy_total_bytes) /
+                          (1024.0 * 1024.0));
+      } else if (upd.legacy_total_bytes >= 1024ULL) {
+        std::snprintf(sz_buf, sizeof(sz_buf), "%.1f KB",
+                      static_cast<double>(upd.legacy_total_bytes) / 1024.0);
+      } else {
+        std::snprintf(sz_buf, sizeof(sz_buf), "%llu B",
+                      static_cast<unsigned long long>(upd.legacy_total_bytes));
+      }
+      legacy_badge =
+          std::to_string(upd.legacy_file_count) + " 个残留 · " + sz_buf;
+      legacy_tone = Tone::Warning;
+    }
+    t.draw_text("旧版本文件清理",
+                D2D1::RectF(x + 14.0F, y + 9.0F, x + 132.0F, y + 27.0F),
+                f_ui_12_b_.Get(), palette::kInk);
+    draw_status_badge(t, x + 126.0F, y + 8.0F, legacy_badge, legacy_tone,
+                      f_ui_10_b_.Get());
+    const std::string legacy_sub =
+        !upd.legacy_cleanup_message.empty()
+            ? upd.legacy_cleanup_message
+            : (upd.legacy_file_count > 0
+                   ? "检测到旧版 .old/.bak 或历史更新临时文件，点击右侧按钮可一键清除"
+                   : "更新替换时会自动清除旧版本与临时缓存；当前无残留旧文件");
+    t.draw_text(legacy_sub,
+                D2D1::RectF(x + 14.0F, y + 30.0F, x + w - 134.0F, y + 49.0F),
+                f_ui_11_.Get(), palette::kInkMuted,
+                DWRITE_TEXT_ALIGNMENT_LEADING, DWRITE_PARAGRAPH_ALIGNMENT_NEAR,
+                true);
+    if (upd.legacy_file_count > 0) {
+      draw_primary_button(t, x + w - 124.0F, y + 13.0F, "一键清理旧文件",
+                          f_ui_11_b_.Get(), [this] {
+                            controller_.cleanup_legacy_update_files();
+                            refresh_now();
+                          }, 110.0F);
+    } else {
+      draw_secondary_button(t, x + w - 124.0F, y + 14.0F, "一键清理旧文件",
+                            f_ui_11_.Get(), [this] {
+                              controller_.cleanup_legacy_update_files();
+                              refresh_now();
+                            }, 110.0F);
+    }
 
     t.stroke_round(D2D1::RectF(x, upd_top, x + w, upd_top + upd_h), 4.0F,
                    palette::kHairline, 0.85F);
@@ -3005,6 +3253,47 @@ class StudioWindowController {
                           display_position_short_label(poses[i]),
                           current == poses[i], f_ui_11_b_.Get(),
                           [on_pick, p = poses[i]] { on_pick(p); });
+    }
+  }
+
+  static std::string fps_status_subtitle(int preferred_hz, int negotiated_hz) {
+    if (preferred_hz <= 0) {
+      if (negotiated_hz > 0) {
+        return "跟随设备协商（当前 " + std::to_string(negotiated_hz) + " Hz）";
+      }
+      return "默认跟随设备协商帧率";
+    }
+    if (preferred_hz >= 90) {
+      return "实验性高帧率（部分设备可能卡顿，建议 60 Hz）";
+    }
+    if (negotiated_hz > 0) {
+      return "手动锁定 " + std::to_string(preferred_hz) + " Hz（协商 " +
+             std::to_string(negotiated_hz) + " Hz）";
+    }
+    return "手动锁定 " + std::to_string(preferred_hz) + " Hz";
+  }
+
+  void draw_fps_segment_bar(const RenderTarget& t, float x, float y, float w,
+                            int current_hz, std::function<void(int)> on_pick) {
+    struct Option {
+      int hz;
+      const char* label;
+    };
+    const Option opts[] = {
+        {0, "自动"},
+        {30, "30Hz"},
+        {60, "60Hz"},
+        {90, "90Hz 实验"},
+        {120, "120Hz 实验"},
+    };
+    const float gap = 6.0F;
+    const float seg_w = (w - gap * 4.0F) / 5.0F;
+    for (int i = 0; i < 5; ++i) {
+      const float sx = x + i * (seg_w + gap);
+      draw_segment_option(t, D2D1::RectF(sx, y, sx + seg_w, y + 28.0F),
+                          opts[i].label, current_hz == opts[i].hz,
+                          f_ui_11_b_.Get(),
+                          [on_pick, hz = opts[i].hz] { on_pick(hz); });
     }
   }
 
@@ -3309,10 +3598,14 @@ class StudioWindowController {
       case WM_GETMINMAXINFO: {
         auto* mmi = reinterpret_cast<MINMAXINFO*>(lp);
         const float s = dpi_scale(hwnd);
-        mmi->ptMinTrackSize.x = static_cast<LONG>(std::lround(900.0F * s));
+        mmi->ptMinTrackSize.x = static_cast<LONG>(std::lround(920.0F * s));
         mmi->ptMinTrackSize.y = static_cast<LONG>(std::lround(600.0F * s));
         return 0;
       }
+      case WM_DISPLAYCHANGE:
+        controller_.refresh_displays();
+        refresh_now();
+        return 0;
       case WM_DPICHANGED: {
         main_brush_.Reset();
         main_rt_.Reset();
@@ -3353,6 +3646,47 @@ class StudioWindowController {
         const float s = dpi_scale(hwnd);
         main_mouse_x_ = static_cast<float>(GET_X_LPARAM(lp)) / s;
         main_mouse_y_ = static_cast<float>(GET_Y_LPARAM(lp)) / s;
+        if (main_mouse_down_ && topo_drag_candidate_id_ != 0) {
+          const float dx = main_mouse_x_ - topo_drag_press_x_;
+          const float dy = main_mouse_y_ - topo_drag_press_y_;
+          if (!topo_dragging_ && std::hypot(dx, dy) >= 4.0F) {
+            topo_dragging_ = true;
+            topo_selected_display_id_ = topo_drag_candidate_id_;
+            for (const auto& item : topo_drag_start_) {
+              if (item.id == topo_drag_candidate_id_ && item.link_id != 0) {
+                controller_.select_link(item.link_id);
+                break;
+              }
+            }
+          }
+          if (topo_dragging_) {
+            for (const auto& orig : topo_drag_start_) {
+              if (orig.id == topo_drag_candidate_id_) {
+                const double scale_safe = std::max(topo_viewport_.scale, 1e-6);
+                const double cand_x = orig.x + static_cast<double>(dx) / scale_safe;
+                const double cand_y = orig.y + static_cast<double>(dy) / scale_safe;
+                auto snap = snap_dragged_display(
+                    topo_drag_start_, topo_drag_candidate_id_, cand_x, cand_y);
+                topo_preview_ = std::move(snap.items);
+                topo_guides_ = std::move(snap.guides);
+                topo_swap_preview_ = snap.is_swap;
+                break;
+              }
+            }
+            SetCursor(LoadCursorW(nullptr, IDC_SIZEALL));
+            InvalidateRect(hwnd, nullptr, FALSE);
+            return 0;
+          }
+        }
+        bool over_tile = false;
+        if (point_in_rect(main_mouse_x_, main_mouse_y_, topo_canvas_rect_)) {
+          for (const auto& tr : topo_tile_rects_) {
+            if (point_in_rect(main_mouse_x_, main_mouse_y_, tr.second)) {
+              over_tile = true;
+              break;
+            }
+          }
+        }
         bool over_hit = false;
         for (const auto& h : main_hits_) {
           if (point_in_rect(main_mouse_x_, main_mouse_y_, h.rect)) {
@@ -3360,7 +3694,8 @@ class StudioWindowController {
             break;
           }
         }
-        SetCursor(LoadCursorW(nullptr, over_hit ? IDC_HAND : IDC_ARROW));
+        SetCursor(LoadCursorW(
+            nullptr, over_tile ? IDC_SIZEALL : (over_hit ? IDC_HAND : IDC_ARROW)));
         InvalidateRect(hwnd, nullptr, FALSE);
         return 0;
       }
@@ -3369,6 +3704,20 @@ class StudioWindowController {
         main_mouse_x_ = static_cast<float>(GET_X_LPARAM(lp)) / s;
         main_mouse_y_ = static_cast<float>(GET_Y_LPARAM(lp)) / s;
         main_mouse_down_ = true;
+        topo_drag_candidate_id_ = 0;
+        topo_dragging_ = false;
+        if (point_in_rect(main_mouse_x_, main_mouse_y_, topo_canvas_rect_)) {
+          for (auto it = topo_tile_rects_.rbegin(); it != topo_tile_rects_.rend();
+               ++it) {
+            if (point_in_rect(main_mouse_x_, main_mouse_y_, it->second)) {
+              topo_drag_candidate_id_ = it->first;
+              topo_drag_press_x_ = main_mouse_x_;
+              topo_drag_press_y_ = main_mouse_y_;
+              topo_drag_start_ = topo_base_items_;
+              break;
+            }
+          }
+        }
         SetCapture(hwnd);
         InvalidateRect(hwnd, nullptr, FALSE);
         return 0;
@@ -3380,6 +3729,60 @@ class StudioWindowController {
         const bool was_down = main_mouse_down_;
         main_mouse_down_ = false;
         ReleaseCapture();
+        if (topo_drag_candidate_id_ != 0) {
+          const std::uint32_t did = topo_drag_candidate_id_;
+          const bool was_dragging = topo_dragging_;
+          topo_drag_candidate_id_ = 0;
+          topo_dragging_ = false;
+          if (was_dragging && !topo_preview_.empty()) {
+            if (did == kGhostPreviewDisplayId) {
+              const TopologyDisplayItem* primary = nullptr;
+              const TopologyDisplayItem* ghost = nullptr;
+              for (const auto& item : topo_preview_) {
+                if (item.is_primary) primary = &item;
+                if (item.is_ghost_preview) ghost = &item;
+              }
+              if (primary != nullptr && ghost != nullptr) {
+                const int code = infer_cardinal_position_code(*primary, *ghost);
+                controller_.set_default_position(
+                    static_cast<DisplayPosition>(std::clamp(code, 0, 3)));
+              }
+            } else {
+              std::vector<TopologyDisplayItem> real_items;
+              for (const auto& item : topo_preview_) {
+                if (!item.is_ghost_preview) {
+                  real_items.push_back(item);
+                }
+              }
+              const auto normalized = normalize_to_primary_origin(real_items);
+              std::vector<MonitorPlacement> placements;
+              placements.reserve(normalized.size());
+              for (const auto& item : normalized) {
+                MonitorPlacement mp;
+                mp.handle = item.handle;
+                mp.device_name = item.device_name;
+                mp.left = static_cast<int>(std::llround(item.x));
+                mp.top = static_cast<int>(std::llround(item.y));
+                mp.primary = item.is_primary;
+                placements.push_back(std::move(mp));
+              }
+              controller_.apply_display_layout(placements);
+            }
+          } else {
+            topo_selected_display_id_ = did;
+            for (const auto& item : topo_drag_start_) {
+              if (item.id == did && item.link_id != 0) {
+                controller_.select_link(item.link_id);
+                break;
+              }
+            }
+          }
+          topo_preview_.clear();
+          topo_guides_.clear();
+          topo_swap_preview_ = false;
+          refresh_now();
+          return 0;
+        }
         if (was_down) {
           // Iterate in reverse so inner buttons win over enclosing cards.
           for (auto it = main_hits_.rbegin(); it != main_hits_.rend(); ++it) {
@@ -3522,6 +3925,8 @@ class StudioWindowController {
   HWND popover_hwnd_{nullptr};
   HWND rename_edit_{nullptr};
   HWND mirror_edit_{nullptr};
+  HICON app_icon_big_{nullptr};
+  HICON app_icon_small_{nullptr};
   HICON tray_hicon_{nullptr};
   bool tray_added_{false};
   bool last_tray_linked_{false};
@@ -3555,6 +3960,20 @@ class StudioWindowController {
   D2D1_RECT_F right_viewport_rect_{};
   float right_scroll_y_{0.0F};
   float right_max_scroll_{0.0F};
+
+  D2D1_RECT_F topo_canvas_rect_{};
+  TopologyViewport topo_viewport_{};
+  std::vector<TopologyDisplayItem> topo_base_items_;
+  std::vector<TopologyDisplayItem> topo_drag_start_;
+  std::vector<TopologyDisplayItem> topo_preview_;
+  std::vector<TopologyGuideLine> topo_guides_;
+  std::vector<std::pair<std::uint32_t, D2D1_RECT_F>> topo_tile_rects_;
+  std::uint32_t topo_selected_display_id_{0};
+  std::uint32_t topo_drag_candidate_id_{0};
+  bool topo_dragging_{false};
+  bool topo_swap_preview_{false};
+  float topo_drag_press_x_{0.0F};
+  float topo_drag_press_y_{0.0F};
 };
 
 }  // namespace

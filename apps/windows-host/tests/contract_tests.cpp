@@ -1,12 +1,17 @@
 #include "deskmate/platform/session_profile.hpp"
 #include "deskmate/windows/aoa_links.hpp"
+#include "deskmate/windows/capture_encoder.hpp"
+#include "deskmate/windows/display_topology.hpp"
 #include "deskmate/windows/host_session.hpp"
 #include "deskmate/windows/host_state.hpp"
 #include "deskmate/windows/input_injector.hpp"
+#include "deskmate/windows/updater.hpp"
 #include "deskmate/windows/virtual_display.hpp"
 
+#include <cmath>
 #include <cstdio>
 #include <filesystem>
+#include <fstream>
 #include <limits>
 #include <memory>
 #include <string>
@@ -272,6 +277,7 @@ void test_settings_store_round_trip() {
     store.prefs().default_position = DisplayPosition::Left;
     store.prefs().allow_input = false;
     store.prefs().touch_input_mode = TouchInputMode::VirtualTrackpad;
+    store.prefs().preferred_refresh_hz = 90;
     store.prefs().auto_start_service = false;
     store.prefs().preferred_monitor_name = "\\\\.\\DISPLAY2";
     store.record_seen_device("usb:SN123", "HUAWEI MatePad", "HUAWEI", "SN123",
@@ -288,6 +294,7 @@ void test_settings_store_round_trip() {
     CHECK(reloaded.prefs().default_position == DisplayPosition::Left);
     CHECK(!reloaded.prefs().allow_input);
     CHECK(reloaded.prefs().touch_input_mode == TouchInputMode::VirtualTrackpad);
+    CHECK(reloaded.prefs().preferred_refresh_hz == 90);
     CHECK(!reloaded.prefs().auto_start_service);
     CHECK(reloaded.prefs().preferred_monitor_name == "\\\\.\\DISPLAY2");
     CHECK(reloaded.prefs().paired_devices.size() == 1U);
@@ -412,6 +419,180 @@ void test_virtual_display_adapter_matching_and_mode_selection() {
   CHECK(!status.driver_installed);
 }
 
+void test_display_topology_snap_swap_and_normalize() {
+  using namespace deskmate::windows;
+  TopologyDisplayItem p;
+  p.id = 1;
+  p.index_number = 1;
+  p.name = "Primary";
+  p.x = 0.0;
+  p.y = 0.0;
+  p.width = 1920.0;
+  p.height = 1080.0;
+  p.is_primary = true;
+
+  TopologyDisplayItem ext1;
+  ext1.id = 2;
+  ext1.index_number = 2;
+  ext1.name = "Physical";
+  ext1.x = 1920.0;
+  ext1.y = 0.0;
+  ext1.width = 2560.0;
+  ext1.height = 1440.0;
+
+  TopologyDisplayItem ext2;
+  ext2.id = 3;
+  ext2.index_number = 3;
+  ext2.name = "MatePad";
+  ext2.x = 4480.0;
+  ext2.y = 100.0;
+  ext2.width = 1400.0;
+  ext2.height = 920.0;
+  ext2.is_virtual = true;
+  ext2.is_deskmate_virtual = true;
+
+  const std::vector<TopologyDisplayItem> all = {p, ext1, ext2};
+
+  // Viewport maps bounding box cleanly inside canvas.
+  const auto vp = compute_topology_viewport(all, 368.0, 248.0, 20.0);
+  CHECK(vp.scale > 0.0 && vp.scale < 1.0);
+  CHECK(vp.to_canvas_x(0.0) >= 19.0);
+  CHECK(vp.to_canvas_x(5880.0) <= 349.0);
+
+  // Magnetic snapping aligns top edge when dragged near Primary's left side.
+  const auto snapped_left =
+      snap_dragged_display(all, 3, -1420.0, 25.0, 90.0);
+  CHECK(!snapped_left.is_swap);
+  CHECK(std::abs(snapped_left.items[2].x - (-1400.0)) < 1.0);
+  CHECK(std::abs(snapped_left.items[2].y - 0.0) < 1.0);
+
+  // Dropping ext2 onto the center of ext1 swaps their order without overlap.
+  const auto swapped = snap_dragged_display(
+      all, 3, ext1.x + ext1.width * 0.5 - ext2.width * 0.5,
+      ext1.y + ext1.height * 0.5 - ext2.height * 0.5, 90.0);
+  CHECK(swapped.is_swap);
+  for (std::size_t i = 0; i < swapped.items.size(); ++i) {
+    for (std::size_t j = i + 1; j < swapped.items.size(); ++j) {
+      const auto& a = swapped.items[i];
+      const auto& b = swapped.items[j];
+      const double ix =
+          std::min(a.max_x(), b.max_x()) - std::max(a.x, b.x);
+      const double iy =
+          std::min(a.max_y(), b.max_y()) - std::max(a.y, b.y);
+      CHECK(!(ix > 0.5 && iy > 0.5));
+    }
+  }
+
+  // Dragging primary screen moves it and normalization restores primary to (0,0).
+  auto moved_primary = snap_dragged_display(all, 1, 2200.0, -1080.0, 90.0);
+  const auto norm = normalize_to_primary_origin(moved_primary.items);
+  CHECK(std::abs(norm[0].x - 0.0) < 1e-6);
+  CHECK(std::abs(norm[0].y - 0.0) < 1e-6);
+  CHECK(infer_cardinal_position_code(norm[0], norm[1]) == 0 ||
+        infer_cardinal_position_code(norm[0], norm[1]) == 1 ||
+        infer_cardinal_position_code(norm[0], norm[1]) == 2 ||
+        infer_cardinal_position_code(norm[0], norm[1]) == 3);
+}
+
+void test_legacy_update_artifact_scan_and_cleanup() {
+  using namespace deskmate::windows;
+  const auto root =
+      std::filesystem::temp_directory_path() / "deskmate_legacy_cleanup_test";
+  std::error_code ec;
+  std::filesystem::remove_all(root, ec);
+  const auto app_dir = root / "app";
+  const auto tmp_dir = root / "tmp";
+  std::filesystem::create_directories(app_dir, ec);
+  std::filesystem::create_directories(tmp_dir / "DeskMateUpdate-999999", ec);
+  std::filesystem::create_directories(tmp_dir / "UnrelatedTemp", ec);
+
+  auto write_dummy = [](const std::filesystem::path& p, const std::string& s) {
+    std::ofstream out(p, std::ios::binary);
+    out << s;
+  };
+
+  const auto cur_exe = app_dir / "DeskMateHost.exe";
+  write_dummy(cur_exe, "current");
+  write_dummy(app_dir / "DeskMateHost.exe.old", "old-exe-backup");
+  write_dummy(app_dir / "DeskMateHost.exe.bak", "bak-exe-backup");
+  write_dummy(app_dir / "DeskMateHost-v1.2.0.exe", "old-version-exe");
+  write_dummy(app_dir / "DeskMate-v1.2.0-windows-x64.zip", "old-zip");
+  write_dummy(app_dir / "settings.json", "{}");
+  write_dummy(app_dir / "README.txt", "keep");
+  write_dummy(tmp_dir / "DeskMateUpdate-999999" / "update.zip", "stale-zip");
+
+  const auto scanned = scan_legacy_update_files_in_dirs(
+      app_dir, cur_exe, tmp_dir, 123456);
+  CHECK(scanned.size() == 5U);
+
+  const auto summary = cleanup_legacy_update_files_in_dirs(
+      app_dir, cur_exe, tmp_dir, 123456);
+  CHECK(summary.scanned_count == 5U);
+  CHECK(summary.deleted_count == 5U);
+  CHECK(summary.failed_count == 0U);
+  CHECK(std::filesystem::exists(cur_exe));
+  CHECK(std::filesystem::exists(app_dir / "settings.json"));
+  CHECK(std::filesystem::exists(app_dir / "README.txt"));
+  CHECK(std::filesystem::exists(tmp_dir / "UnrelatedTemp"));
+  CHECK(!std::filesystem::exists(app_dir / "DeskMateHost.exe.old"));
+  CHECK(!std::filesystem::exists(app_dir / "DeskMateHost.exe.bak"));
+  CHECK(!std::filesystem::exists(app_dir / "DeskMateHost-v1.2.0.exe"));
+  CHECK(!std::filesystem::exists(app_dir / "DeskMate-v1.2.0-windows-x64.zip"));
+  CHECK(!std::filesystem::exists(tmp_dir / "DeskMateUpdate-999999"));
+
+  std::filesystem::remove_all(root, ec);
+}
+
+void test_frame_rate_and_bitrate_policy() {
+  using namespace deskmate::windows;
+
+  CHECK(normalize_preferred_refresh_hz(0) == 0);
+  CHECK(normalize_preferred_refresh_hz(30) == 30);
+  CHECK(normalize_preferred_refresh_hz(60) == 60);
+  CHECK(normalize_preferred_refresh_hz(90) == 90);
+  CHECK(normalize_preferred_refresh_hz(120) == 120);
+  CHECK(normalize_preferred_refresh_hz(75) == 0);
+  CHECK(normalize_preferred_refresh_hz(-10) == 0);
+
+  CHECK(resolve_effective_refresh_hz(0, 120, 60) == 120);
+  CHECK(resolve_effective_refresh_hz(0, 0, 60) == 60);
+  CHECK(resolve_advertised_refresh_hz(0, false, 60) == 60);
+  CHECK(resolve_advertised_refresh_hz(90, false, 60) == 90);
+  CHECK(resolve_advertised_refresh_hz(0, true, 120) == 120);
+  CHECK(async_input_wait_budget_ms(30) == 0);
+  CHECK(async_input_wait_budget_ms(60) == 0);
+  CHECK(async_input_wait_budget_ms(120) == 0);
+  CHECK(resolve_effective_refresh_hz(90, 60, 60) == 90);
+  CHECK(resolve_effective_refresh_hz(120, 60, 60) == 120);
+  CHECK(resolve_effective_refresh_hz(45, 90, 60) == 90);
+
+  const auto bps_hevc_60 = compute_target_bitrate_bps(2800, 1840, 60, true);
+  const auto bps_hevc_120 = compute_target_bitrate_bps(2800, 1840, 120, true);
+  const auto bps_h264_60 = compute_target_bitrate_bps(1920, 1200, 60, false);
+  const auto bps_low = compute_target_bitrate_bps(640, 480, 30, true);
+  CHECK(bps_low == 4'000'000U);
+  CHECK(bps_hevc_60 >= 4'000'000U && bps_hevc_60 <= 18'000'000U);
+  CHECK(bps_hevc_120 >= bps_hevc_60 && bps_hevc_120 <= 18'000'000U);
+  CHECK(bps_h264_60 >= 4'000'000U && bps_h264_60 <= 18'000'000U);
+
+  // SettingsStore must sanitize unknown refresh values back to 0 (Auto).
+#ifdef _WIN32
+  const std::string tmp =
+      (std::filesystem::temp_directory_path() / "deskmate_test_bad_fps.json")
+          .string();
+#else
+  const std::string tmp = "/tmp/deskmate_test_bad_fps.json";
+#endif
+  {
+    std::ofstream bad(tmp, std::ios::binary | std::ios::trunc);
+    bad << "{\"preferred_refresh_hz\": 75}\n";
+  }
+  SettingsStore store(tmp);
+  CHECK(store.prefs().preferred_refresh_hz == 0);
+  std::error_code ec;
+  std::filesystem::remove(tmp, ec);
+}
+
 }  // namespace
 
 int main() {
@@ -425,6 +606,9 @@ int main() {
   test_session_link_restart_increments_reconnects();
   test_session_link_pumps_terminal_transport_and_reports_error();
   test_virtual_display_adapter_matching_and_mode_selection();
+  test_display_topology_snap_swap_and_normalize();
+  test_legacy_update_artifact_scan_and_cleanup();
+  test_frame_rate_and_bitrate_policy();
   if (failures != 0) {
     return 1;
   }

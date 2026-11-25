@@ -72,6 +72,7 @@ void SessionLink::start_new_session(std::uint32_t video_stream_id,
   capture_intent_.store(false, std::memory_order_release);
   input_intent_.store(false, std::memory_order_release);
   requested_idr_.store(0, std::memory_order_release);
+  idr_wait_rejects_.store(0, std::memory_order_relaxed);
   session_ = std::move(next);
 }
 
@@ -118,11 +119,13 @@ LinkStats SessionLink::stats() const {
   stats.frames_submitted = submitted_.load(std::memory_order_relaxed);
   stats.frames_sent = sent_.load(std::memory_order_relaxed);
   stats.frames_dropped = dropped_.load(std::memory_order_relaxed);
+  stats.idr_wait_rejects = idr_wait_rejects_.load(std::memory_order_relaxed);
   stats.input_events = input_events_.load(std::memory_order_relaxed);
   if (transport_ != nullptr) {
     stats.rx_bytes = transport_->rx_bytes();
     stats.tx_bytes = transport_->tx_bytes();
     stats.bulk_errors = transport_->bulk_errors();
+    stats.write_timeouts = transport_->write_timeouts();
   }
   return stats;
 }
@@ -212,17 +215,10 @@ void SessionLink::submit_video(std::vector<std::uint8_t> annex_b,
       dropped_.fetch_add(video_queue_.size(), std::memory_order_relaxed);
       video_queue_.clear();
     } else {
-      // Backlog: drop the oldest non-keyframe so the device can still recover
-      // from the next IDR instead of playing an ever-staler GOP.
-      const auto victim = std::find_if(
-          video_queue_.begin(), video_queue_.end(),
-          [](const PendingVideo& frame) { return !frame.keyframe; });
-      if (victim != video_queue_.end()) {
-        video_queue_.erase(victim);
-      } else {
-        video_queue_.pop_front();
-      }
+      // Keep the queued GOP intact. Removing an older P-frame while sending
+      // its successors guarantees a discontinuity at the device decoder.
       dropped_.fetch_add(1, std::memory_order_relaxed);
+      return;
     }
   }
   video_queue_.push_back(
@@ -283,9 +279,10 @@ void SessionLink::pump() {
         session_->send_video_frame(frame.bytes, frame.pts_us, frame.keyframe);
     if (status == deskmate::protocol::VideoSendStatus::Sent) {
       sent_.fetch_add(1, std::memory_order_relaxed);
+    } else if (status == deskmate::protocol::VideoSendStatus::IdrRequired) {
+      idr_wait_rejects_.fetch_add(1, std::memory_order_relaxed);
     } else if (status != deskmate::protocol::VideoSendStatus::NotStreaming &&
-               status != deskmate::protocol::VideoSendStatus::Paused &&
-               status != deskmate::protocol::VideoSendStatus::IdrRequired) {
+               status != deskmate::protocol::VideoSendStatus::Paused) {
       dropped_.fetch_add(1, std::memory_order_relaxed);
     }
   }

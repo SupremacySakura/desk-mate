@@ -6,7 +6,7 @@ BUILD_DIR := $(ROOT)/build
 MODULE_CACHE := $(BUILD_DIR)/module-cache
 APP := $(BUILD_DIR)/DeskMate.app
 BIN := $(APP)/Contents/MacOS/DeskMate
-VERSION ?= 1.3.0
+VERSION ?= 1.4.0
 ARCH := $(shell uname -m)
 DMG := $(BUILD_DIR)/DeskMate-v$(VERSION)-macos-$(ARCH).dmg
 APP_ZIP := $(BUILD_DIR)/DeskMate-v$(VERSION)-macos-$(ARCH).zip
@@ -128,6 +128,10 @@ app: build
 
 dmg: app
 	@bash "$(ROOT)/scripts/package-dmg.sh" "$(APP)" "$(DMG)" "$(LIBUSB_PREFIX)" "DeskMate" "$(APP_ZIP)"
+	@mkdir -p "$(REPO)/dist/macos"
+	@cp -f "$(DMG)" "$(REPO)/dist/macos/"
+	@cp -f "$(APP_ZIP)" "$(REPO)/dist/macos/"
+	@printf 'Copied macOS packages to %s\n' "$(REPO)/dist/macos/"
 
 zip: dmg
 

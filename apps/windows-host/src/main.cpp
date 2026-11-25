@@ -22,6 +22,7 @@ deskmate::windows::HostOptions parse_options(int argc, char** argv,
                                              bool& show_help) {
   deskmate::windows::HostOptions options;
   std::string cleanup_old_path;
+  std::uint32_t cleanup_pid = 0;
   show_help = false;
   for (int index = 1; index < argc; ++index) {
     const std::string arg = argv[index];
@@ -33,6 +34,7 @@ deskmate::windows::HostOptions parse_options(int argc, char** argv,
       options.size_explicit = true;
     } else if (arg == "--fps" && index + 1 < argc) {
       options.refresh_hz = static_cast<std::uint16_t>(std::stoi(argv[++index]));
+      options.refresh_hz_explicit = true;
     } else if (arg == "--codec" && index + 1 < argc) {
       options.hevc = std::string(argv[++index]) != "h264";
       options.codec_explicit = true;
@@ -46,11 +48,14 @@ deskmate::windows::HostOptions parse_options(int argc, char** argv,
       options.headless = true;
     } else if (arg == "--cleanup-old" && index + 1 < argc) {
       cleanup_old_path = argv[++index];
+    } else if (arg == "--cleanup-pid" && index + 1 < argc) {
+      cleanup_pid = static_cast<std::uint32_t>(std::stoul(argv[++index]));
     } else if (arg == "--help" || arg == "-h") {
       show_help = true;
     }
   }
-  deskmate::windows::cleanup_old_executable_if_present(cleanup_old_path);
+  deskmate::windows::cleanup_old_executable_if_present(cleanup_old_path,
+                                                       cleanup_pid);
   return options;
 }
 

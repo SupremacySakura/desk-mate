@@ -23,6 +23,8 @@ struct LinkStats {
   std::uint64_t frames_submitted{};
   std::uint64_t frames_sent{};
   std::uint64_t frames_dropped{};
+  std::uint64_t idr_wait_rejects{};
+  std::uint64_t write_timeouts{};
   std::uint64_t input_events{};
   std::uint64_t bulk_errors{};
 };
@@ -36,6 +38,7 @@ class LinkTransport : public deskmate::protocol::ByteIo {
   [[nodiscard]] virtual std::uint64_t rx_bytes() const { return 0; }
   [[nodiscard]] virtual std::uint64_t tx_bytes() const { return 0; }
   [[nodiscard]] virtual std::uint64_t bulk_errors() const { return 0; }
+  [[nodiscard]] virtual std::uint64_t write_timeouts() const { return 0; }
   [[nodiscard]] virtual std::string last_error() const { return {}; }
   virtual void set_rx_callback(std::function<void()>) {}
   [[nodiscard]] virtual bool consume_write_blocked() noexcept { return false; }

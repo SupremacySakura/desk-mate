@@ -192,7 +192,18 @@ Windows 没有像 macOS `CGVirtualDisplay` 那样的系统级用户态虚拟显�
      > **注意**：请勿将个人的 `signingConfigs` 提交进 `apps/harmonyos-client/build-profile.json5`。
   4. 点击 **Run (`entry`)**，将 DeskMate 安装到你想作为副屏使用的每台鸿蒙设备上。
 
-#### 第三步：完成系统权限与驱动准备
+#### 第三步：本地打包产物存放目录约定
+
+所有本地编译打包后的最终安装包统一存放在 `dist/<platform>/` 下（切勿放在仓库根目录），中间编译缓存留在各端 `build/` 目录：
+
+| 平台 | 最终交付目录 | 典型产物 | 中间构建目录 |
+| --- | --- | --- | --- |
+| **Windows Host** | `dist/windows/` | `DeskMateHost.exe`、`DeskMate-v*-windows-x64.zip` | `build/` 或 `apps/windows-host/build/` |
+| **macOS Host** | `dist/macos/` | `DeskMate-v*-macos-*.dmg`、`DeskMate-v*-macos-*.zip` | `apps/macos-host/build/` |
+| **Android Client** | `dist/android/` | `DeskMate-v*-android-debug.apk` | `apps/android-client/app/build/` |
+| **HarmonyOS Client** | `dist/harmonyos/` | `DeskMate-v*-harmonyos-*.hap` | `apps/harmonyos-client/entry/build/` |
+
+#### 第四步：完成系统权限与驱动准备
 
 - **macOS**：按界面引导授予 **屏幕录制权限**（用于 `ScreenCaptureKit`）与 **辅助功能权限**（用于反向触控；点主窗口或菜单栏 **「一键获取」**，覆写重编后如失效点 **「重置旧授权」**）。
 - **Windows**：完成上方 **[Windows 端首次配置指南](#windows-端首次配置指南必读)** 中的 **Zadig WinUSB 绑定** 与 **Parsec VDD 安装**，并在 DeskMate **「设置 → 系统环境与驱动」** 确认全绿就绪。

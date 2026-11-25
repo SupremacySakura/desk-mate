@@ -103,6 +103,7 @@ class SessionLink final : public LinkSession {
   std::atomic<std::uint64_t> submitted_{0};
   std::atomic<std::uint64_t> sent_{0};
   std::atomic<std::uint64_t> dropped_{0};
+  std::atomic<std::uint64_t> idr_wait_rejects_{0};
   std::atomic<std::uint64_t> input_events_{0};
   std::atomic<std::uint64_t> reconnects_{0};
   std::atomic<std::uint32_t> requested_idr_{0};

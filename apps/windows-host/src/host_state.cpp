@@ -1,4 +1,5 @@
 #include "deskmate/windows/host_state.hpp"
+#include "deskmate/windows/capture_encoder.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -489,6 +490,8 @@ bool SettingsStore::load() {
   prefs_.allow_input = root.get_bool("allow_input", prefs_.allow_input);
   prefs_.touch_input_mode =
       touch_mode_from_id(root.get_string("touch_input_mode", "compatible_gestures"));
+  prefs_.preferred_refresh_hz = normalize_preferred_refresh_hz(
+      static_cast<int>(root.get_i64("preferred_refresh_hz", 0)));
   prefs_.auto_start_service =
       root.get_bool("auto_start_service", prefs_.auto_start_service);
   prefs_.auto_check_updates =
@@ -541,6 +544,8 @@ bool SettingsStore::save() const {
       << ",\n";
   out << "  \"touch_input_mode\": \""
       << touch_mode_id(prefs_.touch_input_mode) << "\",\n";
+  out << "  \"preferred_refresh_hz\": " << prefs_.preferred_refresh_hz
+      << ",\n";
   out << "  \"auto_start_service\": "
       << (prefs_.auto_start_service ? "true" : "false") << ",\n";
   out << "  \"auto_check_updates\": "

@@ -4,6 +4,7 @@ project(deskmate_windows_host LANGUAGES CXX)
 
 add_library(deskmate_windows_link STATIC
     src/aoa_links.cpp
+    src/display_topology.cpp
     src/host_state.cpp
     src/libusb_aoa.cpp
     src/virtual_display.cpp
@@ -35,6 +36,7 @@ else()
 endif()
 
 if(WIN32)
+    enable_language(RC)
     add_executable(DeskMateHost WIN32
         src/main.cpp
         src/capture_encoder.cpp
@@ -42,6 +44,10 @@ if(WIN32)
         src/input_injector.cpp
         src/studio_ui.cpp
         src/updater.cpp
+        resources/DeskMateHost.rc
+    )
+    target_include_directories(DeskMateHost PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/resources
     )
     target_link_libraries(DeskMateHost PRIVATE
         deskmate_windows_link

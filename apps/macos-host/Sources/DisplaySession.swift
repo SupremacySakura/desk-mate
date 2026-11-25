@@ -1,3 +1,4 @@
+import AppKit
 import CoreGraphics
 import Foundation
 
@@ -107,6 +108,99 @@ enum DisplayInventory {
                     CGDisplayMirrorsDisplay(id) != kCGNullDirectDisplay) ? "true" : "false"
             )
         }
+    }
+
+    static func snapshotTopologyDisplays(
+        sessions: [ActiveDisplaySessionState]
+    ) -> [TopologyDisplayItem] {
+        let mainID = CGMainDisplayID()
+        let activeIDs = onlineDisplayIDs().filter { id in
+            CGDisplayIsActive(id) != 0 &&
+            CGDisplayIsInMirrorSet(id) == 0 &&
+            CGDisplayMirrorsDisplay(id) == kCGNullDirectDisplay
+        }
+        let sessionsByDisplayID: [UInt32: ActiveDisplaySessionState] = Dictionary(
+            uniqueKeysWithValues: sessions.compactMap { s in
+                guard let did = s.displayID else { return nil }
+                return (did, s)
+            }
+        )
+        let screenNamesByID: [UInt32: String] = Dictionary(
+            uniqueKeysWithValues: NSScreen.screens.compactMap { screen in
+                guard let num = screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber else {
+                    return nil
+                }
+                return (num.uint32Value, screen.localizedName)
+            }
+        )
+
+        var rawItems: [TopologyDisplayItem] = []
+        for id in activeIDs {
+            let bounds = CGDisplayBounds(id)
+            guard bounds.width > 0, bounds.height > 0 else { continue }
+            let mode = CGDisplayCopyDisplayMode(id)
+            let isPrimary = (id == mainID) || (CGDisplayIsMain(id) != 0)
+            let matched = sessionsByDisplayID[id]
+            let isDeskMate = (matched != nil)
+            let fallbackName = isPrimary ? "Mac 主屏" : (screenNamesByID[id] ?? "显示器 \(id)")
+            let title = matched?.deviceName ?? fallbackName
+            let isVirtualFlag = isDeskMate || (CGDisplayVendorNumber(id) == 0x0D53)
+
+            rawItems.append(TopologyDisplayItem(
+                id: id,
+                indexNumber: 1,
+                name: title,
+                x: Double(bounds.origin.x),
+                y: Double(bounds.origin.y),
+                width: Double(bounds.width),
+                height: Double(bounds.height),
+                pixelWidth: mode?.pixelWidth ?? Int(bounds.width),
+                pixelHeight: mode?.pixelHeight ?? Int(bounds.height),
+                refreshHz: mode?.refreshRate ?? 60.0,
+                isPrimary: isPrimary,
+                isVirtual: isVirtualFlag,
+                isDeskMateVirtual: isDeskMate,
+                isGhostPreview: false,
+                linkID: matched?.linkID,
+                streaming: matched?.streaming ?? false,
+                liveFps: matched?.liveFps ?? 0
+            ))
+        }
+
+        // Deterministic numbering: primary = 1, others sorted left-to-right then top-to-bottom.
+        let sorted = rawItems.sorted { lhs, rhs in
+            if lhs.isPrimary != rhs.isPrimary { return lhs.isPrimary }
+            if abs(lhs.x - rhs.x) > 8.0 { return lhs.x < rhs.x }
+            if abs(lhs.y - rhs.y) > 8.0 { return lhs.y < rhs.y }
+            return lhs.id < rhs.id
+        }
+        return sorted.enumerated().map { idx, item in
+            var copy = item
+            copy.indexNumber = idx + 1
+            return copy
+        }
+    }
+
+    @discardableResult
+    static func applyDisplayLayout(_ origins: [(displayID: UInt32, origin: CGPoint)]) -> Bool {
+        guard !origins.isEmpty else { return false }
+        var config: CGDisplayConfigRef?
+        guard CGBeginDisplayConfiguration(&config) == .success, let config else {
+            return false
+        }
+        for item in origins {
+            let err = CGConfigureDisplayOrigin(
+                config,
+                item.displayID,
+                Int32(item.origin.x.rounded()),
+                Int32(item.origin.y.rounded())
+            )
+            if err != .success {
+                CGCancelDisplayConfiguration(config)
+                return false
+            }
+        }
+        return CGCompleteDisplayConfiguration(config, .forSession) == .success
     }
 }
 
@@ -253,10 +347,22 @@ final class DisplaySession {
         let mainBounds = CGDisplayBounds(mainID)
         guard !entries.isEmpty, mainBounds.width > 0, mainBounds.height > 0 else { return }
 
+        let managedIDs = Set(entries.map { $0.session.info.displayID })
+        var fixedBounds = mainBounds
+        for id in DisplayInventory.onlineDisplayIDs() where !managedIDs.contains(id) {
+            guard CGDisplayIsActive(id) != 0,
+                  CGDisplayIsInMirrorSet(id) == 0,
+                  CGDisplayMirrorsDisplay(id) == kCGNullDirectDisplay else { continue }
+            let b = CGDisplayBounds(id)
+            if b.width > 0, b.height > 0 {
+                fixedBounds = fixedBounds.union(b)
+            }
+        }
+
         var origins: [(displayID: UInt32, origin: CGPoint)] = []
 
         let rightEntries = entries.filter { $0.position == .right }
-        var cursorX = mainBounds.maxX
+        var cursorX = fixedBounds.maxX
         for entry in rightEntries {
             let bounds = CGDisplayBounds(entry.session.info.displayID)
             guard bounds.width > 0, bounds.height > 0 else { continue }
@@ -266,7 +372,7 @@ final class DisplaySession {
         }
 
         let leftEntries = entries.filter { $0.position == .left }
-        var leftEdgeX = mainBounds.minX
+        var leftEdgeX = fixedBounds.minX
         for entry in leftEntries {
             let bounds = CGDisplayBounds(entry.session.info.displayID)
             guard bounds.width > 0, bounds.height > 0 else { continue }
@@ -280,9 +386,9 @@ final class DisplaySession {
         if !topEntries.isEmpty {
             let boundsList = topEntries.map { CGDisplayBounds($0.session.info.displayID) }
             let totalWidth = boundsList.reduce(CGFloat(0)) { $0 + $1.width }
-            var currentX = mainBounds.midX - totalWidth / 2.0
+            var currentX = fixedBounds.midX - totalWidth / 2.0
             for (entry, bounds) in zip(topEntries, boundsList) where bounds.width > 0 && bounds.height > 0 {
-                let originY = mainBounds.minY - bounds.height
+                let originY = fixedBounds.minY - bounds.height
                 origins.append((entry.session.info.displayID, CGPoint(x: currentX, y: originY)))
                 currentX += bounds.width
             }
@@ -292,9 +398,9 @@ final class DisplaySession {
         if !bottomEntries.isEmpty {
             let boundsList = bottomEntries.map { CGDisplayBounds($0.session.info.displayID) }
             let totalWidth = boundsList.reduce(CGFloat(0)) { $0 + $1.width }
-            var currentX = mainBounds.midX - totalWidth / 2.0
+            var currentX = fixedBounds.midX - totalWidth / 2.0
             for (entry, bounds) in zip(bottomEntries, boundsList) where bounds.width > 0 && bounds.height > 0 {
-                let originY = mainBounds.maxY
+                let originY = fixedBounds.maxY
                 origins.append((entry.session.info.displayID, CGPoint(x: currentX, y: originY)))
                 currentX += bounds.width
             }

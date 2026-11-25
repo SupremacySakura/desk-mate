@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <functional>
 #include <memory>
+#include <span>
 #include <string>
 #include <utility>
 #include <vector>
@@ -58,6 +59,7 @@ class CaptureEncoder {
   [[nodiscard]] virtual bool running() const = 0;
   [[nodiscard]] virtual std::uint64_t encoded_frame_count() const { return 0; }
   [[nodiscard]] virtual std::uint64_t received_frame_count() const { return 0; }
+  [[nodiscard]] virtual std::string status_summary() const { return {}; }
 };
 
 [[nodiscard]] std::unique_ptr<CaptureEncoder> make_capture_encoder();
@@ -75,5 +77,45 @@ class CaptureEncoder {
 // 0 = Right, 1 = Left, 2 = Top, 3 = Bottom.
 bool arrange_extended_monitors(
     const std::vector<std::pair<std::uintptr_t, int>>& monitor_positions);
+
+struct MonitorPlacement {
+  std::uintptr_t handle{};
+  std::string device_name;
+  int left{};
+  int top{};
+  bool primary{false};
+};
+
+// Atomically applies custom multi-monitor desktop positions normalized to the
+// primary display at (0, 0).
+bool apply_monitor_layout(const std::vector<MonitorPlacement>& placements);
+
+// Normalizes a user-selected refresh rate preference (0 = auto/negotiated,
+// or 30/60/90/120 Hz); unrecognized values collapse to 0 (auto).
+[[nodiscard]] int normalize_preferred_refresh_hz(int hz) noexcept;
+
+// Resolves the active capture refresh rate from user preference, device
+// negotiated refresh rate, and host fallback.
+[[nodiscard]] int resolve_effective_refresh_hz(int preferred_hz,
+                                                 int negotiated_hz,
+                                                 int fallback_hz = 60) noexcept;
+
+// Auto mode keeps the proven 60 Hz USB baseline. Users can still opt into a
+// higher rate explicitly through the UI or --fps.
+[[nodiscard]] int resolve_advertised_refresh_hz(int preferred_hz,
+                                                bool explicit_fallback,
+                                                int fallback_hz) noexcept;
+[[nodiscard]] int async_input_wait_budget_ms(int fps) noexcept;
+
+// Computes a target H.264/HEVC bitrate sized to avoid overflowing the 12 KiB
+// x 64 fragment USB keyframe budget while preserving clarity at high FPS.
+[[nodiscard]] std::uint32_t compute_target_bitrate_bps(int width, int height,
+                                                       int fps,
+                                                       bool hevc) noexcept;
+
+// Returns true when an Annex-B access unit contains at least one coded slice
+// (VCL NAL unit), distinguishing real frames from parameter-set-only packets.
+[[nodiscard]] bool annex_b_has_vcl_nal(std::span<const std::uint8_t> annex_b,
+                                       bool hevc) noexcept;
 
 }  // namespace deskmate::windows

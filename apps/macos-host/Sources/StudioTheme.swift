@@ -391,13 +391,16 @@ struct StudioFlatActionStyle: ButtonStyle {
     }
 }
 
-/// Interactive spatial dual-display monitor arranger card.
-/// Shows the Mac primary screen at center and lets the user click any cardinal side
-/// (top, bottom, left, right) to position virtual extended HarmonyOS displays.
+/// Oink-inspired interactive proportional multi-display topology canvas.
+/// Renders all physical and DeskMate virtual displays at true relative sizes,
+/// supports dragging to reposition or swap/reorder screens with magnetic edge snapping,
+/// and applies normalized OS display coordinates on drop.
 struct SpatialDisplayArrangerView: View {
+    @ObservedObject var interaction: TopologyInteractionModel
     let linked: Bool
     let streaming: Bool
     let position: DisplayPosition
+    var displays: [TopologyDisplayItem] = []
     var sessions: [ActiveDisplaySessionState] = []
     var selectedLinkID: UInt64? = nil
     let autoVirtualDisplay: Bool
@@ -407,26 +410,97 @@ struct SpatialDisplayArrangerView: View {
     let liveBitrateMbps: Double
     let onSelectPosition: (DisplayPosition) -> Void
     var onSelectSession: (UInt64) -> Void = { _ in }
+    var onApplyLayout: ([(displayID: UInt32, origin: CGPoint)]) -> Void = { _ in }
+    var onRefreshDisplays: () -> Void = {}
 
-    private var selectedSession: ActiveDisplaySessionState? {
-        if let selectedLinkID, let match = sessions.first(where: { $0.linkID == selectedLinkID }) {
+    private var baseItems: [TopologyDisplayItem] {
+        var list = displays
+        if list.isEmpty {
+            list = [
+                TopologyDisplayItem(
+                    id: 1,
+                    indexNumber: 1,
+                    name: "Mac 主屏",
+                    x: 0,
+                    y: 0,
+                    width: 1728,
+                    height: 1117,
+                    pixelWidth: 3456,
+                    pixelHeight: 2234,
+                    refreshHz: 120,
+                    isPrimary: true,
+                    isVirtual: false,
+                    isDeskMateVirtual: false
+                )
+            ]
+        }
+        // When no device is connected and auto virtual display is enabled, show a draggable preview tile.
+        if sessions.isEmpty && autoVirtualDisplay && !list.contains(where: \.isDeskMateVirtual) {
+            let primary = list.first(where: \.isPrimary) ?? list[0]
+            var bbMinX = primary.x
+            var bbMinY = primary.y
+            var bbMaxX = primary.maxX
+            var bbMaxY = primary.maxY
+            for d in list {
+                bbMinX = min(bbMinX, d.x)
+                bbMinY = min(bbMinY, d.y)
+                bbMaxX = max(bbMaxX, d.maxX)
+                bbMaxY = max(bbMaxY, d.maxY)
+            }
+            let gw = max(900.0, (primary.width * 0.72).rounded())
+            let gh = max(600.0, (primary.height * 0.72).rounded())
+            let gx: Double
+            let gy: Double
+            switch position {
+            case .right:
+                gx = bbMaxX
+                gy = primary.y + (primary.height - gh) * 0.5
+            case .left:
+                gx = bbMinX - gw
+                gy = primary.y + (primary.height - gh) * 0.5
+            case .top:
+                gx = primary.x + (primary.width - gw) * 0.5
+                gy = bbMinY - gh
+            case .bottom:
+                gx = primary.x + (primary.width - gw) * 0.5
+                gy = bbMaxY
+            }
+            list.append(TopologyDisplayItem(
+                id: DisplayTopologySolver.ghostDisplayID,
+                indexNumber: list.count + 1,
+                name: "副屏预览",
+                x: gx,
+                y: gy,
+                width: gw,
+                height: gh,
+                pixelWidth: 0,
+                pixelHeight: 0,
+                refreshHz: 60,
+                isPrimary: false,
+                isVirtual: true,
+                isDeskMateVirtual: true,
+                isGhostPreview: true
+            ))
+        }
+        return list
+    }
+
+    private var renderedItems: [TopologyDisplayItem] {
+        (interaction.draggedDisplayID != nil && !interaction.previewItems.isEmpty) ? interaction.previewItems : baseItems
+    }
+
+    private var activeSelectedItem: TopologyDisplayItem? {
+        if let selectedLinkID, let match = renderedItems.first(where: { $0.linkID == selectedLinkID }) {
             return match
         }
-        return sessions.first
+        if let selectedDisplayID = interaction.selectedDisplayID, let match = renderedItems.first(where: { $0.id == selectedDisplayID }) {
+            return match
+        }
+        return renderedItems.first(where: \.isDeskMateVirtual) ?? renderedItems.first(where: \.isPrimary) ?? renderedItems.first
     }
 
-    private func sessions(at slot: DisplayPosition) -> [ActiveDisplaySessionState] {
-        if sessions.isEmpty {
-            return []
-        }
-        return sessions.filter { $0.position == slot }
-    }
-
-    private func isOccupied(_ slot: DisplayPosition) -> Bool {
-        if sessions.isEmpty {
-            return slot == position
-        }
-        return sessions.contains { $0.position == slot }
+    private var physicalCount: Int {
+        baseItems.filter { !$0.isGhostPreview }.count
     }
 
     var body: some View {
@@ -437,7 +511,7 @@ struct SpatialDisplayArrangerView: View {
                     Rectangle()
                         .fill(streaming ? StudioPalette.crimson : (linked ? StudioPalette.champagne : StudioPalette.inkMuted))
                         .frame(width: 5, height: 5)
-                    Text("TOPOLOGY // 副屏拓扑布局")
+                    Text("TOPOLOGY // 多屏拓扑布局")
                         .font(.system(size: 9.5, weight: .semibold, design: .monospaced))
                         .tracking(1.0)
                         .foregroundStyle(StudioPalette.inkMuted)
@@ -445,7 +519,7 @@ struct SpatialDisplayArrangerView: View {
 
                 Spacer(minLength: 6)
 
-                Text(autoVirtualDisplay ? (sessions.count > 1 ? "\(sessions.count) 台独立屏" : "自动虚拟屏") : "物理/指定源")
+                Text("\(physicalCount) 块屏幕")
                     .font(.system(size: 10, weight: .medium))
                     .foregroundStyle(StudioPalette.inkSecondary)
                     .padding(.horizontal, 7)
@@ -458,6 +532,25 @@ struct SpatialDisplayArrangerView: View {
                         RoundedRectangle(cornerRadius: 2, style: .continuous)
                             .stroke(StudioPalette.hairline, lineWidth: 0.6)
                     )
+
+                Button {
+                    onRefreshDisplays()
+                } label: {
+                    Image(systemName: "arrow.clockwise")
+                        .font(.system(size: 9.5, weight: .semibold))
+                        .foregroundStyle(StudioPalette.inkSecondary)
+                        .frame(width: 20, height: 20)
+                        .background(
+                            RoundedRectangle(cornerRadius: 2, style: .continuous)
+                                .fill(StudioPalette.subtleSurface)
+                        )
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 2, style: .continuous)
+                                .stroke(StudioPalette.hairline, lineWidth: 0.6)
+                        )
+                }
+                .buttonStyle(.plain)
+                .help("刷新当前连接的显示器拓扑")
             }
             .padding(.horizontal, 14)
             .padding(.top, 10)
@@ -467,111 +560,155 @@ struct SpatialDisplayArrangerView: View {
                 .fill(StudioPalette.softHairline)
                 .frame(height: 0.75)
 
-            // Interactive 3x3 Spatial Canvas
-            ZStack {
-                // Background precision crosshair + orthogonal USB bridge lines
-                Canvas { context, size in
-                    let cx = size.width / 2
-                    let cy = size.height / 2
+            // Interactive Proportional Multi-Display Canvas
+            GeometryReader { geo in
+                let items = renderedItems
+                let viewportSource = (interaction.draggedDisplayID != nil && !interaction.dragStartItems.isEmpty) ? interaction.dragStartItems : items
+                let viewport = DisplayTopologySolver.computeViewport(
+                    displays: viewportSource,
+                    canvasSize: geo.size,
+                    padding: 20.0
+                )
 
-                    // Corner registration ticks (studio calibration aesthetic, no decorative clutter)
-                    let inset: CGFloat = 10
-                    let tick: CGFloat = 6
-                    var corners = Path()
-                    // Top-left
-                    corners.move(to: CGPoint(x: inset, y: inset + tick))
-                    corners.addLine(to: CGPoint(x: inset, y: inset))
-                    corners.addLine(to: CGPoint(x: inset + tick, y: inset))
-                    // Top-right
-                    corners.move(to: CGPoint(x: size.width - inset - tick, y: inset))
-                    corners.addLine(to: CGPoint(x: size.width - inset, y: inset))
-                    corners.addLine(to: CGPoint(x: size.width - inset, y: inset + tick))
-                    // Bottom-left
-                    corners.move(to: CGPoint(x: inset, y: size.height - inset - tick))
-                    corners.addLine(to: CGPoint(x: inset, y: size.height - inset))
-                    corners.addLine(to: CGPoint(x: inset + tick, y: size.height - inset))
-                    // Bottom-right
-                    corners.move(to: CGPoint(x: size.width - inset - tick, y: size.height - inset))
-                    corners.addLine(to: CGPoint(x: size.width - inset, y: size.height - inset))
-                    corners.addLine(to: CGPoint(x: size.width - inset, y: size.height - inset - tick))
-                    context.stroke(corners, with: .color(StudioPalette.hairline), lineWidth: 0.75)
+                ZStack(alignment: .topLeading) {
+                    NonWindowDraggingOverlay()
 
-                    // Subtle orthogonal dashed axis through center
-                    var axes = Path()
-                    axes.move(to: CGPoint(x: 20, y: cy))
-                    axes.addLine(to: CGPoint(x: size.width - 20, y: cy))
-                    axes.move(to: CGPoint(x: cx, y: 14))
-                    axes.addLine(to: CGPoint(x: cx, y: size.height - 14))
-                    context.stroke(
-                        axes,
-                        with: .color(StudioPalette.softHairline),
-                        style: StrokeStyle(lineWidth: 0.75, dash: [2.5, 3.5])
-                    )
-
-                    // Active USB data bridge lines between Mac box and every occupied slot
-                    for slot in DisplayPosition.allCases where isOccupied(slot) {
-                        let slotItems = sessions(at: slot)
-                        let hasSelected = slotItems.contains { $0.linkID == selectedSession?.linkID }
-                        let slotStreaming = slotItems.contains(where: \.streaming) || (sessions.isEmpty && streaming)
-                        let slotLinked = !slotItems.isEmpty || (sessions.isEmpty && linked)
-                        let bridgeColor: Color
-                        if hasSelected && (slotStreaming || slotLinked) {
-                            bridgeColor = StudioPalette.crimson
-                        } else if slotStreaming {
-                            bridgeColor = StudioPalette.crimson
-                        } else if slotLinked {
-                            bridgeColor = StudioPalette.champagne
-                        } else {
-                            bridgeColor = StudioPalette.inkMuted
+                    // Dot-grid & calibration corner ticks + magnetic alignment guides
+                    Canvas { context, size in
+                        let step: CGFloat = 16
+                        var gx: CGFloat = 12
+                        while gx < size.width - 8 {
+                            var gy: CGFloat = 12
+                            while gy < size.height - 8 {
+                                context.fill(
+                                    Path(CGRect(x: gx - 0.6, y: gy - 0.6, width: 1.2, height: 1.2)),
+                                    with: .color(StudioPalette.hairline.opacity(0.42))
+                                )
+                                gy += step
+                            }
+                            gx += step
                         }
 
-                        var bridge = Path()
-                        let midDot: CGPoint
-                        switch slot {
-                        case .top:
-                            bridge.move(to: CGPoint(x: cx, y: cy - 28))
-                            bridge.addLine(to: CGPoint(x: cx, y: cy - 42))
-                            midDot = CGPoint(x: cx, y: cy - 35)
-                        case .bottom:
-                            bridge.move(to: CGPoint(x: cx, y: cy + 30))
-                            bridge.addLine(to: CGPoint(x: cx, y: cy + 42))
-                            midDot = CGPoint(x: cx, y: cy + 36)
-                        case .left:
-                            bridge.move(to: CGPoint(x: cx - 47, y: cy))
-                            bridge.addLine(to: CGPoint(x: cx - 64, y: cy))
-                            midDot = CGPoint(x: cx - 55.5, y: cy)
-                        case .right:
-                            bridge.move(to: CGPoint(x: cx + 47, y: cy))
-                            bridge.addLine(to: CGPoint(x: cx + 64, y: cy))
-                            midDot = CGPoint(x: cx + 55.5, y: cy)
+                        let inset: CGFloat = 8
+                        let tick: CGFloat = 5
+                        var corners = Path()
+                        corners.move(to: CGPoint(x: inset, y: inset + tick))
+                        corners.addLine(to: CGPoint(x: inset, y: inset))
+                        corners.addLine(to: CGPoint(x: inset + tick, y: inset))
+                        corners.move(to: CGPoint(x: size.width - inset - tick, y: inset))
+                        corners.addLine(to: CGPoint(x: size.width - inset, y: inset))
+                        corners.addLine(to: CGPoint(x: size.width - inset, y: inset + tick))
+                        corners.move(to: CGPoint(x: inset, y: size.height - inset - tick))
+                        corners.addLine(to: CGPoint(x: inset, y: size.height - inset))
+                        corners.addLine(to: CGPoint(x: inset + tick, y: size.height - inset))
+                        corners.move(to: CGPoint(x: size.width - inset - tick, y: size.height - inset))
+                        corners.addLine(to: CGPoint(x: size.width - inset, y: size.height - inset))
+                        corners.addLine(to: CGPoint(x: size.width - inset, y: size.height - inset - tick))
+                        context.stroke(corners, with: .color(StudioPalette.hairline), lineWidth: 0.75)
+
+                        for guide in interaction.activeGuides {
+                            var p = Path()
+                            if guide.isHorizontal {
+                                let a = viewport.desktopToCanvas(x: guide.start, y: guide.pos)
+                                let b = viewport.desktopToCanvas(x: guide.end, y: guide.pos)
+                                p.move(to: a)
+                                p.addLine(to: b)
+                            } else {
+                                let a = viewport.desktopToCanvas(x: guide.pos, y: guide.start)
+                                let b = viewport.desktopToCanvas(x: guide.pos, y: guide.end)
+                                p.move(to: a)
+                                p.addLine(to: b)
+                            }
+                            context.stroke(
+                                p,
+                                with: .color(interaction.isSwapPreview ? StudioPalette.champagne : StudioPalette.crimson.opacity(0.7)),
+                                style: StrokeStyle(lineWidth: 1.0, dash: [3, 3])
+                            )
                         }
-                        context.stroke(bridge, with: .color(bridgeColor), lineWidth: (slotStreaming || slotLinked) ? 1.5 : 1.0)
-                        context.fill(
-                            Path(CGRect(x: midDot.x - 2.5, y: midDot.y - 2.5, width: 5, height: 5)),
-                            with: .color(bridgeColor)
+                    }
+
+                    ForEach(items) { item in
+                        let rect = viewport.desktopRectToCanvas(
+                            x: item.x,
+                            y: item.y,
+                            width: item.width,
+                            height: item.height
                         )
+                        let w = max(32.0, rect.width)
+                        let h = max(24.0, rect.height)
+                        let isDragged = (interaction.draggedDisplayID == item.id)
+                        let isSelected = (activeSelectedItem?.id == item.id)
+
+                        displayTile(item, width: w, height: h, isSelected: isSelected, isDragged: isDragged)
+                            .position(x: rect.minX + w * 0.5, y: rect.minY + h * 0.5)
+                            .zIndex(isDragged ? 10 : (isSelected ? 5 : 1))
+                            .gesture(
+                                DragGesture(minimumDistance: 3, coordinateSpace: .named("topologyCanvas"))
+                                    .onChanged { value in
+                                        if interaction.draggedDisplayID == nil {
+                                            interaction.draggedDisplayID = item.id
+                                            interaction.dragStartItems = baseItems
+                                            interaction.selectedDisplayID = item.id
+                                            if let linkID = item.linkID {
+                                                onSelectSession(linkID)
+                                            }
+                                        }
+                                        let baseList = interaction.dragStartItems.isEmpty ? baseItems : interaction.dragStartItems
+                                        guard let orig = baseList.first(where: { $0.id == item.id }) else { return }
+                                        let candX = orig.x + Double(value.translation.width) / max(viewport.scale, 1e-6)
+                                        let candY = orig.y + Double(value.translation.height) / max(viewport.scale, 1e-6)
+                                        let snapped = DisplayTopologySolver.snapDraggedDisplay(
+                                            displays: baseList,
+                                            draggedID: item.id,
+                                            candidateX: candX,
+                                            candidateY: candY
+                                        )
+                                        interaction.previewItems = snapped.items
+                                        interaction.activeGuides = snapped.guides
+                                        interaction.isSwapPreview = snapped.isSwap
+                                    }
+                                    .onEnded { _ in
+                                        let finalItems = interaction.previewItems
+                                        interaction.draggedDisplayID = nil
+                                        interaction.dragStartItems = []
+                                        interaction.previewItems = []
+                                        interaction.activeGuides = []
+                                        interaction.isSwapPreview = false
+
+                                        guard !finalItems.isEmpty else { return }
+                                        if item.isGhostPreview {
+                                            if let primary = finalItems.first(where: \.isPrimary),
+                                               let ghost = finalItems.first(where: \.isGhostPreview) {
+                                                let inferred = DisplayTopologySolver.inferCardinalPosition(primary: primary, target: ghost)
+                                                onSelectPosition(inferred)
+                                            }
+                                        } else {
+                                            let normalized = DisplayTopologySolver.normalizeToPrimaryOrigin(
+                                                finalItems.filter { !$0.isGhostPreview }
+                                            )
+                                            let payload: [(displayID: UInt32, origin: CGPoint)] = normalized.map {
+                                                ($0.id, CGPoint(x: $0.x, y: $0.y))
+                                            }
+                                            onApplyLayout(payload)
+                                        }
+                                    }
+                            )
+                            .simultaneousGesture(
+                                TapGesture().onEnded {
+                                    interaction.selectedDisplayID = item.id
+                                    if let linkID = item.linkID {
+                                        onSelectSession(linkID)
+                                    }
+                                }
+                            )
                     }
                 }
-
-                VStack(spacing: 11) {
-                    // TOP SLOT
-                    cardinalSlot(.top, width: 108, height: 42)
-
-                    // MIDDLE ROW: LEFT + MAC + RIGHT
-                    HStack(spacing: 18) {
-                        cardinalSlot(.left, width: 78, height: 56)
-                        macPrimaryBox
-                        cardinalSlot(.right, width: 78, height: 56)
-                    }
-
-                    // BOTTOM SLOT
-                    cardinalSlot(.bottom, width: 108, height: 42)
-                }
-                .padding(.vertical, 8)
+                .coordinateSpace(name: "topologyCanvas")
             }
             .frame(maxWidth: .infinity)
-            .frame(height: 204)
+            .frame(height: 248)
             .background(StudioPalette.canvasMid)
+            .clipped()
 
             Rectangle()
                 .fill(StudioPalette.softHairline)
@@ -579,33 +716,38 @@ struct SpatialDisplayArrangerView: View {
 
             // Bottom live telemetry & layout footer inside card
             VStack(alignment: .leading, spacing: 4.5) {
-                HStack(spacing: 6) {
-                    Text(sessions.count > 1 ? "选中副屏" : "当前布局")
-                        .font(.system(size: 11))
-                        .foregroundStyle(StudioPalette.inkMuted)
-                    Spacer()
-                    if let selectedSession {
-                        Text("\(selectedSession.deviceName) · \(selectedSession.position.shortLabel)")
+                if let sel = activeSelectedItem {
+                    HStack(spacing: 6) {
+                        Text("#\(sel.indexNumber) \(roleBadgeText(for: sel))")
+                            .font(.system(size: 10.5, weight: .medium))
+                            .foregroundStyle(StudioPalette.inkMuted)
+                        Spacer()
+                        Text(sel.name)
                             .font(.system(size: 11.5, weight: .semibold))
-                            .foregroundStyle(StudioPalette.crimson)
+                            .foregroundStyle(sel.isDeskMateVirtual ? StudioPalette.crimson : StudioPalette.ink)
                             .lineLimit(1)
-                    } else {
+                    }
+
+                    HStack(spacing: 6) {
+                        Text("坐标 (\(Int(sel.x.rounded())), \(Int(sel.y.rounded())))")
+                            .font(.system(size: 10.5, design: .monospaced))
+                            .foregroundStyle(StudioPalette.inkMuted)
+                        Spacer()
+                        Text(sel.isGhostPreview ? specSummary : sel.resolutionLabel)
+                            .font(.system(size: 10.5, design: .monospaced))
+                            .foregroundStyle(StudioPalette.inkSecondary)
+                            .lineLimit(1)
+                    }
+                } else {
+                    HStack(spacing: 6) {
+                        Text("当前布局")
+                            .font(.system(size: 11))
+                            .foregroundStyle(StudioPalette.inkMuted)
+                        Spacer()
                         Text("主屏\(position.shortLabel)")
                             .font(.system(size: 11.5, weight: .semibold))
                             .foregroundStyle(StudioPalette.crimson)
                     }
-                }
-
-                HStack(spacing: 6) {
-                    Text(autoVirtualDisplay ? "显示规格" : "输入源")
-                        .font(.system(size: 11))
-                        .foregroundStyle(StudioPalette.inkMuted)
-                    Spacer()
-                    Text(specSummary)
-                        .font(.system(size: 11, design: .monospaced))
-                        .foregroundStyle(StudioPalette.inkSecondary)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
                 }
 
                 if streaming && liveFps > 0 {
@@ -621,6 +763,11 @@ struct SpatialDisplayArrangerView: View {
                             .foregroundStyle(StudioPalette.crimson)
                     }
                 }
+
+                Text(interaction.isSwapPreview ? "松手将交换两块屏幕的排列顺序" : "拖动屏幕可调整排列位置与顺序，松手自动吸附生效")
+                    .font(.system(size: 10))
+                    .foregroundStyle(interaction.isSwapPreview ? StudioPalette.crimson : StudioPalette.inkMuted)
+                    .lineLimit(1)
             }
             .padding(.horizontal, 14)
             .padding(.vertical, 8.5)
@@ -634,9 +781,131 @@ struct SpatialDisplayArrangerView: View {
         )
     }
 
+    @ViewBuilder
+    private func displayTile(
+        _ item: TopologyDisplayItem,
+        width: CGFloat,
+        height: CGFloat,
+        isSelected: Bool,
+        isDragged: Bool
+    ) -> some View {
+        let fillColor: Color = {
+            if item.isGhostPreview {
+                return StudioPalette.cardSurface.opacity(0.72)
+            }
+            if item.isDeskMateVirtual {
+                return item.streaming ? StudioPalette.roseWash : StudioPalette.subtleSurface
+            }
+            return item.isPrimary ? StudioPalette.cardSurface : StudioPalette.subtleSurface
+        }()
+
+        let borderColor: Color = {
+            if isDragged {
+                return StudioPalette.crimson
+            }
+            if item.isGhostPreview {
+                return StudioPalette.hairline
+            }
+            if item.isDeskMateVirtual {
+                return (isSelected || item.streaming) ? StudioPalette.crimson : StudioPalette.roseBorder
+            }
+            if isSelected {
+                return StudioPalette.ink
+            }
+            return item.isPrimary ? StudioPalette.ink.opacity(0.75) : StudioPalette.champagne
+        }()
+
+        let badgeBg: Color = item.isDeskMateVirtual
+            ? StudioPalette.crimson
+            : (item.isPrimary ? StudioPalette.ink : StudioPalette.inkSecondary)
+
+        ZStack(alignment: .topLeading) {
+            if item.isGhostPreview {
+                RoundedRectangle(cornerRadius: 3, style: .continuous)
+                    .fill(fillColor)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 3, style: .continuous)
+                            .strokeBorder(borderColor, style: StrokeStyle(lineWidth: isDragged ? 1.4 : 0.9, dash: [3, 3]))
+                    )
+            } else {
+                RoundedRectangle(cornerRadius: 3, style: .continuous)
+                    .fill(fillColor)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 3, style: .continuous)
+                            .stroke(borderColor, lineWidth: isDragged ? 1.6 : (isSelected ? 1.35 : 0.95))
+                    )
+            }
+
+            VStack(spacing: 0) {
+                if item.isPrimary {
+                    Rectangle()
+                        .fill(StudioPalette.softHairline)
+                        .frame(height: 4)
+                }
+
+                VStack(spacing: 1.5) {
+                    HStack(spacing: 4) {
+                        Text("\(item.indexNumber)")
+                            .font(.system(size: 8.5, weight: .bold, design: .monospaced))
+                            .foregroundStyle(Color.white)
+                            .padding(.horizontal, 4)
+                            .padding(.vertical, 1)
+                            .background(
+                                RoundedRectangle(cornerRadius: 2, style: .continuous)
+                                    .fill(badgeBg)
+                            )
+
+                        if width >= 54 {
+                            Text(item.name)
+                                .font(.system(size: 9, weight: .semibold))
+                                .foregroundStyle(item.isGhostPreview ? StudioPalette.inkMuted : StudioPalette.ink)
+                                .lineLimit(1)
+                                .truncationMode(.tail)
+                        }
+
+                        Spacer(minLength: 0)
+                    }
+                    .padding(.horizontal, 4)
+                    .padding(.top, 4)
+
+                    Spacer(minLength: 0)
+
+                    if height >= 36 {
+                        let sub: String = {
+                            if item.isGhostPreview { return "拖动设定方位" }
+                            if item.streaming && item.liveFps > 0 { return "\(item.liveFps) FPS" }
+                            if item.isDeskMateVirtual { return "DeskMate 副屏" }
+                            if item.isPrimary { return "主显示器" }
+                            return "\(item.pixelWidth)×\(item.pixelHeight)"
+                        }()
+                        Text(sub)
+                            .font(.system(size: 8.5, weight: .medium, design: .monospaced))
+                            .foregroundStyle(item.isDeskMateVirtual && !item.isGhostPreview ? StudioPalette.crimson : StudioPalette.inkMuted)
+                            .lineLimit(1)
+                            .padding(.horizontal, 4)
+                            .padding(.bottom, 4)
+                    }
+                }
+            }
+            .clipShape(RoundedRectangle(cornerRadius: 3, style: .continuous))
+        }
+        .frame(width: width, height: height)
+        .shadow(color: isDragged ? Color.black.opacity(0.14) : Color.clear, radius: 5, x: 0, y: 2)
+        .contentShape(Rectangle())
+    }
+
+    private func roleBadgeText(for item: TopologyDisplayItem) -> String {
+        if item.isGhostPreview { return "副屏位置预览" }
+        if item.isDeskMateVirtual { return "DeskMate 虚拟屏" }
+        if item.isPrimary { return "Mac 主屏" }
+        if item.isVirtual { return "虚拟显示器" }
+        return "物理扩展屏"
+    }
+
     private var specSummary: String {
-        if let selectedSession, !selectedSession.streamSummary.isEmpty {
-            return selectedSession.streamSummary
+        if let selected = sessions.first(where: { $0.linkID == selectedLinkID }) ?? sessions.first,
+           !selected.streamSummary.isEmpty {
+            return selected.streamSummary
         }
         if !streamSummary.isEmpty {
             return streamSummary
@@ -645,164 +914,5 @@ struct SpatialDisplayArrangerView: View {
             return "按设备比例自动匹配 HiDPI"
         }
         return sourceLabel
-    }
-
-    private var macPrimaryBox: some View {
-        VStack(spacing: 0) {
-            ZStack(alignment: .top) {
-                RoundedRectangle(cornerRadius: StudioPalette.cornerRadius, style: .continuous)
-                    .fill(StudioPalette.cardSurface)
-                    .overlay(
-                        RoundedRectangle(cornerRadius: StudioPalette.cornerRadius, style: .continuous)
-                            .stroke(StudioPalette.ink.opacity(0.75), lineWidth: 1.0)
-                    )
-
-                VStack(spacing: 4) {
-                    // Subtle menu bar line
-                    Rectangle()
-                        .fill(StudioPalette.softHairline)
-                        .frame(height: 5)
-                        .overlay(
-                            HStack(spacing: 3) {
-                                Circle().fill(StudioPalette.inkMuted.opacity(0.55)).frame(width: 2, height: 2)
-                                Spacer()
-                            }
-                            .padding(.horizontal, 4)
-                        )
-
-                    Spacer(minLength: 2)
-
-                    Text("MAC 主屏")
-                        .font(.system(size: 10.5, weight: .semibold))
-                        .foregroundStyle(StudioPalette.ink)
-                    Text("Primary")
-                        .font(.system(size: 9, weight: .medium, design: .monospaced))
-                        .foregroundStyle(StudioPalette.inkMuted)
-
-                    Spacer(minLength: 2)
-                }
-                .clipShape(RoundedRectangle(cornerRadius: StudioPalette.cornerRadius, style: .continuous))
-            }
-            .frame(width: 92, height: 50)
-
-            // Stand stem + foot
-            Rectangle()
-                .fill(StudioPalette.hairline)
-                .frame(width: 1.5, height: 3.5)
-            Rectangle()
-                .fill(StudioPalette.inkMuted.opacity(0.75))
-                .frame(width: 24, height: 1.5)
-        }
-    }
-
-    @ViewBuilder
-    private func cardinalSlot(_ slotPosition: DisplayPosition, width: CGFloat, height: CGFloat) -> some View {
-        let slotSessions = sessions(at: slotPosition)
-        let occupied = isOccupied(slotPosition)
-        let containsSelected = slotSessions.contains { $0.linkID == selectedSession?.linkID } || (sessions.isEmpty && slotPosition == position)
-        let slotStreaming = slotSessions.contains(where: \.streaming) || (sessions.isEmpty && streaming)
-        let slotLinked = !slotSessions.isEmpty || (sessions.isEmpty && linked)
-
-        Button {
-            if !slotSessions.isEmpty {
-                if let currentSelected = selectedSession?.linkID,
-                   let idx = slotSessions.firstIndex(where: { $0.linkID == currentSelected }),
-                   slotSessions.count > 1 {
-                    let next = slotSessions[(idx + 1) % slotSessions.count]
-                    onSelectSession(next.linkID)
-                } else {
-                    onSelectSession(slotSessions[0].linkID)
-                }
-            } else {
-                onSelectPosition(slotPosition)
-            }
-        } label: {
-            if occupied {
-                let displayItem = slotSessions.first(where: { $0.linkID == selectedSession?.linkID }) ?? slotSessions.first
-                let slotTitle: String = {
-                    if slotSessions.count > 1 {
-                        return "\(slotSessions.count) 台副屏"
-                    }
-                    if let item = displayItem {
-                        return item.deviceName
-                    }
-                    return "扩展副屏"
-                }()
-                let slotSub: String = {
-                    if slotSessions.count > 1 {
-                        let sumFps = slotSessions.reduce(0) { $0 + $1.liveFps }
-                        return sumFps > 0 ? "\(sumFps) FPS" : "点击切换"
-                    }
-                    if let item = displayItem {
-                        if item.streaming && item.liveFps > 0 {
-                            return "\(item.liveFps) FPS"
-                        }
-                        return item.streaming ? "推流中" : "已连接"
-                    }
-                    return activeSlotSubtitle
-                }()
-
-                VStack(spacing: 2) {
-                    HStack(spacing: 4) {
-                        Rectangle()
-                            .fill(slotStreaming ? StudioPalette.crimson : (slotLinked ? StudioPalette.champagne : StudioPalette.inkMuted))
-                            .frame(width: 4, height: 4)
-                        Text(slotTitle)
-                            .font(.system(size: 9.5, weight: .semibold))
-                            .foregroundStyle(StudioPalette.ink)
-                            .lineLimit(1)
-                            .truncationMode(.tail)
-                    }
-                    .padding(.horizontal, 4)
-
-                    Text(slotSub)
-                        .font(.system(size: 9, weight: .medium, design: .monospaced))
-                        .foregroundStyle((slotStreaming || slotLinked) ? StudioPalette.crimson : StudioPalette.inkMuted)
-                        .lineLimit(1)
-                }
-                .frame(width: width, height: height)
-                .background(
-                    RoundedRectangle(cornerRadius: StudioPalette.cornerRadius, style: .continuous)
-                        .fill(slotStreaming ? StudioPalette.roseWash : (slotLinked ? StudioPalette.subtleSurface : StudioPalette.cardSurface))
-                )
-                .overlay(
-                    RoundedRectangle(cornerRadius: StudioPalette.cornerRadius, style: .continuous)
-                        .stroke(
-                            containsSelected ? ((slotStreaming || slotLinked) ? StudioPalette.crimson : StudioPalette.ink) : StudioPalette.champagne,
-                            lineWidth: containsSelected ? 1.3 : 1.0
-                        )
-                )
-            } else {
-                VStack(spacing: 1) {
-                    Text("+ \(slotPosition.shortLabel)")
-                        .font(.system(size: 10, weight: .medium))
-                        .foregroundStyle(StudioPalette.inkMuted)
-                }
-                .frame(width: width, height: height)
-                .background(
-                    RoundedRectangle(cornerRadius: StudioPalette.cornerRadius, style: .continuous)
-                        .fill(StudioPalette.cardSurface.opacity(0.65))
-                )
-                .overlay(
-                    RoundedRectangle(cornerRadius: StudioPalette.cornerRadius, style: .continuous)
-                        .strokeBorder(StudioPalette.hairline, style: StrokeStyle(lineWidth: 0.75, dash: [3, 3]))
-                )
-            }
-        }
-        .buttonStyle(.plain)
-        .help(occupied ? "点击选中主屏\(slotPosition.shortLabel)的设备" : "将当前副屏放置于主屏\(slotPosition.shortLabel)")
-    }
-
-    private var activeSlotSubtitle: String {
-        if streaming && liveFps > 0 {
-            return "\(liveFps) FPS"
-        }
-        if streaming {
-            return "推流中"
-        }
-        if linked {
-            return "已连接"
-        }
-        return position.shortLabel
     }
 }

@@ -596,6 +596,32 @@ std::uintptr_t VirtualDisplayManager::create_display(std::uint64_t link_id,
 #endif
 }
 
+bool VirtualDisplayManager::apply_display_mode(std::uintptr_t monitor_handle,
+                                                 int width, int height,
+                                                 int refresh_hz,
+                                                 std::string& log_out) {
+  log_out.clear();
+#ifdef _WIN32
+  if (monitor_handle == 0 || width <= 0 || height <= 0 || refresh_hz <= 0) {
+    return false;
+  }
+  if (parsec_handle_ != nullptr) {
+    register_parsec_custom_resolution(width, height, refresh_hz);
+    (void)parsec_vdd_ioctl(static_cast<HANDLE>(parsec_handle_),
+                           kVddIoctlUpdate, nullptr, 0, nullptr);
+  }
+  apply_best_mode_for_monitor(monitor_handle, width, height, refresh_hz,
+                              log_out);
+  return !log_out.empty();
+#else
+  (void)monitor_handle;
+  (void)width;
+  (void)height;
+  (void)refresh_hz;
+  return false;
+#endif
+}
+
 void VirtualDisplayManager::destroy_display(std::uint64_t link_id) {
 #ifdef _WIN32
   std::lock_guard lock(mutex_);

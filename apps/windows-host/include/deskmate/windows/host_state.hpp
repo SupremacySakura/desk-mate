@@ -1,5 +1,6 @@
 #pragma once
 
+#include "deskmate/windows/display_topology.hpp"
 #include "deskmate/windows/input_injector.hpp"
 #include "deskmate/windows/updater.hpp"
 
@@ -45,6 +46,7 @@ struct HostPreferences {
   DisplayPosition default_position{DisplayPosition::Right};
   bool allow_input{true};
   TouchInputMode touch_input_mode{TouchInputMode::CompatibleGestures};
+  int preferred_refresh_hz{0};
   bool auto_start_service{true};
   bool auto_check_updates{true};
   std::string update_mirror_prefix;
@@ -148,6 +150,7 @@ struct HostUiState {
 
   std::vector<PairedDevice> paired_devices;
   std::vector<ActiveSessionView> active_sessions;
+  std::vector<TopologyDisplayItem> topology_displays;
   std::uint64_t selected_link_id{0};
   std::set<std::string> connected_device_ids;
   std::string connected_device_id;
@@ -168,6 +171,8 @@ struct HostUiState {
 
   bool auto_virtual_display{true};
   DisplayPosition position{DisplayPosition::Right};
+  int preferred_refresh_hz{0};
+  int negotiated_refresh_hz{0};
   int live_fps{0};
   double live_bitrate_mbps{0.0};
   std::uint64_t input_event_count{0};

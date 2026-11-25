@@ -70,6 +70,8 @@ class VirtualDisplayManager {
   [[nodiscard]] std::uintptr_t create_display(std::uint64_t link_id, int width,
                                               int height, int refresh_hz,
                                               std::string& log_out);
+  bool apply_display_mode(std::uintptr_t monitor_handle, int width, int height,
+                          int refresh_hz, std::string& log_out);
 
   void destroy_display(std::uint64_t link_id);
   void destroy_all();

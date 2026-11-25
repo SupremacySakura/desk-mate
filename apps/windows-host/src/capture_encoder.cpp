@@ -1,13 +1,91 @@
 #include "deskmate/windows/capture_encoder.hpp"
+#include "deskmate/platform/annex_b.hpp"
 #include "deskmate/windows/virtual_display.hpp"
 
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <cmath>
 #include <cstdio>
 #include <cstring>
 #include <thread>
 #include <unordered_map>
+
+namespace deskmate::windows {
+
+int normalize_preferred_refresh_hz(int hz) noexcept {
+  switch (hz) {
+    case 30:
+    case 60:
+    case 90:
+    case 120:
+      return hz;
+    default:
+      return 0;
+  }
+}
+
+int resolve_effective_refresh_hz(int preferred_hz, int negotiated_hz,
+                                 int fallback_hz) noexcept {
+  const int normalized = normalize_preferred_refresh_hz(preferred_hz);
+  if (normalized > 0) {
+    return normalized;
+  }
+  if (negotiated_hz > 0) {
+    return negotiated_hz;
+  }
+  return fallback_hz > 0 ? fallback_hz : 60;
+}
+
+int resolve_advertised_refresh_hz(int preferred_hz, bool explicit_fallback,
+                                  int fallback_hz) noexcept {
+  const int normalized = normalize_preferred_refresh_hz(preferred_hz);
+  if (normalized > 0 || explicit_fallback) {
+    return normalized > 0 ? normalized : fallback_hz;
+  }
+  return 60;
+}
+
+int async_input_wait_budget_ms(int) noexcept { return 0; }
+
+std::uint32_t compute_target_bitrate_bps(int width, int height, int fps,
+                                         bool hevc) noexcept {
+  const double safe_w = static_cast<double>(std::max(1, width));
+  const double safe_h = static_cast<double>(std::max(1, height));
+  const double clamped_fps = static_cast<double>(std::clamp(fps, 1, 120));
+  // Match macOS VideoEncoder sublinear FPS scaling and USB 2.0 headroom so
+  // periodic keyframes stay well under the 64 x 12 KiB = 768 KiB cap.
+  const double effective_fps =
+      clamped_fps <= 60.0 ? clamped_fps : (60.0 + (clamped_fps - 60.0) * 0.5);
+  const double bpp = hevc ? 0.065 : 0.09;
+  const double raw = safe_w * safe_h * effective_fps * bpp;
+  return static_cast<std::uint32_t>(
+      std::clamp<std::int64_t>(std::llround(raw), 4'000'000LL, 14'000'000LL));
+}
+
+bool annex_b_has_vcl_nal(std::span<const std::uint8_t> annex_b,
+                         bool hevc) noexcept {
+  for (const auto& unit : deskmate::platform::split_annex_b(annex_b)) {
+    if (unit.size == 0) {
+      continue;
+    }
+    const std::uint8_t header = annex_b[unit.offset];
+    if (hevc) {
+      const std::uint8_t type = static_cast<std::uint8_t>((header >> 1U) & 0x3FU);
+      if (type <= 31U) {
+        return true;
+      }
+    } else {
+      const std::uint8_t type = static_cast<std::uint8_t>(header & 0x1FU);
+      if (type >= 1U && type <= 5U) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+}  // namespace deskmate::windows
 
 #ifdef _WIN32
 #include <d3d11.h>
@@ -20,8 +98,6 @@
 #include <strmif.h>  // ICodecAPI (codecapi.h only declares GUIDs)
 #include <wrl/client.h>
 #include <windows.h>
-
-#include "deskmate/platform/annex_b.hpp"
 
 #ifdef _MSC_VER
 #pragma comment(lib, "d3d11.lib")
@@ -65,6 +141,21 @@ constexpr GUID kCodecApiMPVDefaultBPictureCount = {
     0xdc5c,
     0x4200,
     {0xb5, 0x7f, 0x81, 0x4d, 0x04, 0xba, 0xba, 0xb2}};
+constexpr GUID kCodecApiMPVGOPSize = {
+    0x95f31b26,
+    0x95a4,
+    0x41aa,
+    {0x93, 0x03, 0x24, 0x6a, 0x7f, 0xc6, 0xee, 0xf1}};
+constexpr GUID kCodecApiCommonQualityVsSpeed = {
+    0x98332df8,
+    0x03cd,
+    0x476b,
+    {0x89, 0xfa, 0x3f, 0x9e, 0x44, 0x2d, 0xec, 0x9f}};
+constexpr GUID kCodecApiCommonMaxBitRate = {
+    0x9651eae4,
+    0x39b9,
+    0x4ebf,
+    {0x85, 0xef, 0xd7, 0xf4, 0x44, 0xec, 0x74, 0x65}};
 constexpr GUID kMftFriendlyNameAttr = {
     0x314ffbae,
     0x5b41,
@@ -80,8 +171,11 @@ bool try_configure_mft_types(IMFTransform* encoder, int width, int height,
                              int requested_fps, bool hevc, UINT32 bitrate,
                              int& chosen_fps_out, HRESULT& last_out_hr,
                              HRESULT& last_in_hr) {
-  int fps_candidates[3]{requested_fps, 0, 0};
+  int fps_candidates[4]{requested_fps, 0, 0, 0};
   std::size_t fps_count = 1;
+  if (requested_fps > 90) {
+    fps_candidates[fps_count++] = 90;
+  }
   if (requested_fps > 60) {
     fps_candidates[fps_count++] = 60;
   }
@@ -189,6 +283,20 @@ std::string wide_to_utf8(const wchar_t* text) {
   return out;
 }
 
+std::wstring utf8_to_wide(const std::string& text) {
+  if (text.empty()) {
+    return {};
+  }
+  const int needed =
+      MultiByteToWideChar(CP_UTF8, 0, text.c_str(), -1, nullptr, 0);
+  if (needed <= 1) {
+    return {};
+  }
+  std::wstring out(static_cast<std::size_t>(needed - 1), L'\0');
+  MultiByteToWideChar(CP_UTF8, 0, text.c_str(), -1, out.data(), needed);
+  return out;
+}
+
 std::uint32_t stable_display_id(const std::string& device_name,
                                 std::uint32_t fallback) {
   if (device_name.empty()) {
@@ -276,7 +384,9 @@ class DxgiCaptureEncoder final : public CaptureEncoder {
     consecutive_process_input_errors_ = 0;
     sync_fallback_attempted_ = false;
     gdi_fallback_mode_ = false;
+    vp_zero_frames_ = 0;
     last_duplication_retry_ = {};
+    last_idr_retry_ = {};
     last_encode_error_.clear();
     force_keyframe_.store(true, std::memory_order_release);
     cached_param_sets_.clear();
@@ -328,6 +438,8 @@ class DxgiCaptureEncoder final : public CaptureEncoder {
     output_.Reset();
     bgra_staging_.Reset();
     readback_.Reset();
+    vp_input_view_.Reset();
+    vp_output_view_.Reset();
     vp_input_.Reset();
     nv12_.Reset();
     processor_.Reset();
@@ -338,6 +450,7 @@ class DxgiCaptureEncoder final : public CaptureEncoder {
     device_.Reset();
     target_monitor_ = nullptr;
     vp_verified_ = false;
+    vp_zero_frames_ = 0;
     if (mf_started_) {
       MFShutdown();
       mf_started_ = false;
@@ -509,9 +622,8 @@ class DxgiCaptureEncoder final : public CaptureEncoder {
       }
     }
 
-    const UINT32 bitrate = std::clamp<UINT32>(
-        static_cast<UINT32>(options_.width) * options_.height * 6U, 4'000'000U,
-        24'000'000U);
+    const UINT32 bitrate = compute_target_bitrate_bps(
+        options_.width, options_.height, options_.refresh_hz, options_.hevc);
     int chosen_fps = std::max<int>(1, options_.refresh_hz);
     HRESULT out_hr = E_FAIL;
     HRESULT in_hr = E_FAIL;
@@ -539,12 +651,28 @@ class DxgiCaptureEncoder final : public CaptureEncoder {
       v.ulVal = 0;
       (void)codec_api_->SetValue(&kCodecApiMPVDefaultBPictureCount, &v);
 
-      // Use CBR (0) best-effort so bitrate matches MF_MT_AVG_BITRATE without
-      // conflicting with missing Quality attributes.
+      // Use CBR (0) and long GOP so bitrate stays smooth over USB without
+      // periodic IDR spikes saturating the 64-fragment packet budget.
       VariantInit(&v);
       v.vt = VT_UI4;
       v.ulVal = 0;
       (void)codec_api_->SetValue(&kCodecApiCommonRateControlMode, &v);
+
+      VariantInit(&v);
+      v.vt = VT_UI4;
+      v.ulVal = 0;
+      (void)codec_api_->SetValue(&kCodecApiCommonQualityVsSpeed, &v);
+
+      VariantInit(&v);
+      v.vt = VT_UI4;
+      v.ulVal = static_cast<ULONG>(std::clamp(chosen_fps * 120, 600, 6000));
+      (void)codec_api_->SetValue(&kCodecApiMPVGOPSize, &v);
+
+      VariantInit(&v);
+      v.vt = VT_UI4;
+      v.ulVal = static_cast<ULONG>(std::min<std::uint64_t>(
+          24'000'000ULL, static_cast<std::uint64_t>(bitrate) * 135ULL / 100ULL));
+      (void)codec_api_->SetValue(&kCodecApiCommonMaxBitRate, &v);
     }
 
     hr = encoder_->ProcessMessage(MFT_MESSAGE_NOTIFY_BEGIN_STREAMING, 0);
@@ -611,11 +739,21 @@ class DxgiCaptureEncoder final : public CaptureEncoder {
   }
 
   void capture_loop() {
+    SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_ABOVE_NORMAL);
     const HRESULT com_hr = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
     const bool com_owned = SUCCEEDED(com_hr);
 
     auto last_static_submit =
         std::chrono::steady_clock::now() - std::chrono::seconds(1);
+    auto last_encode_submit =
+        std::chrono::steady_clock::now() - std::chrono::seconds(1);
+    const int target_hz = std::max<int>(1, options_.refresh_hz);
+    const UINT acquire_ms =
+        static_cast<UINT>(std::clamp(1000 / target_hz, 4, 16));
+    const auto min_interval = std::chrono::microseconds(
+        (1'000'000LL * 100LL) /
+        (105LL * static_cast<long long>(target_hz)));
+
     while (running_.load(std::memory_order_acquire)) {
       if (gdi_fallback_mode_) {
         const auto frame_start = std::chrono::steady_clock::now();
@@ -629,7 +767,7 @@ class DxgiCaptureEncoder final : public CaptureEncoder {
           submit_nv12(last_nv12_, static_cast<std::uint64_t>(timestamp));
         }
         const int target_ms =
-            1000 / std::clamp<int>(options_.refresh_hz, 1, 60);
+            std::max(1, 1000 / std::clamp<int>(options_.refresh_hz, 1, 120));
         const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
             std::chrono::steady_clock::now() - frame_start);
         if (elapsed.count() < target_ms) {
@@ -661,9 +799,15 @@ class DxgiCaptureEncoder final : public CaptureEncoder {
 
       DXGI_OUTDUPL_FRAME_INFO info{};
       ComPtr<IDXGIResource> resource;
-      const HRESULT hr = duplication_->AcquireNextFrame(16, &info, &resource);
+      const HRESULT hr =
+          duplication_->AcquireNextFrame(acquire_ms, &info, &resource);
       if (hr == DXGI_ERROR_WAIT_TIMEOUT) {
         const auto now = std::chrono::steady_clock::now();
+        const auto now_us = static_cast<std::uint64_t>(
+            std::chrono::duration_cast<std::chrono::microseconds>(
+                now.time_since_epoch())
+                .count());
+        pump_async_events(now_us, false);
         const bool need_initial_or_idr =
             encoded_frames_.load(std::memory_order_relaxed) == 0 ||
             force_keyframe_.load(std::memory_order_acquire);
@@ -674,11 +818,8 @@ class DxgiCaptureEncoder final : public CaptureEncoder {
           }
           if (!last_nv12_.empty()) {
             last_static_submit = now;
-            const auto timestamp =
-                std::chrono::duration_cast<std::chrono::microseconds>(
-                    now.time_since_epoch())
-                    .count();
-            submit_nv12(last_nv12_, static_cast<std::uint64_t>(timestamp));
+            last_encode_submit = now;
+            submit_nv12(last_nv12_, now_us);
           }
         }
         continue;
@@ -693,12 +834,16 @@ class DxgiCaptureEncoder final : public CaptureEncoder {
         gdi_fallback_mode_ = true;
         continue;
       }
-      ComPtr<ID3D11Texture2D> texture;
       const bool has_image =
           (info.LastPresentTime.QuadPart != 0 || info.AccumulatedFrames > 0);
       if (!has_image) {
         duplication_->ReleaseFrame();
         const auto now = std::chrono::steady_clock::now();
+        const auto now_us = static_cast<std::uint64_t>(
+            std::chrono::duration_cast<std::chrono::microseconds>(
+                now.time_since_epoch())
+                .count());
+        pump_async_events(now_us, false);
         if (last_nv12_.empty() ||
             ((encoded_frames_.load(std::memory_order_relaxed) == 0 ||
               force_keyframe_.load(std::memory_order_acquire)) &&
@@ -708,28 +853,49 @@ class DxgiCaptureEncoder final : public CaptureEncoder {
           }
           if (!last_nv12_.empty()) {
             last_static_submit = now;
-            const auto timestamp =
-                std::chrono::duration_cast<std::chrono::microseconds>(
-                    now.time_since_epoch())
-                    .count();
-            submit_nv12(last_nv12_, static_cast<std::uint64_t>(timestamp));
+            last_encode_submit = now;
+            submit_nv12(last_nv12_, now_us);
           }
         }
         continue;
       }
-      if (SUCCEEDED(resource.As(&texture))) {
-        received_frames_.fetch_add(1, std::memory_order_relaxed);
-        const auto now = std::chrono::steady_clock::now();
-        last_static_submit = now;
-        const auto timestamp =
-            std::chrono::duration_cast<std::chrono::microseconds>(
-                now.time_since_epoch())
-                .count();
-        if (texture_to_nv12(texture.Get(), last_nv12_)) {
-          submit_nv12(last_nv12_, static_cast<std::uint64_t>(timestamp));
-        }
+
+      const auto now = std::chrono::steady_clock::now();
+      const auto now_us = static_cast<std::uint64_t>(
+          std::chrono::duration_cast<std::chrono::microseconds>(
+              now.time_since_epoch())
+              .count());
+      const bool need_immediate =
+          encoded_frames_.load(std::memory_order_relaxed) == 0 ||
+          force_keyframe_.load(std::memory_order_acquire);
+      if (!need_immediate && (now - last_encode_submit) < min_interval) {
+        resource.Reset();
+        duplication_->ReleaseFrame();
+        pump_async_events(now_us, false);
+        continue;
       }
+
+      ComPtr<ID3D11Texture2D> texture;
+      D3D11_TEXTURE2D_DESC src_desc{};
+      bool used_gpu_vp = false;
+      bool copied = false;
+      if (SUCCEEDED(resource.As(&texture)) && texture != nullptr) {
+        received_frames_.fetch_add(1, std::memory_order_relaxed);
+        copied = copy_source_for_readback(texture.Get(), src_desc, used_gpu_vp);
+      }
+      // Release the DXGI frame immediately after the GPU CopyResource so DWM is
+      // never stalled while we run VideoProcessorBlt, readback Map, or MFT encode.
+      texture.Reset();
+      resource.Reset();
       duplication_->ReleaseFrame();
+
+      if (copied && convert_copied_to_nv12(src_desc, used_gpu_vp, last_nv12_)) {
+        last_static_submit = now;
+        last_encode_submit = now;
+        submit_nv12(last_nv12_, now_us);
+      } else {
+        pump_async_events(now_us, false);
+      }
     }
 
     if (com_owned) {
@@ -808,10 +974,13 @@ class DxgiCaptureEncoder final : public CaptureEncoder {
     }
     processor_.Reset();
     enumerator_.Reset();
+    vp_input_view_.Reset();
+    vp_output_view_.Reset();
     vp_input_.Reset();
     nv12_.Reset();
     readback_.Reset();
     vp_verified_ = false;
+    vp_zero_frames_ = 0;
 
     ComPtr<ID3D11VideoDevice> video_device;
     ComPtr<ID3D11VideoContext> video_context;
@@ -896,104 +1065,133 @@ class DxgiCaptureEncoder final : public CaptureEncoder {
     if (FAILED(device_->CreateTexture2D(&target, nullptr, &readback_))) {
       processor_.Reset();
       vp_input_.Reset();
+      nv12_.Reset();
+      return false;
+    }
+
+    D3D11_VIDEO_PROCESSOR_INPUT_VIEW_DESC input_desc{};
+    input_desc.ViewDimension = D3D11_VPIV_DIMENSION_TEXTURE2D;
+    D3D11_VIDEO_PROCESSOR_OUTPUT_VIEW_DESC output_desc{};
+    output_desc.ViewDimension = D3D11_VPOV_DIMENSION_TEXTURE2D;
+    if (FAILED(video_device_->CreateVideoProcessorInputView(
+            vp_input_.Get(), enumerator_.Get(), &input_desc,
+            &vp_input_view_)) ||
+        FAILED(video_device_->CreateVideoProcessorOutputView(
+            nv12_.Get(), enumerator_.Get(), &output_desc,
+            &vp_output_view_))) {
+      vp_input_view_.Reset();
+      vp_output_view_.Reset();
+      processor_.Reset();
+      vp_input_.Reset();
+      nv12_.Reset();
+      readback_.Reset();
       return false;
     }
     return true;
   }
 
-  bool texture_to_nv12(ID3D11Texture2D* source,
-                       std::vector<std::uint8_t>& out) {
-    D3D11_TEXTURE2D_DESC desc{};
-    source->GetDesc(&desc);
-
-    if (!gpu_processor_failed_ && ensure_processor(desc)) {
+  bool copy_source_for_readback(ID3D11Texture2D* source,
+                                D3D11_TEXTURE2D_DESC& desc_out,
+                                bool& used_gpu_vp) {
+    source->GetDesc(&desc_out);
+    if (!gpu_processor_failed_ && ensure_processor(desc_out)) {
       device_context_->CopyResource(vp_input_.Get(), source);
-      D3D11_VIDEO_PROCESSOR_INPUT_VIEW_DESC input_desc{};
-      input_desc.ViewDimension = D3D11_VPIV_DIMENSION_TEXTURE2D;
-      D3D11_VIDEO_PROCESSOR_OUTPUT_VIEW_DESC output_desc{};
-      output_desc.ViewDimension = D3D11_VPOV_DIMENSION_TEXTURE2D;
-      ComPtr<ID3D11VideoProcessorInputView> input_view;
-      ComPtr<ID3D11VideoProcessorOutputView> output_view;
-      if (SUCCEEDED(video_device_->CreateVideoProcessorInputView(
-              vp_input_.Get(), enumerator_.Get(), &input_desc, &input_view)) &&
-          SUCCEEDED(video_device_->CreateVideoProcessorOutputView(
-              nv12_.Get(), enumerator_.Get(), &output_desc, &output_view))) {
-        D3D11_VIDEO_PROCESSOR_STREAM stream{};
-        stream.Enable = TRUE;
-        stream.pInputSurface = input_view.Get();
-        if (SUCCEEDED(video_context_->VideoProcessorBlt(
-                processor_.Get(), output_view.Get(), 0, 1, &stream))) {
-          device_context_->CopyResource(readback_.Get(), nv12_.Get());
-          D3D11_MAPPED_SUBRESOURCE mapped{};
-          if (SUCCEEDED(device_context_->Map(readback_.Get(), 0, D3D11_MAP_READ,
-                                             0, &mapped))) {
-            const std::size_t width = output_width_;
-            const std::size_t height = output_height_;
-            out.resize(width * height * 3U / 2U);
-            for (std::size_t row = 0; row < height; ++row) {
-              std::memcpy(out.data() + row * width,
-                          static_cast<const BYTE*>(mapped.pData) +
-                              row * mapped.RowPitch,
-                          width);
-            }
-            const std::size_t chroma_offset = width * height;
-            const BYTE* chroma_source =
-                static_cast<const BYTE*>(mapped.pData) +
-                height * mapped.RowPitch;
-            for (std::size_t row = 0; row < height / 2; ++row) {
-              std::memcpy(out.data() + chroma_offset + row * width,
-                          chroma_source + row * mapped.RowPitch, width);
-            }
-            device_context_->Unmap(readback_.Get(), 0);
-
-            bool output_valid = true;
-            if (!vp_verified_ &&
-                (desc.Format == DXGI_FORMAT_B8G8R8A8_UNORM ||
-                 desc.Format == DXGI_FORMAT_B8G8R8X8_UNORM)) {
-              const std::size_t y_bytes = width * height;
-              bool any_nonzero = false;
-              const std::size_t step = std::max<std::size_t>(1, y_bytes / 32U);
-              for (std::size_t pos = 0; pos < y_bytes; pos += step) {
-                if (out[pos] != 0U) {
-                  any_nonzero = true;
-                  break;
-                }
-              }
-              if (!any_nonzero) {
-                output_valid = false;
-              } else {
-                vp_verified_ = true;
-              }
-            }
-            if (output_valid) {
-              return true;
-            }
-          }
-        }
-      }
-      gpu_processor_failed_ = true;
+      used_gpu_vp = true;
+      return true;
     }
 
-    // CPU fallback (for adapters/IddCx drivers without VideoProcessor).
-    if (bgra_staging_ == nullptr || bgra_w_ != desc.Width ||
-        bgra_h_ != desc.Height) {
+    used_gpu_vp = false;
+    if (bgra_staging_ == nullptr || bgra_w_ != desc_out.Width ||
+        bgra_h_ != desc_out.Height) {
       bgra_staging_.Reset();
       D3D11_TEXTURE2D_DESC staging{};
-      staging.Width = desc.Width;
-      staging.Height = desc.Height;
+      staging.Width = desc_out.Width;
+      staging.Height = desc_out.Height;
       staging.MipLevels = 1;
       staging.ArraySize = 1;
-      staging.Format = desc.Format;
+      staging.Format = desc_out.Format;
       staging.SampleDesc.Count = 1;
       staging.Usage = D3D11_USAGE_STAGING;
       staging.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
       if (FAILED(device_->CreateTexture2D(&staging, nullptr, &bgra_staging_))) {
         return false;
       }
-      bgra_w_ = desc.Width;
-      bgra_h_ = desc.Height;
+      bgra_w_ = desc_out.Width;
+      bgra_h_ = desc_out.Height;
     }
     device_context_->CopyResource(bgra_staging_.Get(), source);
+    return true;
+  }
+
+  bool convert_copied_to_nv12(const D3D11_TEXTURE2D_DESC& desc,
+                              bool used_gpu_vp,
+                              std::vector<std::uint8_t>& out) {
+    if (used_gpu_vp && !gpu_processor_failed_ && processor_ != nullptr &&
+        vp_input_view_ != nullptr && vp_output_view_ != nullptr) {
+      D3D11_VIDEO_PROCESSOR_STREAM stream{};
+      stream.Enable = TRUE;
+      stream.pInputSurface = vp_input_view_.Get();
+      if (SUCCEEDED(video_context_->VideoProcessorBlt(
+              processor_.Get(), vp_output_view_.Get(), 0, 1, &stream))) {
+        device_context_->CopyResource(readback_.Get(), nv12_.Get());
+        D3D11_MAPPED_SUBRESOURCE mapped{};
+        if (SUCCEEDED(device_context_->Map(readback_.Get(), 0, D3D11_MAP_READ,
+                                           0, &mapped))) {
+          const std::size_t width = output_width_;
+          const std::size_t height = output_height_;
+          out.resize(width * height * 3U / 2U);
+          for (std::size_t row = 0; row < height; ++row) {
+            std::memcpy(out.data() + row * width,
+                        static_cast<const BYTE*>(mapped.pData) +
+                            row * mapped.RowPitch,
+                        width);
+          }
+          const std::size_t chroma_offset = width * height;
+          const BYTE* chroma_source =
+              static_cast<const BYTE*>(mapped.pData) +
+              height * mapped.RowPitch;
+          for (std::size_t row = 0; row < height / 2; ++row) {
+            std::memcpy(out.data() + chroma_offset + row * width,
+                        chroma_source + row * mapped.RowPitch, width);
+          }
+          device_context_->Unmap(readback_.Get(), 0);
+
+          if (!vp_verified_ &&
+              (desc.Format == DXGI_FORMAT_B8G8R8A8_UNORM ||
+               desc.Format == DXGI_FORMAT_B8G8R8X8_UNORM)) {
+            const std::size_t y_bytes = width * height;
+            bool any_nonzero = false;
+            const std::size_t step = std::max<std::size_t>(1, y_bytes / 32U);
+            for (std::size_t pos = 0; pos < y_bytes; pos += step) {
+              if (out[pos] != 0U) {
+                any_nonzero = true;
+                break;
+              }
+            }
+            if (any_nonzero) {
+              vp_verified_ = true;
+              vp_zero_frames_ = 0;
+            } else {
+              // Newly attached virtual displays often output black frames for a
+              // moment before DWM paints; only disable GPU VP after 30 consecutive
+              // all-zero frames instead of permanently falling back on frame 1.
+              ++vp_zero_frames_;
+              if (vp_zero_frames_ >= 30) {
+                gpu_processor_failed_ = true;
+                return false;
+              }
+            }
+          }
+          return true;
+        }
+      }
+      gpu_processor_failed_ = true;
+      return false;
+    }
+
+    if (bgra_staging_ == nullptr) {
+      return false;
+    }
     D3D11_MAPPED_SUBRESOURCE mapped{};
     if (FAILED(device_context_->Map(bgra_staging_.Get(), 0, D3D11_MAP_READ, 0,
                                     &mapped))) {
@@ -1012,8 +1210,13 @@ class DxgiCaptureEncoder final : public CaptureEncoder {
     if (!is_async_mft_ || event_gen_ == nullptr) {
       return;
     }
+    const int wait_ms =
+        wait_for_input && encoded_frames_.load(std::memory_order_relaxed) != 0 &&
+                !force_keyframe_.load(std::memory_order_acquire)
+            ? async_input_wait_budget_ms(encoder_fps_)
+            : 0;
     const auto deadline =
-        std::chrono::steady_clock::now() + std::chrono::milliseconds(40);
+        std::chrono::steady_clock::now() + std::chrono::milliseconds(wait_ms);
     while (running_.load(std::memory_order_acquire)) {
       ComPtr<IMFMediaEvent> event;
       // Never block in GetEvent(0): poll with MF_EVENT_FLAG_NO_WAIT so stop()
@@ -1021,8 +1224,7 @@ class DxgiCaptureEncoder final : public CaptureEncoder {
       const HRESULT hr =
           event_gen_->GetEvent(MF_EVENT_FLAG_NO_WAIT, &event);
       if (hr == MF_E_NO_EVENTS_AVAILABLE) {
-        if (!wait_for_input || need_input_count_ > 0 ||
-            std::chrono::steady_clock::now() >= deadline) {
+        if (std::chrono::steady_clock::now() >= deadline) {
           break;
         }
         std::this_thread::sleep_for(std::chrono::milliseconds(1));
@@ -1045,9 +1247,6 @@ class DxgiCaptureEncoder final : public CaptureEncoder {
         }
       }
       if (wait_for_input && need_input_count_ > 0) {
-        wait_for_input = false;
-      }
-      if (std::chrono::steady_clock::now() >= deadline) {
         break;
       }
     }
@@ -1108,6 +1307,17 @@ class DxgiCaptureEncoder final : public CaptureEncoder {
     if (is_async_mft_) {
       pump_async_events(timestamp_us, true);
       if (need_input_count_ == 0) {
+        if (force_keyframe_.load(std::memory_order_acquire) &&
+            now - last_idr_retry_ >= std::chrono::milliseconds(120)) {
+          last_idr_retry_ = now;
+          if (codec_api_ != nullptr) {
+            VARIANT v{};
+            VariantInit(&v);
+            v.vt = VT_UI4;
+            v.ulVal = 1;
+            (void)codec_api_->SetValue(&kCodecApiVideoForceKeyFrame, &v);
+          }
+        }
         ++submitted_frames_;
         if (encoded_frames_.load(std::memory_order_relaxed) == 0 &&
             (submitted_frames_ >= 20 ||
@@ -1284,6 +1494,7 @@ class DxgiCaptureEncoder final : public CaptureEncoder {
   bool is_async_mft_{false};
   bool gpu_processor_failed_{false};
   bool vp_verified_{false};
+  int vp_zero_frames_{0};
   bool gdi_fallback_mode_{false};
   bool sync_fallback_attempted_{false};
   int need_input_count_{0};
@@ -1297,6 +1508,7 @@ class DxgiCaptureEncoder final : public CaptureEncoder {
   RECT monitor_rect_{};
   std::thread capture_thread_;
   std::chrono::steady_clock::time_point last_duplication_retry_{};
+  std::chrono::steady_clock::time_point last_idr_retry_{};
 
   ComPtr<ID3D11Device> device_;
   ComPtr<ID3D11DeviceContext> device_context_;
@@ -1306,6 +1518,8 @@ class DxgiCaptureEncoder final : public CaptureEncoder {
   ComPtr<ID3D11VideoContext> video_context_;
   ComPtr<ID3D11VideoProcessorEnumerator> enumerator_;
   ComPtr<ID3D11VideoProcessor> processor_;
+  ComPtr<ID3D11VideoProcessorInputView> vp_input_view_;
+  ComPtr<ID3D11VideoProcessorOutputView> vp_output_view_;
   ComPtr<ID3D11Texture2D> vp_input_;
   ComPtr<ID3D11Texture2D> nv12_;
   ComPtr<ID3D11Texture2D> readback_;
@@ -1631,6 +1845,59 @@ bool arrange_extended_monitors(
          DISP_CHANGE_SUCCESSFUL;
 }
 
+bool apply_monitor_layout(const std::vector<MonitorPlacement>& placements) {
+  if (placements.empty()) {
+    return false;
+  }
+  const auto monitors = enumerate_monitors();
+  bool any_changed = false;
+  for (const auto& p : placements) {
+    std::wstring dev_name_w;
+    if (!p.device_name.empty()) {
+      dev_name_w = utf8_to_wide(p.device_name);
+    } else if (p.handle != 0) {
+      MONITORINFOEXW mi{};
+      mi.cbSize = sizeof(mi);
+      if (GetMonitorInfoW(reinterpret_cast<HMONITOR>(p.handle), &mi)) {
+        dev_name_w = mi.szDevice;
+      }
+    }
+    if (dev_name_w.empty()) {
+      for (const auto& m : monitors) {
+        if (m.handle == p.handle && !m.name.empty()) {
+          dev_name_w = utf8_to_wide(m.name);
+          break;
+        }
+      }
+    }
+    if (dev_name_w.empty()) {
+      continue;
+    }
+    DEVMODEW dm{};
+    dm.dmSize = sizeof(dm);
+    if (!EnumDisplaySettingsW(dev_name_w.c_str(), ENUM_CURRENT_SETTINGS, &dm)) {
+      continue;
+    }
+    if (dm.dmPosition.x == p.left && dm.dmPosition.y == p.top) {
+      continue;
+    }
+    dm.dmFields = DM_POSITION;
+    dm.dmPosition.x = p.left;
+    dm.dmPosition.y = p.top;
+    const LONG res = ChangeDisplaySettingsExW(
+        dev_name_w.c_str(), &dm, nullptr, CDS_UPDATEREGISTRY | CDS_NORESET,
+        nullptr);
+    if (res == DISP_CHANGE_SUCCESSFUL) {
+      any_changed = true;
+    }
+  }
+  if (!any_changed) {
+    return true;
+  }
+  return ChangeDisplaySettingsExW(nullptr, nullptr, nullptr, 0, nullptr) ==
+         DISP_CHANGE_SUCCESSFUL;
+}
+
 }  // namespace deskmate::windows
 
 #else
@@ -1660,6 +1927,10 @@ bool probe_hevc_encoder_available() { return false; }
 
 bool arrange_extended_monitors(
     const std::vector<std::pair<std::uintptr_t, int>>&) {
+  return false;
+}
+
+bool apply_monitor_layout(const std::vector<MonitorPlacement>&) {
   return false;
 }
 

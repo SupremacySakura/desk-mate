@@ -1,13 +1,31 @@
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
+#include <filesystem>
 #include <functional>
 #include <mutex>
 #include <string>
+#include <vector>
 
 namespace deskmate::windows {
 
-inline constexpr const char* kWindowsHostVersion = "1.3.0";
+inline constexpr const char* kWindowsHostVersion = "1.4.0";
+
+struct LegacyUpdateArtifact {
+  std::string path;
+  std::uint64_t size_bytes{0};
+  bool is_directory{false};
+};
+
+struct LegacyCleanupSummary {
+  std::size_t scanned_count{0};
+  std::uint64_t scanned_bytes{0};
+  std::size_t deleted_count{0};
+  std::uint64_t freed_bytes{0};
+  std::size_t failed_count{0};
+  std::string message;
+};
 
 enum class UpdatePhase {
   Idle = 0,
@@ -34,6 +52,9 @@ struct UpdateUiState {
   bool auto_check_updates{true};
   std::string mirror_prefix;
   bool restart_requested{false};
+  std::size_t legacy_file_count{0};
+  std::uint64_t legacy_total_bytes{0};
+  std::string legacy_cleanup_message;
 };
 
 class UpdateManager {
@@ -49,6 +70,8 @@ class UpdateManager {
 
   void check_for_updates(bool manual);
   void download_and_install(std::function<void()> before_restart);
+  void refresh_legacy_artifacts();
+  LegacyCleanupSummary cleanup_legacy_artifacts();
 
  private:
   mutable std::mutex mutex_;
@@ -59,6 +82,18 @@ class UpdateManager {
   std::string pending_signature_;
 };
 
-void cleanup_old_executable_if_present(const std::string& explicit_old_path = {});
+[[nodiscard]] std::vector<LegacyUpdateArtifact> scan_legacy_update_files_in_dirs(
+    const std::filesystem::path& app_dir,
+    const std::filesystem::path& current_exe_path,
+    const std::filesystem::path& temp_dir, std::uint32_t current_pid = 0);
+
+LegacyCleanupSummary cleanup_legacy_update_files_in_dirs(
+    const std::filesystem::path& app_dir,
+    const std::filesystem::path& current_exe_path,
+    const std::filesystem::path& temp_dir, std::uint32_t current_pid = 0);
+
+void cleanup_old_executable_if_present(const std::string& explicit_old_path = {},
+                                       std::uint32_t wait_pid = 0,
+                                       std::function<void()> on_done = {});
 
 }  // namespace deskmate::windows

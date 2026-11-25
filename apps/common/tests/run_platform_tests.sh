@@ -45,9 +45,12 @@ build "$BUILD/windows-contract-tests" \
   -I"$ROOT/apps/windows-host/include" \
   "$ROOT/apps/windows-host/tests/contract_tests.cpp" \
   "$ROOT/apps/windows-host/src/aoa_links.cpp" \
+  "$ROOT/apps/windows-host/src/capture_encoder.cpp" \
+  "$ROOT/apps/windows-host/src/display_topology.cpp" \
   "$ROOT/apps/windows-host/src/host_state.cpp" \
   "$ROOT/apps/windows-host/src/input_injector.cpp" \
   "$ROOT/apps/windows-host/src/virtual_display.cpp" \
+  "$ROOT/apps/windows-host/src/updater.cpp" \
   "${COMMON_SOURCES[@]}" "${CORE_SOURCES[@]}"
 
 # The AOA link/session library and the Windows entry point must also compile as
@@ -57,6 +60,7 @@ build "$BUILD/windows-host-smoke" \
   "$ROOT/apps/windows-host/src/main.cpp" \
   "$ROOT/apps/windows-host/src/aoa_links.cpp" \
   "$ROOT/apps/windows-host/src/capture_encoder.cpp" \
+  "$ROOT/apps/windows-host/src/display_topology.cpp" \
   "$ROOT/apps/windows-host/src/host_controller.cpp" \
   "$ROOT/apps/windows-host/src/host_state.cpp" \
   "$ROOT/apps/windows-host/src/input_injector.cpp" \

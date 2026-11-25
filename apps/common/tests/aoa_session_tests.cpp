@@ -3,6 +3,7 @@
 
 #include "deskmate/platform/input_frames.hpp"
 #include "deskmate/platform/session_profile.hpp"
+#include "deskmate/message_stream.hpp"
 #include "deskmate/windows/aoa_links.hpp"
 #include "deskmate/windows/host_session.hpp"
 
@@ -56,12 +57,21 @@ class SharedPipe {
   std::mutex mutex_;
   std::vector<std::uint8_t> bytes_;
   std::size_t offset_{};
+
+ public:
+  const std::vector<std::uint8_t>& bytes() const { return bytes_; }
+  void clear() {
+    bytes_.clear();
+    offset_ = 0;
+  }
 };
 
 class FakeTransport final : public deskmate::windows::LinkTransport {
  public:
-  explicit FakeTransport(std::shared_ptr<SharedPipe> pipe)
-      : pipe_(std::move(pipe)) {}
+  explicit FakeTransport(std::shared_ptr<SharedPipe> pipe,
+                         std::shared_ptr<SharedPipe> outbound = {})
+      : pipe_(std::move(pipe)),
+        outbound_(outbound != nullptr ? std::move(outbound) : pipe_) {}
 
   deskmate::protocol::IoResult read(
       std::span<std::uint8_t> destination) override {
@@ -69,12 +79,13 @@ class FakeTransport final : public deskmate::windows::LinkTransport {
   }
   deskmate::protocol::IoResult write(
       std::span<const std::uint8_t> source) override {
-    return pipe_->write(source);
+    return outbound_->write(source);
   }
   [[nodiscard]] bool alive() const override { return true; }
 
  private:
   std::shared_ptr<SharedPipe> pipe_;
+  std::shared_ptr<SharedPipe> outbound_;
 };
 
 class FakeFactory final : public deskmate::windows::LinkFactory {
@@ -185,6 +196,71 @@ void test_submit_video_does_not_touch_the_session_directly() {
   link.stop();
 }
 
+void test_video_backlog_drops_new_p_frames_instead_of_breaking_a_gop() {
+  auto pipe = std::make_shared<SharedPipe>();
+  deskmate::platform::AoaIdentity identity;
+  identity.port_path = "5.1";
+  deskmate::windows::SessionLink link(std::make_unique<FakeTransport>(pipe),
+                                      identity, 12U, 0x01020305U, 2U, 1920,
+                                      1200, 60, false);
+  link.submit_video(std::vector<std::uint8_t>{0x65}, 0U, true);
+  for (std::uint64_t pts = 1; pts <= 15; ++pts) {
+    link.submit_video(std::vector<std::uint8_t>{0x41}, pts, false);
+  }
+  CHECK(link.stats().frames_dropped == 0U);
+
+  link.submit_video(std::vector<std::uint8_t>{0x42}, 16U, false);
+  CHECK(link.stats().frames_submitted == 17U);
+  CHECK(link.stats().frames_dropped == 1U);
+
+  link.submit_video(std::vector<std::uint8_t>{0x65}, 17U, true);
+  CHECK(link.stats().frames_dropped == 17U);
+
+  // A live session exposes which encoded frames actually enter the wire
+  // scheduler. Negotiate a real session first, then inspect the output bytes.
+  auto host_to_device = std::make_shared<SharedPipe>();
+  auto device_to_host = std::make_shared<SharedPipe>();
+  deskmate::windows::SessionLink live(
+      std::make_unique<FakeTransport>(device_to_host, host_to_device), identity,
+      13U, 0x01020306U, 2U, 1920, 1200, 60, false, true);
+  deskmate::protocol::SteadyClock clock;
+  FakeTransport device_transport(host_to_device, device_to_host);
+  deskmate::protocol::DeviceSession device(
+      device_transport, clock,
+      deskmate::platform::make_device_session_config(
+          0xA1B2C3D4U, 1920, 1200, 60, false),
+      nullptr);
+  device.start();
+  device.pump();
+  live.pump();
+  device.pump();
+  live.pump();
+  device.pump();
+  live.pump();
+  CHECK(live.state() == deskmate::protocol::SessionState::Streaming);
+  device_to_host->clear();
+  host_to_device->clear();
+
+  live.submit_video(std::vector<std::uint8_t>{0x65}, 0U, true);
+  for (std::uint64_t pts = 1; pts <= 15; ++pts) {
+    live.submit_video(std::vector<std::uint8_t>{0x41}, pts, false);
+  }
+  live.submit_video(std::vector<std::uint8_t>{0x42}, 16U, false);
+  live.pump();
+  live.pump();
+
+  deskmate::protocol::MessageStreamDecoder decoder(
+      deskmate::protocol::StreamDecoderConfig{0xA1B2C3D4U, 0x01020306U});
+  const auto events = decoder.feed(host_to_device->bytes());
+  CHECK(events.size() == 16U);
+  for (const auto& event : events) {
+    CHECK(event.kind == deskmate::protocol::StreamEventKind::VideoFrame);
+  }
+  link.stop();
+  live.stop();
+  device.stop();
+}
+
 }  // namespace
 
 int main() {
@@ -192,6 +268,7 @@ int main() {
   test_host_session_link_reports_state();
   test_video_is_routed_to_a_single_link();
   test_submit_video_does_not_touch_the_session_directly();
+  test_video_backlog_drops_new_p_frames_instead_of_breaking_a_gop();
   if (failures != 0) {
     std::fprintf(stderr, "%d AOA session test(s) failed\n", failures);
     return 1;

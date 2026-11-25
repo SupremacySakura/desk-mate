@@ -60,6 +60,9 @@ class LibusbBulkTransport final : public LinkTransport {
   [[nodiscard]] std::uint64_t bulk_errors() const override {
     return bulk_errors_.load(std::memory_order_relaxed);
   }
+  [[nodiscard]] std::uint64_t write_timeouts() const override {
+    return write_timeouts_.load(std::memory_order_relaxed);
+  }
   [[nodiscard]] std::string last_error() const override {
     std::lock_guard lock(mutex_);
     return last_error_;
@@ -85,6 +88,7 @@ class LibusbBulkTransport final : public LinkTransport {
   std::atomic<std::uint64_t> rx_bytes_{0};
   std::atomic<std::uint64_t> tx_bytes_{0};
   std::atomic<std::uint64_t> bulk_errors_{0};
+  std::atomic<std::uint64_t> write_timeouts_{0};
   [[maybe_unused]] std::atomic<int> consecutive_write_errors_{0};
   std::thread reader_;
   mutable std::mutex mutex_;

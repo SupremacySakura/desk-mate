@@ -191,7 +191,18 @@ Windows has no built-in user-space API equivalent to macOS `CGVirtualDisplay`. W
      > **Security tip**: Never commit your personal `signingConfigs` inside `apps/harmonyos-client/build-profile.json5`.
   4. Click **Run (`entry`)** to install DeskMate onto each HarmonyOS device.
 
-#### 3. Grant OS Permissions / Drivers
+#### 3. Local Build Output Directory Convention
+
+All locally packaged deliverables should be placed under `dist/<platform>/` (never in the repository root), while intermediate build objects stay inside each app's `build/` directory:
+
+| Platform | Deliverable Directory | Typical Artifacts | Intermediate Build Dir |
+| --- | --- | --- | --- |
+| **Windows Host** | `dist/windows/` | `DeskMateHost.exe`, `DeskMate-v*-windows-x64.zip` | `build/` or `apps/windows-host/build/` |
+| **macOS Host** | `dist/macos/` | `DeskMate-v*-macos-*.dmg`, `DeskMate-v*-macos-*.zip` | `apps/macos-host/build/` |
+| **Android Client** | `dist/android/` | `DeskMate-v*-android-debug.apk` | `apps/android-client/app/build/` |
+| **HarmonyOS Client** | `dist/harmonyos/` | `DeskMate-v*-harmonyos-*.hap` | `apps/harmonyos-client/entry/build/` |
+
+#### 4. Grant OS Permissions / Drivers
 
 - **macOS**: Grant **Screen Recording** and **Accessibility** (one-click inside DeskMate Overview/Settings; click **重置旧授权** if rebuilding invalidates cached permissions).
 - **Windows**: Follow **[Windows Host First-Time Setup](#windows-host-first-time-setup-required)** to bind **WinUSB via Zadig** and install **Parsec VDD**, then verify green checks in **Settings → System & Drivers**.

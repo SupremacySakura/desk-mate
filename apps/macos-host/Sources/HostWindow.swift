@@ -6,6 +6,26 @@ struct DisplayChoice: Identifiable, Equatable {
     let title: String
 }
 
+enum FrameRateOption: Int, CaseIterable, Identifiable {
+    case auto = 0
+    case fps30 = 30
+    case fps60 = 60
+    case fps90 = 90
+    case fps120 = 120
+
+    var id: Int { rawValue }
+
+    var shortLabel: String {
+        switch self {
+        case .auto: return "自动"
+        case .fps30: return "30 Hz"
+        case .fps60: return "60 Hz"
+        case .fps90: return "90 Hz"
+        case .fps120: return "120 Hz"
+        }
+    }
+}
+
 struct ActiveDisplaySessionState: Identifiable, Equatable {
     let linkID: UInt64
     let deviceID: String
@@ -38,6 +58,7 @@ struct HostWindowState: Equatable {
     var loginItemError: String? = nil
     var pairedDevices: [PairedDevice] = []
     var activeSessions: [ActiveDisplaySessionState] = []
+    var topologyDisplays: [TopologyDisplayItem] = []
     var selectedLinkID: UInt64? = nil
     var connectedDeviceIDs: Set<String> = []
     var connectedDeviceID: String? = nil
@@ -62,6 +83,8 @@ struct HostWindowState: Equatable {
     )
     var autoVirtualDisplay = true
     var position: DisplayPosition = .right
+    var preferredFrameRateHz = 0
+    var negotiatedRefreshHz = 0
     var liveFps = 0
     var liveBitrateMbps = 0.0
     var inputEventCount = 0
@@ -82,6 +105,7 @@ final class HostWindowModel: ObservableObject {
     @Published var renamingDeviceID: String? = nil
     @Published var renameDraft: String = ""
     @Published var mirrorDraft: String = ""
+    let topologyInteraction = TopologyInteractionModel()
 }
 
 struct HostWindow: View {
@@ -106,9 +130,12 @@ struct HostWindow: View {
     let setAutoVirtual: (Bool) -> Void
     let setPosition: (DisplayPosition) -> Void
     let setDefaultPosition: (DisplayPosition) -> Void
+    let setPreferredFrameRate: (Int) -> Void
     let selectLink: (UInt64) -> Void
     let setLinkPosition: (UInt64, DisplayPosition) -> Void
     let disconnectLink: (UInt64) -> Void
+    let applyDisplayLayout: ([(displayID: UInt32, origin: CGPoint)]) -> Void
+    let refreshDisplays: () -> Void
     let setVideo: (Bool) -> Void
     let setInput: (Bool) -> Void
     let setTouchInputMode: (TouchInputMode) -> Void
@@ -169,7 +196,7 @@ struct HostWindow: View {
 
                 HStack(alignment: .top, spacing: 24) {
                     leftTopologyColumn
-                        .frame(width: 336)
+                        .frame(width: 368)
 
                     rightContentColumn
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -187,7 +214,7 @@ struct HostWindow: View {
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
-        .frame(minWidth: 760, minHeight: 500)
+        .frame(minWidth: 820, minHeight: 520)
     }
 
     // MARK: - Top Navigation Bar
@@ -258,9 +285,11 @@ struct HostWindow: View {
     private var leftTopologyColumn: some View {
         VStack(spacing: 9) {
             SpatialDisplayArrangerView(
+                interaction: model.topologyInteraction,
                 linked: state.linked,
                 streaming: streaming,
                 position: state.position,
+                displays: state.topologyDisplays,
                 sessions: state.activeSessions,
                 selectedLinkID: state.selectedLinkID,
                 autoVirtualDisplay: state.autoVirtualDisplay,
@@ -269,7 +298,9 @@ struct HostWindow: View {
                 liveFps: state.liveFps,
                 liveBitrateMbps: state.liveBitrateMbps,
                 onSelectPosition: setPosition,
-                onSelectSession: selectLink
+                onSelectSession: selectLink,
+                onApplyLayout: applyDisplayLayout,
+                onRefreshDisplays: refreshDisplays
             )
 
             // Compact runtime summary strip below topology schematic
@@ -469,6 +500,10 @@ struct HostWindow: View {
                     }
                     .padding(.horizontal, 14)
                     .padding(.vertical, 9)
+
+                    Rectangle().fill(StudioPalette.softHairline).frame(height: 0.75)
+
+                    frameRateControlRow
                 }
                 .background(StudioPalette.cardSurface)
                 .clipShape(RoundedRectangle(cornerRadius: StudioPalette.cardRadius, style: .continuous))
@@ -738,6 +773,46 @@ struct HostWindow: View {
             Spacer(minLength: 10)
 
             StudioHairlineToggle(isOn: isOn, action: action)
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 9)
+    }
+
+    private var frameRateSubtitleText: String {
+        if state.preferredFrameRateHz == 0 {
+            if state.negotiatedRefreshHz > 0 {
+                return "跟随设备协商（当前 \(state.negotiatedRefreshHz) Hz）"
+            }
+            return "默认跟随设备协商帧率"
+        }
+        if state.negotiatedRefreshHz > 0 {
+            return "手动锁定 \(state.preferredFrameRateHz) Hz（协商 \(state.negotiatedRefreshHz) Hz）"
+        }
+        return "手动锁定 \(state.preferredFrameRateHz) Hz"
+    }
+
+    private var frameRateControlRow: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 8) {
+                Text("画面帧率")
+                    .font(.system(size: 12.5, weight: .medium))
+                    .foregroundStyle(StudioPalette.ink)
+                Spacer(minLength: 8)
+                Text(frameRateSubtitleText)
+                    .font(.system(size: 10.5))
+                    .foregroundStyle(state.preferredFrameRateHz > 0 ? StudioPalette.crimson : StudioPalette.inkMuted)
+            }
+
+            HStack(spacing: 8) {
+                ForEach(FrameRateOption.allCases) { opt in
+                    StudioSegmentOption(
+                        title: opt.shortLabel,
+                        active: state.preferredFrameRateHz == opt.rawValue,
+                        expand: true,
+                        action: { setPreferredFrameRate(opt.rawValue) }
+                    )
+                }
+            }
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 9)
@@ -1130,6 +1205,10 @@ struct HostWindow: View {
                     }
                     .padding(.horizontal, 14)
                     .padding(.vertical, 10)
+
+                    Rectangle().fill(StudioPalette.softHairline).frame(height: 0.75)
+
+                    frameRateControlRow
 
                     if !state.autoVirtualDisplay {
                         Rectangle().fill(StudioPalette.softHairline).frame(height: 0.75)

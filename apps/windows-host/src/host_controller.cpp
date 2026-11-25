@@ -44,6 +44,10 @@ HostController::HostController(HostOptions options, std::string settings_path)
   default_position_ = prefs.default_position;
   allow_input_ = prefs.allow_input;
   touch_mode_ = prefs.touch_input_mode;
+  preferred_refresh_hz_ =
+      options_.refresh_hz_explicit
+          ? normalize_preferred_refresh_hz(options_.refresh_hz)
+          : normalize_preferred_refresh_hz(prefs.preferred_refresh_hz);
   auto_start_service_ = prefs.auto_start_service;
   updater_.set_preferences(prefs.auto_check_updates, prefs.update_mirror_prefix);
 
@@ -94,6 +98,7 @@ void HostController::start() {
     started_ = true;
   }
   append_log("DeskMate Windows Host 启动");
+  updater_.refresh_legacy_artifacts();
   if (auto_start_service_ || options_.dry_run || options_.headless) {
     start_service_internal();
   }
@@ -443,10 +448,14 @@ void HostController::discovery_loop() {
                                                          nullptr, touch_mode_);
           const bool accept_res =
               auto_virtual_display_ && !options_.size_explicit;
+          const std::uint16_t advertise_hz =
+              static_cast<std::uint16_t>(resolve_advertised_refresh_hz(
+                  preferred_refresh_hz_, options_.refresh_hz_explicit,
+                  options_.refresh_hz));
           ch->session = std::make_unique<SessionLink>(
               std::move(transport), dev.identity, ch->link_id,
               random_nonzero_u32(), (random_nonzero_u32() & 0x7FFFFFFFU) | 1U,
-              options_.width, options_.height, options_.refresh_hz,
+              options_.width, options_.height, advertise_hz,
               hevc_available_, accept_res);
           std::weak_ptr<LinkChannel> weak_ch = ch;
           ch->session->set_rx_callback([weak_ch] {
@@ -523,6 +532,9 @@ void HostController::discovery_loop() {
 }
 
 void HostController::link_worker_loop(const std::shared_ptr<LinkChannel>& ch) {
+#ifdef _WIN32
+  SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_ABOVE_NORMAL);
+#endif
   auto next_poll_30hz = std::chrono::steady_clock::now();
   auto next_metric_tick = std::chrono::steady_clock::now();
   std::uint64_t handshake_rx_baseline = ch->session->rx_bytes();
@@ -630,15 +642,16 @@ void HostController::link_worker_loop(const std::shared_ptr<LinkChannel>& ch) {
       }
     }
 
+    if (ch->session->take_keyframe_request() != 0U) {
+      std::lock_guard lock(mutex_);
+      if (ch->capture != nullptr) {
+        ch->capture->request_keyframe();
+      }
+    }
+
     const auto now = std::chrono::steady_clock::now();
     if (now >= next_poll_30hz) {
       next_poll_30hz = now + std::chrono::milliseconds(33);
-      if (ch->session->take_keyframe_request() != 0U) {
-        std::lock_guard lock(mutex_);
-        if (ch->capture != nullptr) {
-          ch->capture->request_keyframe();
-        }
-      }
       bool tick_input = false;
       {
         std::lock_guard lock(mutex_);
@@ -681,10 +694,12 @@ void HostController::ensure_capture_for_channel(
     const std::shared_ptr<LinkChannel>& ch) {
   bool want_video = false;
   std::optional<deskmate::protocol::StreamProfile> profile;
+  int preferred_hz = 0;
   {
     std::lock_guard lock(mutex_);
     want_video = video_enabled_ && ch->session->capture_requested();
     profile = ch->session->negotiated_profile();
+    preferred_hz = preferred_refresh_hz_;
   }
   if (!want_video) {
     stop_capture_for_channel(ch);
@@ -694,15 +709,22 @@ void HostController::ensure_capture_for_channel(
     return;
   }
 
+  const int target_hz = resolve_effective_refresh_hz(
+      preferred_hz, profile->resolution.refresh_hz, options_.refresh_hz);
+
+  int prev_hz = 0;
   {
     std::lock_guard lock(mutex_);
-    if (ch->capture != nullptr && ch->capture_profile == *profile) {
+    if (ch->capture != nullptr && ch->capture_profile == *profile &&
+        ch->capture_refresh_hz == target_hz) {
       return;
     }
     if (ch->capture_profile == *profile &&
+        ch->capture_refresh_hz == target_hz &&
         std::chrono::steady_clock::now() < ch->retry_after) {
       return;
     }
+    prev_hz = ch->capture_refresh_hz;
   }
 
   stop_capture_for_channel(ch);
@@ -712,7 +734,7 @@ void HostController::ensure_capture_for_channel(
       profile->encoder == deskmate::protocol::VideoEncoder::Hevc;
   cap_opts.width = profile->resolution.width;
   cap_opts.height = profile->resolution.height;
-  cap_opts.refresh_hz = profile->resolution.refresh_hz;
+  cap_opts.refresh_hz = static_cast<std::uint16_t>(target_hz);
 
   bool need_virtual_display = false;
   {
@@ -763,6 +785,9 @@ void HostController::ensure_capture_for_channel(
 
   std::string monitor_label = "none";
   bool missing_virtual_display = false;
+  std::uintptr_t active_monitor_handle = 0;
+  bool active_monitor_is_virtual = false;
+  int active_monitor_hz = 0;
   {
     std::lock_guard lock(mutex_);
     refresh_monitors_locked();
@@ -771,6 +796,9 @@ void HostController::ensure_capture_for_channel(
       ch->monitor_handle = monitor->handle;
       ch->monitor_display_id = monitor->display_id;
       monitor_label = monitor->name;
+      active_monitor_handle = monitor->handle;
+      active_monitor_is_virtual = monitor->is_virtual;
+      active_monitor_hz = monitor->refresh_hz;
       if (ch->injector != nullptr) {
         ch->injector->set_target(InjectorTarget{
             monitor->left, monitor->top, monitor->width, monitor->height});
@@ -788,11 +816,33 @@ void HostController::ensure_capture_for_channel(
       }
     }
     ch->capture_profile = *profile;
+    ch->capture_refresh_hz = target_hz;
   }
   if (missing_virtual_display) {
     append_log("[link " + std::to_string(ch->link_id) +
                "] 未检测到虚拟屏驱动，已拒绝占用真实物理显示器，等待安装 Parsec VDD / MttVDD 或切换模式");
     return;
+  }
+
+  if (!need_virtual_display && active_monitor_handle != 0 &&
+      ((active_monitor_is_virtual && active_monitor_hz != target_hz) ||
+       (prev_hz != 0 && prev_hz != target_hz))) {
+    std::string mode_log;
+    if (vdd_.apply_display_mode(active_monitor_handle, cap_opts.width,
+                                cap_opts.height, target_hz, mode_log) &&
+        !mode_log.empty()) {
+      append_log("[link " + std::to_string(ch->link_id) + "] 切换刷新率" +
+                 mode_log);
+      std::lock_guard lock(mutex_);
+      refresh_monitors_locked();
+      for (const auto& m : monitors_) {
+        if (m.name == monitor_label) {
+          ch->monitor_handle = m.handle;
+          cap_opts.monitor_handle = m.handle;
+          break;
+        }
+      }
+    }
   }
 
   auto capture = make_capture_encoder();
@@ -1121,6 +1171,24 @@ void HostController::set_auto_virtual_display(bool enabled) {
   restart_all_captures();
 }
 
+void HostController::set_preferred_refresh_hz(int hz) {
+  const int normalized = normalize_preferred_refresh_hz(hz);
+  {
+    std::lock_guard lock(mutex_);
+    if (preferred_refresh_hz_ == normalized) {
+      return;
+    }
+    preferred_refresh_hz_ = normalized;
+    store_.prefs().preferred_refresh_hz = normalized;
+    store_.save();
+  }
+  append_log(normalized > 0
+                 ? ("[fps] 已手动切换目标帧率: " +
+                    std::to_string(normalized) + " Hz")
+                 : "[fps] 已恢复目标帧率: 自动（跟随设备协商）");
+  restart_all_captures();
+}
+
 void HostController::choose_monitor(std::uintptr_t handle) {
   {
     std::lock_guard lock(mutex_);
@@ -1180,6 +1248,70 @@ void HostController::set_link_position(std::uint64_t link_id,
     }
   }
   rearrange_monitors();
+}
+
+void HostController::apply_display_layout(
+    const std::vector<MonitorPlacement>& placements) {
+  if (placements.empty()) {
+    return;
+  }
+  if (!apply_monitor_layout(placements)) {
+    append_log("[topology] 应用多屏拓扑布局失败");
+    return;
+  }
+
+  std::lock_guard lock(mutex_);
+  refresh_monitors_locked();
+
+  const MonitorInfo* primary = nullptr;
+  for (const auto& m : monitors_) {
+    if (m.primary) {
+      primary = &m;
+      break;
+    }
+  }
+  if (primary == nullptr && !monitors_.empty()) {
+    primary = &monitors_.front();
+  }
+
+  if (primary != nullptr) {
+    TopologyDisplayItem p_item;
+    p_item.x = static_cast<double>(primary->left);
+    p_item.y = static_cast<double>(primary->top);
+    p_item.width = static_cast<double>(primary->width);
+    p_item.height = static_cast<double>(primary->height);
+
+    for (auto& [id, ch] : channels_) {
+      (void)id;
+      for (const auto& m : monitors_) {
+        if (m.handle == ch->monitor_handle) {
+          if (ch->injector != nullptr) {
+            ch->injector->set_target(
+                InjectorTarget{m.left, m.top, m.width, m.height});
+          }
+          TopologyDisplayItem t_item;
+          t_item.x = static_cast<double>(m.left);
+          t_item.y = static_cast<double>(m.top);
+          t_item.width = static_cast<double>(m.width);
+          t_item.height = static_cast<double>(m.height);
+          const int code = infer_cardinal_position_code(p_item, t_item);
+          const auto pos = static_cast<DisplayPosition>(std::clamp(code, 0, 3));
+          ch->position = pos;
+          if (!ch->device_id.empty()) {
+            store_.set_preferred_position(ch->device_id, pos);
+          }
+          break;
+        }
+      }
+    }
+  }
+  append_log("[topology] 已更新系统多屏拓扑排列 (" +
+             std::to_string(placements.size()) + " 块屏幕)");
+}
+
+void HostController::refresh_displays() {
+  std::lock_guard lock(mutex_);
+  refresh_monitors_locked();
 }
 
 void HostController::disconnect_link(std::uint64_t link_id) {
@@ -1247,6 +1379,13 @@ void HostController::set_update_mirror_prefix(const std::string& prefix) {
     auto_check = store_.prefs().auto_check_updates;
   }
   updater_.set_preferences(auto_check, trimmed);
+}
+
+void HostController::cleanup_legacy_update_files() {
+  const auto summary = updater_.cleanup_legacy_artifacts();
+  if (!summary.message.empty()) {
+    append_log("[update] " + summary.message);
+  }
 }
 
 void HostController::refresh_devices() {
@@ -1461,6 +1600,61 @@ HostUiState HostController::snapshot_ui_state() {
   std::sort(sorted.begin(), sorted.end(),
             [](const auto& a, const auto& b) { return a->link_id < b->link_id; });
 
+  std::vector<TopologyDisplayItem> topo;
+  topo.reserve(monitors_.size());
+  for (const auto& m : monitors_) {
+    std::shared_ptr<LinkChannel> matched;
+    for (const auto& ch : sorted) {
+      if (ch->monitor_handle == m.handle) {
+        matched = ch;
+        break;
+      }
+    }
+    TopologyDisplayItem item;
+    item.id = m.display_id != 0
+                  ? m.display_id
+                  : static_cast<std::uint32_t>(m.handle & 0xFFFFFFFFu);
+    item.handle = m.handle;
+    item.device_name = m.name;
+    item.is_primary = m.primary;
+    item.is_virtual = m.is_virtual;
+    item.is_deskmate_virtual = (matched != nullptr);
+    if (matched != nullptr) {
+      item.name = matched->device_name.empty()
+                      ? ("设备 #" + std::to_string(matched->link_id))
+                      : matched->device_name;
+      item.link_id = matched->link_id;
+      const std::string st(
+          deskmate::protocol::session_state_name(matched->session->state()));
+      item.streaming =
+          (st == "streaming" && video_enabled_ && matched->capture != nullptr);
+      item.live_fps = matched->live_fps;
+    } else if (m.primary) {
+      item.name = !m.friendly_name.empty() ? m.friendly_name : "WIN 主屏";
+    } else {
+      item.name = !m.friendly_name.empty() ? m.friendly_name : m.name;
+    }
+    item.x = static_cast<double>(m.left);
+    item.y = static_cast<double>(m.top);
+    item.width = static_cast<double>(m.width);
+    item.height = static_cast<double>(m.height);
+    item.pixel_width = m.width;
+    item.pixel_height = m.height;
+    item.refresh_hz = m.refresh_hz;
+    topo.push_back(std::move(item));
+  }
+  std::sort(topo.begin(), topo.end(),
+            [](const TopologyDisplayItem& a, const TopologyDisplayItem& b) {
+              if (a.is_primary != b.is_primary) return a.is_primary;
+              if (std::abs(a.x - b.x) > 8.0) return a.x < b.x;
+              if (std::abs(a.y - b.y) > 8.0) return a.y < b.y;
+              return a.id < b.id;
+            });
+  for (std::size_t i = 0; i < topo.size(); ++i) {
+    topo[i].index_number = static_cast<int>(i + 1);
+  }
+  view.topology_displays = std::move(topo);
+
   std::shared_ptr<LinkChannel> target;
   if (selected_link_id_ != 0) {
     auto it = channels_.find(selected_link_id_);
@@ -1473,6 +1667,13 @@ HostUiState HostController::snapshot_ui_state() {
   }
   view.selected_link_id = target != nullptr ? target->link_id : 0;
   view.position = target != nullptr ? target->position : default_position_;
+  view.preferred_refresh_hz = preferred_refresh_hz_;
+  if (target != nullptr) {
+    if (const auto neg_prof = target->session->negotiated_profile();
+        neg_prof.has_value()) {
+      view.negotiated_refresh_hz = neg_prof->resolution.refresh_hz;
+    }
+  }
 
   std::uint64_t total_inputs = 0;
   int total_fps = 0;
@@ -1728,7 +1929,12 @@ std::string HostController::build_diagnostic_locked() const {
      << monitors_.size() << "）\n";
   ss << "编码器能力：HEVC=" << (hevc_available_ ? "true" : "false")
      << "，原生触控注入=" << (native_touch_available_ ? "true" : "false")
-     << "，触控模式=" << touch_mode_id(touch_mode_) << "\n";
+     << "，触控模式=" << touch_mode_id(touch_mode_)
+     << "，帧率模式="
+     << (preferred_refresh_hz_ > 0
+             ? (std::to_string(preferred_refresh_hz_) + "Hz")
+             : "auto")
+     << "\n";
   for (const auto& m : monitors_) {
     ss << "- monitor " << m.name << " (" << m.friendly_name << ") "
        << m.width << "x" << m.height << "@" << m.refresh_hz << "Hz rect=("
