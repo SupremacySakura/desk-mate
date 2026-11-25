@@ -1,6 +1,7 @@
 import { AbilityConstant, ConfigurationConstant, UIAbility, Want } from '@kit.AbilityKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { window } from '@kit.ArkUI';
+import { isPhoneDevice, preferredOrientationForPage } from '../deskmate/DeviceLayout';
 import native from 'libdeskmate_device.so';
 
 const DOMAIN: number = 0x3210;
@@ -24,6 +25,11 @@ export default class EntryAbility extends UIAbility {
       windowStage.getMainWindow().then((mainWindow: window.Window) => {
         mainWindow.setWindowLayoutFullScreen(true);
         mainWindow.setWindowKeepScreenOn(true);
+        if (isPhoneDevice()) {
+          mainWindow.setPreferredOrientation(preferredOrientationForPage(true, false)).catch((err: Error) => {
+            hilog.warn(DOMAIN, TAG, 'initial portrait orientation failed: %{public}s', err.message);
+          });
+        }
       }).catch((error: Error) => {
         hilog.error(DOMAIN, TAG, 'window setup failed: %{public}s',
           error.message);
