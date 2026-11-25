@@ -48,6 +48,7 @@ Unlike generic wireless casting tools, DeskMate uses a dedicated custom binary p
 | **4-Mode Reverse Touch Input** | Control macOS or Windows directly from your tablet or phone: **Compatible Gestures**, **Single-Touch Only**, **Virtual Trackpad**, and **Native Screen Touch** (`IOHIDUserDevice` on macOS, `SendInput` / `InitializeTouchInjection` on Windows). |
 | **Tablet & Phone Adaptive UI** | Responsive **Alabaster Studio** UI across desktop and mobile. On phones, the client stays **portrait** before connecting and switches automatically to **auto-rotation landscape** during extended display streaming. |
 | **Device Policy & Spatial Topology** | Automatic device tracking, allow/block toggles, custom nicknames, per-device default edge placement (`Left / Right / Top / Bottom`), live FPS/bitrate telemetry, and instant per-link disconnect. |
+| **Signed In-App Auto-Updates** | Both macOS and Windows Hosts fetch updates directly from GitHub Releases (`update-manifest.json`) verified with **SHA-256 + Ed25519** signatures and optional mirror prefix support — avoiding re-installing Windows drivers or macOS Gatekeeper quarantine prompts. |
 
 ---
 
@@ -158,7 +159,7 @@ Windows has no built-in user-space API equivalent to macOS `CGVirtualDisplay`. W
   make app        # or `make dmg` for a self-contained .dmg
   open build/DeskMate.app
   ```
-  > Pass `LIBUSB_PREFIX=/usr/local make app` if `libusb` is installed outside `/opt/homebrew`.
+  > Pass `LIBUSB_PREFIX=/usr/local make app` if `libusb` is installed outside `/opt/homebrew`. To sign local builds with a consistent self-signed certificate (`DeskMate Local Signer`, helping avoid rotating ad-hoc CDHashes across updates), run `bash apps/macos-host/scripts/create-self-signed-cert.sh` once and trust it in Keychain Access.
 
 - **Windows (`apps/windows-host`)**:
   ```powershell

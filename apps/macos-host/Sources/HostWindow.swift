@@ -70,6 +70,7 @@ struct HostWindowState: Equatable {
     var fixedSource = false
     var needsRestart = false
     var canRetry = false
+    var update = UpdateStateSnapshot()
     var diagnostic = ""
 }
 
@@ -80,6 +81,7 @@ final class HostWindowModel: ObservableObject {
     @Published var copiedDiagnostics = false
     @Published var renamingDeviceID: String? = nil
     @Published var renameDraft: String = ""
+    @Published var mirrorDraft: String = ""
 }
 
 struct HostWindow: View {
@@ -123,6 +125,11 @@ struct HostWindow: View {
     let renameDevice: (String, String) -> Void
     let removeDevice: (String) -> Void
     let copyDeviceID: (String) -> Void
+    let checkForUpdates: () -> Void
+    let installUpdate: () -> Void
+    let setAutoCheckUpdates: (Bool) -> Void
+    let setUpdateMirrorPrefix: (String) -> Void
+    let openReleasesPage: () -> Void
     let retry: () -> Void
     let copy: () -> Void
 
@@ -365,6 +372,8 @@ struct HostWindow: View {
 
             // Contextual action / authorization bar when needed
             actionCalloutIfNeeded
+
+            updateCalloutIfNeeded
 
             if !state.activeSessions.isEmpty {
                 activeSessionsSection
@@ -1261,6 +1270,227 @@ struct HostWindow: View {
                         .stroke(StudioPalette.hairline, lineWidth: 0.75)
                 )
             }
+
+            // Software Update Section
+            updateSettingsSection
+        }
+    }
+
+    @ViewBuilder
+    private var updateCalloutIfNeeded: some View {
+        let u = state.update
+        let active = (u.phase == .available || u.phase == .downloading ||
+                      u.phase == .verifying || u.phase == .installing)
+        if active {
+            HStack(spacing: 12) {
+                VStack(alignment: .leading, spacing: 3) {
+                    HStack(spacing: 8) {
+                        Text(u.availableVersion.map { "发现新版本 v\($0)" } ?? "软件更新")
+                            .font(.system(size: 12, weight: .semibold))
+                            .foregroundStyle(StudioPalette.ink)
+                        StudioStatusBadge(text: "v\(u.currentVersion) → v\(u.availableVersion ?? "")", tone: .crimson)
+                    }
+                    Text(u.statusText)
+                        .font(.system(size: 11))
+                        .foregroundStyle(StudioPalette.inkSecondary)
+                        .lineLimit(1)
+                }
+
+                Spacer(minLength: 10)
+
+                if u.phase == .available {
+                    Button("前往更新") {
+                        model.page = .settings
+                    }
+                    .buttonStyle(StudioSecondaryButtonStyle())
+
+                    Button("立即更新") {
+                        installUpdate()
+                    }
+                    .buttonStyle(StudioPrimaryButtonStyle())
+                } else {
+                    Text("\(Int((u.progress * 100.0).rounded()))%")
+                        .font(.system(size: 11, weight: .semibold, design: .monospaced))
+                        .foregroundStyle(StudioPalette.crimson)
+                }
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 10)
+            .background(
+                RoundedRectangle(cornerRadius: StudioPalette.cardRadius, style: .continuous)
+                    .fill(StudioPalette.roseWash)
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: StudioPalette.cardRadius, style: .continuous)
+                    .stroke(StudioPalette.roseBorder, lineWidth: 0.75)
+            )
+        }
+    }
+
+    private var updateSettingsSection: some View {
+        let u = state.update
+        let busy = (u.phase == .checking || u.phase == .downloading ||
+                    u.phase == .verifying || u.phase == .installing)
+        let badgeInfo: (String, StudioTone) = {
+            switch u.phase {
+            case .idle: return ("v\(u.currentVersion)", .neutral)
+            case .checking: return ("检查中", .neutral)
+            case .upToDate: return ("已是最新", .positive)
+            case .available: return ("v\(u.availableVersion ?? "") 可用", .crimson)
+            case .downloading: return ("下载中 \(Int((u.progress * 100.0).rounded()))%", .crimson)
+            case .verifying: return ("校验签名中", .crimson)
+            case .installing: return ("正在安装", .crimson)
+            case .failed: return ("更新失败", .warning)
+            }
+        }()
+
+        return VStack(alignment: .leading, spacing: 10) {
+            StudioSectionHeader(english: "UPDATES", chinese: "软件更新")
+
+            VStack(spacing: 0) {
+                HStack(spacing: 12) {
+                    VStack(alignment: .leading, spacing: 3) {
+                        HStack(spacing: 8) {
+                            Text("当前版本 v\(u.currentVersion)")
+                                .font(.system(size: 12.5, weight: .medium))
+                                .foregroundStyle(StudioPalette.ink)
+                            StudioStatusBadge(text: badgeInfo.0, tone: badgeInfo.1)
+                        }
+
+                        Text(u.errorMessage ?? u.statusText)
+                            .font(.system(size: 11))
+                            .foregroundStyle(u.phase == .failed ? StudioPalette.amber : StudioPalette.inkMuted)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+
+                    Spacer(minLength: 10)
+
+                    HStack(spacing: 8) {
+                        Button("Releases") {
+                            openReleasesPage()
+                        }
+                        .buttonStyle(StudioSecondaryButtonStyle())
+
+                        if u.phase == .available {
+                            Button("重新检查") {
+                                checkForUpdates()
+                            }
+                            .buttonStyle(StudioSecondaryButtonStyle())
+
+                            Button("立即更新并重启") {
+                                installUpdate()
+                            }
+                            .buttonStyle(StudioPrimaryButtonStyle())
+                        } else if !busy {
+                            Button("检查更新") {
+                                checkForUpdates()
+                            }
+                            .buttonStyle(StudioPrimaryButtonStyle())
+                        }
+                    }
+                }
+                .padding(.horizontal, 14)
+                .padding(.vertical, 10)
+
+                if u.phase == .downloading || u.phase == .verifying || u.phase == .installing {
+                    VStack(alignment: .leading, spacing: 5) {
+                        GeometryReader { geo in
+                            ZStack(alignment: .leading) {
+                                RoundedRectangle(cornerRadius: 2, style: .continuous)
+                                    .fill(StudioPalette.softHairline)
+                                    .frame(height: 4)
+                                RoundedRectangle(cornerRadius: 2, style: .continuous)
+                                    .fill(StudioPalette.crimson)
+                                    .frame(width: max(4, geo.size.width * CGFloat(min(1.0, max(0.0, u.progress)))), height: 4)
+                            }
+                        }
+                        .frame(height: 4)
+                    }
+                    .padding(.horizontal, 14)
+                    .padding(.bottom, 10)
+                }
+
+                if u.phase == .available && !u.releaseNotes.isEmpty {
+                    Rectangle().fill(StudioPalette.softHairline).frame(height: 0.75)
+
+                    Text(u.releaseNotes)
+                        .font(.system(size: 11))
+                        .foregroundStyle(StudioPalette.inkSecondary)
+                        .lineLimit(3)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 8)
+                        .background(StudioPalette.subtleSurface)
+                }
+
+                Rectangle().fill(StudioPalette.softHairline).frame(height: 0.75)
+
+                controlToggleRow(
+                    title: "启动时自动检查更新",
+                    subtitle: "从 GitHub Releases 检查带 Ed25519 签名的新版本（免手动重新解除隔离）",
+                    isOn: u.autoCheckEnabled,
+                    action: { setAutoCheckUpdates(!u.autoCheckEnabled) }
+                )
+
+                Rectangle().fill(StudioPalette.softHairline).frame(height: 0.75)
+
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack(spacing: 8) {
+                        Text("GitHub 加速前缀（可选）")
+                            .font(.system(size: 12, weight: .medium))
+                            .foregroundStyle(StudioPalette.ink)
+                        Spacer()
+                        Text("通过 Ed25519 校验完整性，留空即直连")
+                            .font(.system(size: 10.5))
+                            .foregroundStyle(StudioPalette.inkMuted)
+                    }
+
+                    HStack(spacing: 8) {
+                        TextField("例如 https://ghfast.top/", text: $model.mirrorDraft)
+                            .textFieldStyle(.plain)
+                            .font(.system(size: 11.5, design: .monospaced))
+                            .padding(.horizontal, 9)
+                            .padding(.vertical, 6)
+                            .background(
+                                RoundedRectangle(cornerRadius: StudioPalette.cornerRadius, style: .continuous)
+                                    .fill(StudioPalette.subtleSurface)
+                            )
+                            .overlay(
+                                RoundedRectangle(cornerRadius: StudioPalette.cornerRadius, style: .continuous)
+                                    .stroke(StudioPalette.hairline, lineWidth: 0.75)
+                            )
+                            .onAppear {
+                                model.mirrorDraft = state.update.mirrorPrefix
+                            }
+                            .onChange(of: state.update.mirrorPrefix) { _, newValue in
+                                if model.mirrorDraft != newValue {
+                                    model.mirrorDraft = newValue
+                                }
+                            }
+
+                        Button("保存") {
+                            setUpdateMirrorPrefix(model.mirrorDraft)
+                        }
+                        .buttonStyle(StudioSecondaryButtonStyle())
+
+                        if !state.update.mirrorPrefix.isEmpty {
+                            Button("清除") {
+                                model.mirrorDraft = ""
+                                setUpdateMirrorPrefix("")
+                            }
+                            .buttonStyle(StudioSecondaryButtonStyle())
+                        }
+                    }
+                }
+                .padding(.horizontal, 14)
+                .padding(.vertical, 10)
+            }
+            .background(StudioPalette.cardSurface)
+            .clipShape(RoundedRectangle(cornerRadius: StudioPalette.cardRadius, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: StudioPalette.cardRadius, style: .continuous)
+                    .stroke(StudioPalette.hairline, lineWidth: 0.75)
+            )
         }
     }
 

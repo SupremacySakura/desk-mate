@@ -5,6 +5,7 @@
 #include "deskmate/windows/host_state.hpp"
 #include "deskmate/windows/input_injector.hpp"
 #include "deskmate/windows/libusb_aoa.hpp"
+#include "deskmate/windows/updater.hpp"
 #include "deskmate/windows/virtual_display.hpp"
 
 #include <atomic>
@@ -68,6 +69,11 @@ class HostController {
   void remove_device(const std::string& device_id);
   void retry();
   void handle_host_event(deskmate::protocol::HostEvent event);
+
+  void check_for_updates(bool manual = true);
+  void install_available_update();
+  void set_auto_check_updates(bool enabled);
+  void set_update_mirror_prefix(const std::string& prefix);
 
   [[nodiscard]] HostUiState snapshot_ui_state();
   [[nodiscard]] std::string diagnostic_text();
@@ -138,6 +144,7 @@ class HostController {
 
   std::unique_ptr<LibusbAoaDiscovery> discovery_;
   VirtualDisplayManager vdd_;
+  UpdateManager updater_;
   std::thread discovery_thread_;
   std::mutex discovery_mutex_;
   std::condition_variable discovery_cv_;

@@ -6,9 +6,10 @@ BUILD_DIR := $(ROOT)/build
 MODULE_CACHE := $(BUILD_DIR)/module-cache
 APP := $(BUILD_DIR)/DeskMate.app
 BIN := $(APP)/Contents/MacOS/DeskMate
-VERSION ?= 1.0.0
+VERSION ?= 1.3.0
 ARCH := $(shell uname -m)
 DMG := $(BUILD_DIR)/DeskMate-v$(VERSION)-macos-$(ARCH).dmg
+APP_ZIP := $(BUILD_DIR)/DeskMate-v$(VERSION)-macos-$(ARCH).zip
 
 CORE_SOURCES := $(wildcard $(REPO)/core/src/*.cpp)
 CORE_OBJECTS := $(patsubst $(REPO)/core/src/%.cpp,$(BUILD_DIR)/core/%.o,$(CORE_SOURCES))
@@ -41,7 +42,7 @@ CORE_INCLUDES := -I$(REPO)/core/include -I$(ROOT)/include -I$(ROOT)/Sources/incl
 CORE_FLAGS := -std=c++20 -Wall -Wextra -Wpedantic -Wno-deprecated-enum-enum-conversion \
 	-O2 -mmacosx-version-min=15.0 -isysroot $(SDK) $(CORE_INCLUDES)
 
-.PHONY: all build app dmg test clean list-displays help
+.PHONY: all build app dmg zip test clean list-displays help
 
 all: app
 
@@ -126,7 +127,9 @@ build: $(CORE_OBJECTS) $(BRIDGE_OBJECT) $(OBJC_OBJECT) $(HID_OBJC_OBJECT) $(ROOT
 app: build
 
 dmg: app
-	@bash "$(ROOT)/scripts/package-dmg.sh" "$(APP)" "$(DMG)" "$(LIBUSB_PREFIX)"
+	@bash "$(ROOT)/scripts/package-dmg.sh" "$(APP)" "$(DMG)" "$(LIBUSB_PREFIX)" "DeskMate" "$(APP_ZIP)"
+
+zip: dmg
 
 $(USB_BYTE_IO_TEST): $(ROOT)/tests/usb_byte_io_test.cpp $(ROOT)/Sources/Bridge.cpp $(ROOT)/include/DMBridge.h $(CORE_OBJECTS) | $(BUILD_DIR)
 	@xcrun --sdk macosx clang++ $(CORE_FLAGS) "$<" $(CORE_OBJECTS) \

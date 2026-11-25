@@ -45,6 +45,7 @@ HostController::HostController(HostOptions options, std::string settings_path)
   allow_input_ = prefs.allow_input;
   touch_mode_ = prefs.touch_input_mode;
   auto_start_service_ = prefs.auto_start_service;
+  updater_.set_preferences(prefs.auto_check_updates, prefs.update_mirror_prefix);
 
 #ifdef _WIN32
   hevc_available_ = options_.codec_explicit
@@ -95,6 +96,18 @@ void HostController::start() {
   append_log("DeskMate Windows Host 启动");
   if (auto_start_service_ || options_.dry_run || options_.headless) {
     start_service_internal();
+  }
+  if (!options_.dry_run && store_.prefs().auto_check_updates) {
+    std::thread([this]() {
+      std::this_thread::sleep_for(std::chrono::seconds(4));
+      {
+        std::lock_guard lock(mutex_);
+        if (!started_ || !store_.prefs().auto_check_updates) {
+          return;
+        }
+      }
+      updater_.check_for_updates(false);
+    }).detach();
   }
 }
 
@@ -1194,6 +1207,48 @@ void HostController::set_auto_start_service(bool enabled) {
   store_.save();
 }
 
+void HostController::check_for_updates(bool manual) {
+  updater_.check_for_updates(manual);
+}
+
+void HostController::install_available_update() {
+  updater_.download_and_install([this]() {
+    append_log("[update] 正在停止后台服务并释放虚拟显示器以完成更新替换...");
+    stop_service_internal();
+  });
+}
+
+void HostController::set_auto_check_updates(bool enabled) {
+  std::string mirror;
+  {
+    std::lock_guard lock(mutex_);
+    store_.prefs().auto_check_updates = enabled;
+    store_.save();
+    mirror = store_.prefs().update_mirror_prefix;
+  }
+  updater_.set_preferences(enabled, mirror);
+}
+
+void HostController::set_update_mirror_prefix(const std::string& prefix) {
+  bool auto_check = true;
+  std::string trimmed = prefix;
+  while (!trimmed.empty() &&
+         std::isspace(static_cast<unsigned char>(trimmed.front())) != 0) {
+    trimmed.erase(trimmed.begin());
+  }
+  while (!trimmed.empty() &&
+         std::isspace(static_cast<unsigned char>(trimmed.back())) != 0) {
+    trimmed.pop_back();
+  }
+  {
+    std::lock_guard lock(mutex_);
+    store_.prefs().update_mirror_prefix = trimmed;
+    store_.save();
+    auto_check = store_.prefs().auto_check_updates;
+  }
+  updater_.set_preferences(auto_check, trimmed);
+}
+
 void HostController::refresh_devices() {
   if (discovery_ == nullptr) {
     LibusbAoaDiscovery temp;
@@ -1655,6 +1710,7 @@ HostUiState HostController::snapshot_ui_state() {
   }
 
   view.diagnostic = build_diagnostic_locked();
+  view.update = updater_.snapshot();
   {
     std::lock_guard llock(log_mutex_);
     view.recent_logs.assign(logs_.begin(), logs_.end());

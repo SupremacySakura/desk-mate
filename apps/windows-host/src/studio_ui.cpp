@@ -39,6 +39,7 @@ constexpr UINT kMsgTrayIcon = WM_APP + 101;
 constexpr UINT_PTR kTimerRefreshId = 1;
 constexpr UINT_PTR kTimerCopyResetId = 2;
 constexpr int kEditRenameId = 4001;
+constexpr int kEditMirrorId = 4002;
 
 constexpr UINT kCmdTrayShow = 1001;
 constexpr UINT kCmdTrayToggleService = 1002;
@@ -164,6 +165,14 @@ void copy_to_clipboard(HWND owner, const std::string& text) {
 
 void open_shell_target(const wchar_t* target) {
   ShellExecuteW(nullptr, L"open", target, nullptr, nullptr, SW_SHOWNORMAL);
+}
+
+void open_shell_target_utf8(const std::string& target) {
+  if (target.empty()) {
+    return;
+  }
+  const std::wstring w = utf8_to_wide(target);
+  open_shell_target(w.c_str());
 }
 
 std::string format_bitrate_mbps(double mbps) {
@@ -792,6 +801,17 @@ class StudioWindowController {
           continue;
         }
       }
+      if (mirror_edit_ != nullptr && msg.hwnd == mirror_edit_ &&
+          msg.message == WM_KEYDOWN) {
+        if (msg.wParam == VK_RETURN) {
+          commit_mirror_edit();
+          continue;
+        }
+        if (msg.wParam == VK_ESCAPE) {
+          cancel_mirror_edit();
+          continue;
+        }
+      }
       if (msg.message == WM_KEYDOWN && msg.wParam == 'Q' &&
           (GetKeyState(VK_CONTROL) & 0x8000) != 0) {
         request_quit();
@@ -1165,6 +1185,50 @@ class StudioWindowController {
     InvalidateRect(main_hwnd_, nullptr, FALSE);
   }
 
+  void begin_mirror_edit(const std::string& initial) {
+    editing_mirror_ = true;
+    if (mirror_edit_ == nullptr) {
+      mirror_edit_ = CreateWindowExW(
+          WS_EX_CLIENTEDGE, L"EDIT", utf8_to_wide(initial).c_str(),
+          WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL, 0, 0, 180, 24, main_hwnd_,
+          reinterpret_cast<HMENU>(static_cast<INT_PTR>(kEditMirrorId)),
+          GetModuleHandleW(nullptr), nullptr);
+      HFONT font = CreateFontW(-14, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
+                               DEFAULT_CHARSET, OUT_DEFAULT_PRECIS,
+                               CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
+                               DEFAULT_PITCH, L"Consolas");
+      if (font != nullptr) {
+        SendMessageW(mirror_edit_, WM_SETFONT, reinterpret_cast<WPARAM>(font),
+                     TRUE);
+      }
+    } else {
+      SetWindowTextW(mirror_edit_, utf8_to_wide(initial).c_str());
+      ShowWindow(mirror_edit_, SW_SHOW);
+    }
+    SetFocus(mirror_edit_);
+    SendMessageW(mirror_edit_, EM_SETSEL, 0, -1);
+    InvalidateRect(main_hwnd_, nullptr, FALSE);
+  }
+
+  void commit_mirror_edit() {
+    if (!editing_mirror_ || mirror_edit_ == nullptr) {
+      return;
+    }
+    wchar_t buf[512]{};
+    GetWindowTextW(mirror_edit_, buf, 512);
+    controller_.set_update_mirror_prefix(wide_to_utf8(buf));
+    cancel_mirror_edit();
+    refresh_now();
+  }
+
+  void cancel_mirror_edit() {
+    editing_mirror_ = false;
+    if (mirror_edit_ != nullptr) {
+      ShowWindow(mirror_edit_, SW_HIDE);
+    }
+    InvalidateRect(main_hwnd_, nullptr, FALSE);
+  }
+
   void copy_diagnostic() {
     copy_to_clipboard(main_hwnd_, controller_.diagnostic_text());
     copied_feedback_ = true;
@@ -1306,6 +1370,7 @@ class StudioWindowController {
       t.add_hit(tr, [this, next_tab] {
         if (next_tab != tab_) {
           cancel_rename();
+          cancel_mirror_edit();
           tab_ = next_tab;
           right_scroll_y_ = 0.0F;
           InvalidateRect(main_hwnd_, nullptr, FALSE);
@@ -1361,6 +1426,7 @@ class StudioWindowController {
     right_viewport_rect_ = right_clip;
     main_rt_->PushAxisAlignedClip(right_clip, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
 
+    mirror_box_valid_ = false;
     float content_end_y = body_top - right_scroll_y_;
     switch (tab_) {
       case UiTab::Display:
@@ -1415,6 +1481,26 @@ class StudioWindowController {
         ShowWindow(rename_edit_, SW_SHOW);
       } else {
         ShowWindow(rename_edit_, SW_HIDE);
+      }
+    }
+
+    if (mirror_edit_ != nullptr && editing_mirror_) {
+      const bool in_bounds =
+          mirror_box_valid_ && mirror_box_rect_.top >= body_top &&
+          mirror_box_rect_.bottom <= body_bottom;
+      if (tab_ == UiTab::Settings && in_bounds) {
+        const float s = dpi_scale(main_hwnd_);
+        MoveWindow(mirror_edit_,
+                   static_cast<int>(std::lround(mirror_box_rect_.left * s)),
+                   static_cast<int>(std::lround(mirror_box_rect_.top * s)),
+                   static_cast<int>(std::lround(
+                       (mirror_box_rect_.right - mirror_box_rect_.left) * s)),
+                   static_cast<int>(std::lround(
+                       (mirror_box_rect_.bottom - mirror_box_rect_.top) * s)),
+                   TRUE);
+        ShowWindow(mirror_edit_, SW_SHOW);
+      } else {
+        ShowWindow(mirror_edit_, SW_HIDE);
       }
     }
 
@@ -1930,6 +2016,54 @@ class StudioWindowController {
                             refresh_now();
                           }, 94.0F);
       y += 68.0F;
+    }
+
+    // Update Banner when new version is available or installing
+    {
+      const auto& u = state_.update;
+      const bool update_active =
+          (u.phase == UpdatePhase::Available ||
+           u.phase == UpdatePhase::Downloading ||
+           u.phase == UpdatePhase::Verifying ||
+           u.phase == UpdatePhase::Installing);
+      if (update_active) {
+        const D2D1_RECT_F uc = D2D1::RectF(x, y, x + w, y + 58.0F);
+        t.fill_round(uc, 4.0F, palette::kRoseWash);
+        t.stroke_round(uc, 4.0F, palette::kRoseBorder, 0.85F);
+        const std::string title = u.available_version.empty()
+                                      ? "软件更新"
+                                      : ("发现新版本 v" + u.available_version);
+        t.draw_text(title,
+                    D2D1::RectF(x + 14.0F, y + 9.0F, x + w - 196.0F, y + 27.0F),
+                    f_ui_12_b_.Get(), palette::kInk);
+        t.draw_text(u.status_text,
+                    D2D1::RectF(x + 14.0F, y + 30.0F, x + w - 196.0F, y + 48.0F),
+                    f_ui_11_.Get(), palette::kInkSecondary,
+                    DWRITE_TEXT_ALIGNMENT_LEADING,
+                    DWRITE_PARAGRAPH_ALIGNMENT_NEAR, true);
+        if (u.phase == UpdatePhase::Available) {
+          draw_secondary_button(t, x + w - 186.0F, y + 15.0F, "查看详情",
+                                f_ui_11_.Get(), [this] {
+                                  tab_ = UiTab::Settings;
+                                  right_scroll_y_ = 480.0F;
+                                  InvalidateRect(main_hwnd_, nullptr, FALSE);
+                                }, 76.0F);
+          draw_primary_button(t, x + w - 102.0F, y + 14.0F, "立即更新",
+                              f_ui_12_.Get(), [this] {
+                                controller_.install_available_update();
+                                refresh_now();
+                              }, 88.0F);
+        } else {
+          const int pct = static_cast<int>(std::lround(u.progress * 100.0));
+          t.draw_text(std::to_string(pct) + "%",
+                      D2D1::RectF(x + w - 76.0F, y + 16.0F, x + w - 14.0F,
+                                  y + 40.0F),
+                      f_mono_11_b_.Get(), palette::kCrimson,
+                      DWRITE_TEXT_ALIGNMENT_TRAILING,
+                      DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+        }
+        y += 68.0F;
+      }
     }
 
     // Active Displays Section
@@ -2618,7 +2752,189 @@ class StudioWindowController {
 
     t.stroke_round(D2D1::RectF(x, sys_top, x + w, sys_top + sys_h), 4.0F,
                    palette::kHairline, 0.85F);
-    return sys_top + sys_h + 10.0F;
+    y = sys_top + sys_h + 18.0F;
+
+    // 5. UPDATES
+    draw_section_header(t, x, y, w, "UPDATES", "软件更新",
+                        f_mono_9_.Get(), f_ui_11_b_.Get());
+    y += 24.0F;
+    const auto& upd = state_.update;
+    const bool upd_busy =
+        (upd.phase == UpdatePhase::Checking ||
+         upd.phase == UpdatePhase::Downloading ||
+         upd.phase == UpdatePhase::Verifying ||
+         upd.phase == UpdatePhase::Installing);
+    const bool show_prog =
+        (upd.phase == UpdatePhase::Downloading ||
+         upd.phase == UpdatePhase::Verifying ||
+         upd.phase == UpdatePhase::Installing);
+    const bool show_notes =
+        (upd.phase == UpdatePhase::Available && !upd.release_notes.empty());
+    const float top_row_h = show_prog ? 72.0F : 58.0F;
+    const float notes_h = show_notes ? 42.0F : 0.0F;
+    const float mirror_row_h = editing_mirror_ ? 72.0F : 56.0F;
+    const float upd_top = y;
+    const float upd_h = top_row_h + notes_h + 54.0F + mirror_row_h;
+    t.fill_round(D2D1::RectF(x, upd_top, x + w, upd_top + upd_h), 4.0F,
+                 palette::kCardSurface);
+
+    const char* upd_badge = upd.current_version.c_str();
+    Tone upd_tone = Tone::Neutral;
+    std::string upd_badge_buf = "v" + upd.current_version;
+    switch (upd.phase) {
+      case UpdatePhase::Idle:
+        break;
+      case UpdatePhase::Checking:
+        upd_badge_buf = "检查中";
+        break;
+      case UpdatePhase::UpToDate:
+        upd_badge_buf = "已是最新";
+        upd_tone = Tone::Positive;
+        break;
+      case UpdatePhase::Available:
+        upd_badge_buf = "v" + upd.available_version + " 可用";
+        upd_tone = Tone::Crimson;
+        break;
+      case UpdatePhase::Downloading:
+        upd_badge_buf =
+            "下载中 " +
+            std::to_string(static_cast<int>(std::lround(upd.progress * 100.0))) +
+            "%";
+        upd_tone = Tone::Crimson;
+        break;
+      case UpdatePhase::Verifying:
+        upd_badge_buf = "校验签名中";
+        upd_tone = Tone::Crimson;
+        break;
+      case UpdatePhase::Installing:
+        upd_badge_buf = "正在替换重启";
+        upd_tone = Tone::Crimson;
+        break;
+      case UpdatePhase::Failed:
+        upd_badge_buf = "更新失败";
+        upd_tone = Tone::Warning;
+        break;
+    }
+    upd_badge = upd_badge_buf.c_str();
+
+    t.draw_text("当前版本 v" + upd.current_version,
+                D2D1::RectF(x + 14.0F, y + 9.0F, x + 152.0F, y + 27.0F),
+                f_ui_12_b_.Get(), palette::kInk);
+    draw_status_badge(t, x + 146.0F, y + 8.0F, upd_badge, upd_tone,
+                      f_ui_10_b_.Get());
+    const std::string upd_sub =
+        !upd.error_message.empty() ? upd.error_message : upd.status_text;
+    const float upd_btn_reserve =
+        (upd.phase == UpdatePhase::Available) ? 286.0F : 196.0F;
+    t.draw_text(upd_sub,
+                D2D1::RectF(x + 14.0F, y + 31.0F, x + w - upd_btn_reserve,
+                            y + 50.0F),
+                f_ui_11_.Get(),
+                upd.phase == UpdatePhase::Failed ? palette::kAmber
+                                                 : palette::kInkMuted,
+                DWRITE_TEXT_ALIGNMENT_LEADING,
+                DWRITE_PARAGRAPH_ALIGNMENT_NEAR, true);
+
+    draw_secondary_button(
+        t, x + w - 92.0F, y + 13.0F, "Releases", f_ui_10_b_.Get(),
+        [rel = upd.release_url] { open_shell_target_utf8(rel); }, 78.0F);
+    if (upd.phase == UpdatePhase::Available) {
+      draw_secondary_button(t, x + w - 182.0F, y + 13.0F, "重检",
+                            f_ui_11_.Get(), [this] {
+                              controller_.check_for_updates(true);
+                              refresh_now();
+                            }, 56.0F);
+      draw_primary_button(t, x + w - 282.0F, y + 12.0F, "立即更新",
+                          f_ui_12_.Get(), [this] {
+                            controller_.install_available_update();
+                            refresh_now();
+                          }, 92.0F);
+    } else if (!upd_busy) {
+      draw_primary_button(t, x + w - 190.0F, y + 12.0F, "检查更新",
+                          f_ui_12_.Get(), [this] {
+                            controller_.check_for_updates(true);
+                            refresh_now();
+                          }, 90.0F);
+    }
+
+    if (show_prog) {
+      const float bar_y = y + 57.0F;
+      const float bar_w = w - 28.0F;
+      t.fill_round(D2D1::RectF(x + 14.0F, bar_y, x + 14.0F + bar_w, bar_y + 5.0F),
+                   2.5F, palette::kSoftHairline);
+      const float fill_w =
+          std::max(6.0F, bar_w * static_cast<float>(std::clamp(upd.progress, 0.0, 1.0)));
+      t.fill_round(D2D1::RectF(x + 14.0F, bar_y, x + 14.0F + fill_w, bar_y + 5.0F),
+                   2.5F, palette::kCrimson);
+    }
+    y += top_row_h;
+
+    if (show_notes) {
+      t.line(x, y, x + w, y, palette::kSoftHairline, 0.8F);
+      t.fill_rect(D2D1::RectF(x + 1.0F, y + 0.5F, x + w - 1.0F, y + notes_h),
+                  palette::kSubtleSurface);
+      t.draw_text(upd.release_notes,
+                  D2D1::RectF(x + 14.0F, y + 6.0F, x + w - 14.0F, y + notes_h - 6.0F),
+                  f_ui_11_.Get(), palette::kInkSecondary);
+      y += notes_h;
+    }
+
+    t.line(x, y, x + w, y, palette::kSoftHairline, 0.8F);
+    y = draw_toggle_row(
+        t, x, y, w, "启动时自动检查更新",
+        "从 GitHub Releases 检查带 Ed25519 签名的新版本（原地替换，无需重装驱动）",
+        upd.auto_check_updates, [this] {
+          controller_.set_auto_check_updates(!state_.update.auto_check_updates);
+          refresh_now();
+        });
+    t.line(x, y, x + w, y, palette::kSoftHairline, 0.8F);
+
+    t.draw_text("GitHub 加速前缀（可选）",
+                D2D1::RectF(x + 14.0F, y + 8.0F, x + 220.0F, y + 26.0F),
+                f_ui_12_b_.Get(), palette::kInk);
+    t.draw_text("通过 Ed25519 校验完整性，留空即直连",
+                D2D1::RectF(x + 220.0F, y + 9.0F, x + w - 14.0F, y + 26.0F),
+                f_ui_10_.Get(), palette::kInkMuted,
+                DWRITE_TEXT_ALIGNMENT_TRAILING);
+    if (editing_mirror_) {
+      mirror_box_rect_ =
+          D2D1::RectF(x + 14.0F, y + 32.0F, x + w - 148.0F, y + 58.0F);
+      mirror_box_valid_ = true;
+      draw_primary_button(t, x + w - 140.0F, y + 31.0F, "保存",
+                          f_ui_11_.Get(), [this] { commit_mirror_edit(); },
+                          58.0F);
+      draw_secondary_button(t, x + w - 74.0F, y + 31.0F, "取消",
+                            f_ui_11_.Get(), [this] { cancel_mirror_edit(); },
+                            60.0F);
+    } else {
+      const std::string mirror_text =
+          upd.mirror_prefix.empty() ? "当前：直连 GitHub（默认）"
+                                    : upd.mirror_prefix;
+      t.draw_text(mirror_text,
+                  D2D1::RectF(x + 14.0F, y + 29.0F, x + w - 148.0F, y + 48.0F),
+                  f_mono_10_.Get(),
+                  upd.mirror_prefix.empty() ? palette::kInkMuted
+                                            : palette::kInkSecondary,
+                  DWRITE_TEXT_ALIGNMENT_LEADING,
+                  DWRITE_PARAGRAPH_ALIGNMENT_CENTER, true);
+      if (!upd.mirror_prefix.empty()) {
+        draw_secondary_button(
+            t, x + w - 138.0F, y + 24.0F, "清除", f_ui_11_.Get(),
+            [this] {
+              controller_.set_update_mirror_prefix("");
+              refresh_now();
+            },
+            56.0F);
+      }
+      draw_secondary_button(
+          t, x + w - 76.0F, y + 24.0F, "设置", f_ui_11_.Get(),
+          [this, cur = upd.mirror_prefix] { begin_mirror_edit(cur); },
+          62.0F);
+    }
+
+    t.stroke_round(D2D1::RectF(x, upd_top, x + w, upd_top + upd_h), 4.0F,
+                   palette::kHairline, 0.85F);
+    return upd_top + upd_h + 10.0F;
   }
 
   float draw_diagnostics_tab(const RenderTarget& t, float x, float y, float w) {
@@ -3024,6 +3340,9 @@ class StudioWindowController {
       case WM_TIMER:
         if (wp == kTimerRefreshId) {
           refresh_now();
+          if (state_.update.restart_requested && !quitting_) {
+            request_quit();
+          }
         } else if (wp == kTimerCopyResetId) {
           copied_feedback_ = false;
           KillTimer(hwnd, kTimerCopyResetId);
@@ -3202,6 +3521,7 @@ class StudioWindowController {
   HWND main_hwnd_{nullptr};
   HWND popover_hwnd_{nullptr};
   HWND rename_edit_{nullptr};
+  HWND mirror_edit_{nullptr};
   HICON tray_hicon_{nullptr};
   bool tray_added_{false};
   bool last_tray_linked_{false};
@@ -3212,6 +3532,9 @@ class StudioWindowController {
   std::string renaming_device_id_;
   D2D1_RECT_F rename_box_rect_{};
   bool rename_box_valid_{false};
+  bool editing_mirror_{false};
+  D2D1_RECT_F mirror_box_rect_{};
+  bool mirror_box_valid_{false};
 
   ComPtr<ID2D1HwndRenderTarget> main_rt_;
   ComPtr<ID2D1SolidColorBrush> main_brush_;

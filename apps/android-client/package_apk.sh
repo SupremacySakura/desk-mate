@@ -69,7 +69,7 @@ sed 's|<manifest xmlns:android="http://schemas.android.com/apk/res/android">|&|'
   --java "$WORK/gen" \
   --min-sdk-version "$API" \
   --target-sdk-version 35 \
-  --version-code "${VERSION_CODE:-3}" --version-name "${VERSION_NAME:-1.2.0}" \
+  --version-code "${VERSION_CODE:-4}" --version-name "${VERSION_NAME:-1.3.0}" \
   "$WORK/res.zip"
 
 echo "==> javac"

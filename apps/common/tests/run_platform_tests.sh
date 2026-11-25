@@ -31,6 +31,10 @@ build "$BUILD/wire-compat-tests" \
   "$ROOT/apps/common/tests/wire_compat_tests.cpp" \
   "${COMMON_SOURCES[@]}" "${CORE_SOURCES[@]}"
 
+build "$BUILD/update-tests" \
+  "$ROOT/apps/common/tests/update_tests.cpp" \
+  "${COMMON_SOURCES[@]}" "${CORE_SOURCES[@]}"
+
 build "$BUILD/aoa-session-tests" \
   -I"$ROOT/apps/windows-host/include" \
   "$ROOT/apps/common/tests/aoa_session_tests.cpp" \
@@ -58,6 +62,7 @@ build "$BUILD/windows-host-smoke" \
   "$ROOT/apps/windows-host/src/input_injector.cpp" \
   "$ROOT/apps/windows-host/src/libusb_aoa.cpp" \
   "$ROOT/apps/windows-host/src/studio_ui.cpp" \
+  "$ROOT/apps/windows-host/src/updater.cpp" \
   "$ROOT/apps/windows-host/src/virtual_display.cpp" \
   "${COMMON_SOURCES[@]}" "${CORE_SOURCES[@]}"
 
@@ -66,6 +71,7 @@ bash "$ROOT/apps/common/tests/run_android_io_test.sh"
 
 "$BUILD/platform-tests"
 "$BUILD/wire-compat-tests"
+"$BUILD/update-tests"
 "$BUILD/aoa-session-tests"
 "$BUILD/windows-contract-tests"
 

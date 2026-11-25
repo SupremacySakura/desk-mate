@@ -1,6 +1,7 @@
 #include "deskmate/windows/capture_encoder.hpp"
 #include "deskmate/windows/host_controller.hpp"
 #include "deskmate/windows/studio_ui.hpp"
+#include "deskmate/windows/updater.hpp"
 
 #include <chrono>
 #include <cstdio>
@@ -20,6 +21,7 @@ namespace {
 deskmate::windows::HostOptions parse_options(int argc, char** argv,
                                              bool& show_help) {
   deskmate::windows::HostOptions options;
+  std::string cleanup_old_path;
   show_help = false;
   for (int index = 1; index < argc; ++index) {
     const std::string arg = argv[index];
@@ -42,10 +44,13 @@ deskmate::windows::HostOptions parse_options(int argc, char** argv,
       options.dry_run = true;
     } else if (arg == "--headless") {
       options.headless = true;
+    } else if (arg == "--cleanup-old" && index + 1 < argc) {
+      cleanup_old_path = argv[++index];
     } else if (arg == "--help" || arg == "-h") {
       show_help = true;
     }
   }
+  deskmate::windows::cleanup_old_executable_if_present(cleanup_old_path);
   return options;
 }
 

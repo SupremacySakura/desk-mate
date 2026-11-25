@@ -1,6 +1,7 @@
 #pragma once
 
 #include "deskmate/windows/input_injector.hpp"
+#include "deskmate/windows/updater.hpp"
 
 #include <cstdint>
 #include <optional>
@@ -45,6 +46,8 @@ struct HostPreferences {
   bool allow_input{true};
   TouchInputMode touch_input_mode{TouchInputMode::CompatibleGestures};
   bool auto_start_service{true};
+  bool auto_check_updates{true};
+  std::string update_mirror_prefix;
   std::string preferred_monitor_name;
   std::vector<PairedDevice> paired_devices;
 };
@@ -181,6 +184,7 @@ struct HostUiState {
   std::string vdd_backend_name;
   std::string vdd_status_detail;
   bool can_retry{false};
+  UpdateUiState update;
   std::string diagnostic;
   std::vector<std::string> recent_logs;
 };

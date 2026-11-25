@@ -1,4 +1,4 @@
-name: Release macOS DMG
+name: Release macOS DMG & Updater ZIP
 
 on:
   push:
@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: 'Release tag to build and upload (e.g. v1.0.0)'
+        description: 'Release tag to build and upload (e.g. v1.2.0)'
         required: true
         type: string
 
@@ -24,13 +24,38 @@ jobs:
       - name: Install libusb
         run: brew install libusb
 
+      - name: Import fixed macOS signing certificate (if configured)
+        env:
+          MACOS_CERT_P12: ${{ secrets.MACOS_CERT_P12 }}
+          MACOS_CERT_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD }}
+        run: |
+          if [ -n "$MACOS_CERT_P12" ]; then
+            KEYCHAIN_PATH="$RUNNER_TEMP/deskmate-signing.keychain-db"
+            CERT_PATH="$RUNNER_TEMP/deskmate-signer.p12"
+            CERT_PASS="${MACOS_CERT_PASSWORD:-deskmate-local}"
+            echo "$MACOS_CERT_P12" | base64 --decode > "$CERT_PATH"
+            security create-keychain -p "$CERT_PASS" "$KEYCHAIN_PATH"
+            security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+            security unlock-keychain -p "$CERT_PASS" "$KEYCHAIN_PATH"
+            security import "$CERT_PATH" -k "$KEYCHAIN_PATH" -P "$CERT_PASS" -T /usr/bin/codesign
+            security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$CERT_PASS" "$KEYCHAIN_PATH"
+            security list-keychains -d user -s "$KEYCHAIN_PATH" login.keychain-db
+            rm -f "$CERT_PATH"
+            echo "CODESIGN_IDENTITY=DeskMate Local Signer" >> "$GITHUB_ENV"
+          else
+            echo "CODESIGN_IDENTITY=-" >> "$GITHUB_ENV"
+          fi
+
       - name: Run shared C++20 core tests
         run: make test
+
+      - name: Run platform and update crypto tests
+        run: bash apps/common/tests/run_platform_tests.sh
 
       - name: Run macOS host tests
         run: make -C apps/macos-host test
 
-      - name: Build self-contained macOS DMG
+      - name: Build self-contained macOS DMG & updater ZIP
         env:
           INPUT_TAG: ${{ inputs.tag }}
         run: |
@@ -40,20 +65,28 @@ jobs:
           echo "RELEASE_VERSION=${VERSION}" >> "$GITHUB_ENV"
           make -C apps/macos-host dmg VERSION="$VERSION"
 
-      - name: Generate SHA256 checksum
+      - name: Generate SHA256 checksums
         run: |
           cd apps/macos-host/build
           DMG_FILE="DeskMate-v${RELEASE_VERSION}-macos-arm64.dmg"
+          ZIP_FILE="DeskMate-v${RELEASE_VERSION}-macos-arm64.zip"
           shasum -a 256 "$DMG_FILE" > "${DMG_FILE}.sha256"
+          shasum -a 256 "$ZIP_FILE" > "${ZIP_FILE}.sha256"
 
-      - name: Upload DMG to GitHub Release
+      - name: Upload macOS assets to GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          DMG_PATH="apps/macos-host/build/DeskMate-v${RELEASE_VERSION}-macos-arm64.dmg"
-          SHA_PATH="${DMG_PATH}.sha256"
+          DMG_FILE="DeskMate-v${RELEASE_VERSION}-macos-arm64.dmg"
+          ZIP_FILE="DeskMate-v${RELEASE_VERSION}-macos-arm64.zip"
+          DMG_PATH="apps/macos-host/build/${DMG_FILE}"
+          ZIP_PATH="apps/macos-host/build/${ZIP_FILE}"
           if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
-            gh release upload "$RELEASE_TAG" "$DMG_PATH" "$SHA_PATH" --clobber
+            if gh release view "$RELEASE_TAG" --json assets --jq '.assets[].name' | grep -qx "$ZIP_FILE"; then
+              echo "Release $RELEASE_TAG already contains signed updater asset $ZIP_FILE; skipping CI upload to preserve manifest hashes."
+              exit 0
+            fi
+            gh release upload "$RELEASE_TAG" "$DMG_PATH" "${DMG_PATH}.sha256" "$ZIP_PATH" "${ZIP_PATH}.sha256" --clobber
           else
-            gh release create "$RELEASE_TAG" "$DMG_PATH" "$SHA_PATH" --title "DeskMate ${RELEASE_TAG}" --generate-notes
+            gh release create "$RELEASE_TAG" "$DMG_PATH" "${DMG_PATH}.sha256" "$ZIP_PATH" "${ZIP_PATH}.sha256" --title "DeskMate ${RELEASE_TAG}" --generate-notes
           fi

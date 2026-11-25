@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-APP_PATH="${1:?usage: package-dmg.sh /path/to/DeskMate.app /path/to/output.dmg [libusb_prefix] [volume_name]}"
-OUT_DMG="${2:?usage: package-dmg.sh /path/to/DeskMate.app /path/to/output.dmg [libusb_prefix] [volume_name]}"
+APP_PATH="${1:?usage: package-dmg.sh /path/to/DeskMate.app /path/to/output.dmg [libusb_prefix] [volume_name] [out_zip]}"
+OUT_DMG="${2:?usage: package-dmg.sh /path/to/DeskMate.app /path/to/output.dmg [libusb_prefix] [volume_name] [out_zip]}"
 LIBUSB_PREFIX="${3:-/opt/homebrew}"
 VOL_NAME="${4:-DeskMate}"
+OUT_ZIP="${5:-${OUT_ZIP:-${OUT_DMG%.dmg}.zip}}"
 
 BIN="$APP_PATH/Contents/MacOS/DeskMate"
 FRAMEWORKS_DIR="$APP_PATH/Contents/Frameworks"
@@ -55,7 +56,18 @@ if otool -L "$BIN" | grep -E '/opt/homebrew|/usr/local' >/dev/null; then
   exit 1
 fi
 
-codesign --force --deep --sign - "$APP_PATH"
+SIGN_ID="${CODESIGN_IDENTITY:-}"
+if [[ -z "$SIGN_ID" ]]; then
+  if security find-identity -v -p codesigning 2>/dev/null | grep -Fq '"DeskMate Local Signer"'; then
+    SIGN_ID="DeskMate Local Signer"
+  else
+    SIGN_ID="-"
+  fi
+fi
+
+echo "Signing DeskMate.app with identity: $SIGN_ID"
+codesign --force --sign "$SIGN_ID" "$BUNDLED_DYLIB"
+codesign --force --deep --sign "$SIGN_ID" "$APP_PATH"
 codesign --verify --deep --strict "$APP_PATH"
 
 STAGE_DIR="$(mktemp -d)"
@@ -70,6 +82,13 @@ ln -s /Applications "$STAGE_DIR/Applications"
 mkdir -p "$(dirname "$OUT_DMG")"
 rm -f "$OUT_DMG"
 hdiutil create -volname "$VOL_NAME" -srcfolder "$STAGE_DIR" -ov -format UDZO "$OUT_DMG" >/dev/null
+
+if [[ -n "$OUT_ZIP" ]]; then
+  mkdir -p "$(dirname "$OUT_ZIP")"
+  rm -f "$OUT_ZIP"
+  ditto -c -k --sequesterRsrc --keepParent "$APP_PATH" "$OUT_ZIP"
+  echo "Created updater ZIP: $OUT_ZIP"
+fi
 
 echo "Created self-contained DMG: $OUT_DMG"
 otool -L "$BIN" | grep -E 'libusb|Frameworks' || true

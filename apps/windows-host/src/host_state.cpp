@@ -491,6 +491,9 @@ bool SettingsStore::load() {
       touch_mode_from_id(root.get_string("touch_input_mode", "compatible_gestures"));
   prefs_.auto_start_service =
       root.get_bool("auto_start_service", prefs_.auto_start_service);
+  prefs_.auto_check_updates =
+      root.get_bool("auto_check_updates", prefs_.auto_check_updates);
+  prefs_.update_mirror_prefix = root.get_string("update_mirror_prefix");
   prefs_.preferred_monitor_name = root.get_string("preferred_monitor_name");
 
   prefs_.paired_devices.clear();
@@ -540,6 +543,10 @@ bool SettingsStore::save() const {
       << touch_mode_id(prefs_.touch_input_mode) << "\",\n";
   out << "  \"auto_start_service\": "
       << (prefs_.auto_start_service ? "true" : "false") << ",\n";
+  out << "  \"auto_check_updates\": "
+      << (prefs_.auto_check_updates ? "true" : "false") << ",\n";
+  out << "  \"update_mirror_prefix\": \""
+      << json_escape(prefs_.update_mirror_prefix) << "\",\n";
   out << "  \"preferred_monitor_name\": \""
       << json_escape(prefs_.preferred_monitor_name) << "\",\n";
   out << "  \"paired_devices\": [\n";

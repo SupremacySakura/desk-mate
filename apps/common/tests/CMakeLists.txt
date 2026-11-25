@@ -23,3 +23,9 @@ target_sources(deskmate-aoa-session-tests PRIVATE
     ../../windows-host/src/aoa_links.cpp
 )
 add_test(NAME deskmate-aoa-session-tests COMMAND deskmate-aoa-session-tests)
+
+add_executable(deskmate-update-tests update_tests.cpp)
+target_link_libraries(deskmate-update-tests PRIVATE
+    deskmate_platform_common
+)
+add_test(NAME deskmate-update-tests COMMAND deskmate-update-tests)

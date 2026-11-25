@@ -41,6 +41,7 @@ if(WIN32)
         src/host_controller.cpp
         src/input_injector.cpp
         src/studio_ui.cpp
+        src/updater.cpp
     )
     target_link_libraries(DeskMateHost PRIVATE
         deskmate_windows_link
@@ -61,6 +62,7 @@ if(WIN32)
         advapi32
         wtsapi32
         winmm
+        winhttp
         setupapi
         cfgmgr32
         ole32

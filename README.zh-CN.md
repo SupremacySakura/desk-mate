@@ -47,6 +47,7 @@ DeskMate 只需一根 USB 数据线，即可把闲置或手边的鸿蒙 / Androi
 | **最高 120 Hz 硬件编解码** | 基于 `VideoToolbox` / `Media Foundation` 硬编与 `AVCodec` / `MediaCodec` 硬解 **HEVC / H.264**，自动匹配设备原始分辨率与刷新率（`60 / 90 / 120 Hz`）。 |
 | **四模式反向触控输入** | 直接在平板 / 手机屏幕上操作电脑：支持 **兼容手势映射**、**仅单点触控**、**虚拟妙控板 / 触控板**、**原生屏幕触控**，并适配桌面端四向拓扑映射。 |
 | **平板 & 手机全端适配** | 手机端在连接前自动保持**竖屏**浏览，进入副屏画面后自动切换为**横屏自适应**并兼容挖孔屏安全区；支持设备授权控制、自定义备注名、方位记忆与系统托盘/菜单栏控制。 |
+| **应用内签名自动更新** | macOS 与 Windows 主控端支持直接从 GitHub Releases 检查更新（基于 `update-manifest.json` 的 **SHA-256 + Ed25519** 双重校验），支持可选 GitHub 加速前缀；Windows 原地替换免重装驱动，macOS 免触发 Quarantine 隔离。 |
 
 ---
 
@@ -158,7 +159,7 @@ Windows 没有像 macOS `CGVirtualDisplay` 那样的系统级用户态虚拟显�
   make app        # 或 `make dmg` 打出内置 libusb 的离线 .dmg
   open build/DeskMate.app
   ```
-  > 若在 Intel Mac 等环境将 `libusb` 安装在其他路径（如 `/usr/local`），可传 `LIBUSB_PREFIX=/usr/local make app`。
+  > **提示**：如果你在 Intel Mac 等环境中将 `libusb` 安装在其他路径（如 `/usr/local`），可传 `LIBUSB_PREFIX=/usr/local make app`。如需使用固定自签名代码签名证书替代临时签名（配合应用内更新减少重新授权频率），可运行一次 `bash apps/macos-host/scripts/create-self-signed-cert.sh` 并在钥匙串中信任 `DeskMate Local Signer`。
 
 - **Windows Host（`apps/windows-host`）**：
   ```powershell

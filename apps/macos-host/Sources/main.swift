@@ -123,6 +123,7 @@ final class AppController: NSObject, NSApplicationDelegate {
     private let startupManager = StartupServiceManager()
     private var startupStatus = StartupStatus()
     private let pairedStore = PairedDeviceStore()
+    private let updateManager = UpdateManager()
     private var autoStartService = true
     private var serviceRunning = false
     private var serviceTransitioning = false
@@ -220,6 +221,14 @@ final class AppController: NSObject, NSApplicationDelegate {
 
         startTimer()
         if !options.dryRun { observeSystemEvents() }
+        updateManager.onChange = { [weak self] _ in
+            self?.syncWindow()
+        }
+        if !options.dryRun && updateManager.autoCheckEnabled {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 4.0) { [weak self] in
+                self?.updateManager.checkForUpdates(manual: false)
+            }
+        }
         if autoStartService || options.dryRun {
             serviceRunning = true
             prepare()
@@ -713,6 +722,11 @@ final class AppController: NSObject, NSApplicationDelegate {
             renameDevice: { [weak self] id, name in self?.renameDevice(id: id, name: name) },
             removeDevice: { [weak self] id in self?.removeDevice(id: id) },
             copyDeviceID: { [weak self] id in self?.copyDeviceID(id) },
+            checkForUpdates: { [weak self] in self?.updateManager.checkForUpdates(manual: true) },
+            installUpdate: { [weak self] in self?.installAvailableUpdate() },
+            setAutoCheckUpdates: { [weak self] enabled in self?.updateManager.setAutoCheckEnabled(enabled) },
+            setUpdateMirrorPrefix: { [weak self] prefix in self?.updateManager.setMirrorPrefix(prefix) },
+            openReleasesPage: { [weak self] in self?.updateManager.openReleasesPage() },
             retry: { [weak self] in self?.retry() },
             copy: { [weak self] in self?.copyStatus() }
         ))
@@ -1100,6 +1114,7 @@ final class AppController: NSObject, NSApplicationDelegate {
         view.loginItemNeedsApproval = startupStatus.needsApproval
         view.loginItemSummary = startupStatus.statusDescription
         view.loginItemError = startupStatus.errorMessage
+        view.update = updateManager.snapshot()
         view.pairedDevices = pairedStore.devices
         view.activeSessions = activeSessions
         view.selectedLinkID = selectedLinkID ?? activeSessions.first?.linkID
@@ -1744,6 +1759,61 @@ final class AppController: NSObject, NSApplicationDelegate {
                 ptsUs,
                 frame.keyframe ? 1 : 0
             )
+        }
+    }
+
+    private func installAvailableUpdate() {
+        updateManager.downloadAndInstall { [weak self] in
+            await self?.prepareForAppUpdateExit()
+        }
+    }
+
+    private func prepareForAppUpdateExit() async {
+        let state = await MainActor.run { () -> ([DeviceChannel], UInt?) in
+            self.timer?.invalidate()
+            self.timer = nil
+            self.keyframeTimer?.invalidate()
+            self.keyframeTimer = nil
+            self.serviceRunning = false
+            let activeChannels = self.allActiveChannelsSorted()
+            self.channels.removeAll()
+            self.selectedLinkID = nil
+            self.dryRunChannel = nil
+            self.manualPreviewSession?.destroy()
+            self.manualPreviewSession = nil
+            for channel in activeChannels {
+                channel.removedFromBridge = true
+                channel.captureWanted = false
+                channel.inputWanted = false
+                channel.destroyDisplayTask?.cancel()
+                channel.destroyDisplayTask = nil
+            }
+            let bridgeRaw = self.bridge.map { UInt(bitPattern: $0) }
+            self.bridge = nil
+            if let token = self.activityToken {
+                ProcessInfo.processInfo.endActivity(token)
+                self.activityToken = nil
+            }
+            return (activeChannels, bridgeRaw)
+        }
+        let activeChannels = state.0
+        for channel in activeChannels {
+            await channel.capture?.stop()
+            channel.capture = nil
+        }
+        let createdSessions = activeChannels.compactMap { $0.displaySession }.filter { $0.info.createdByUs }
+        if !createdSessions.isEmpty {
+            await DisplayConfigCoordinator.shared.run {
+                for session in createdSessions {
+                    session.destroy()
+                }
+            }
+        }
+        for channel in activeChannels {
+            channel.displaySession = nil
+        }
+        if let bridgeRaw = state.1, let ptr = OpaquePointer(bitPattern: bridgeRaw) {
+            dm_bridge_destroy(ptr)
         }
     }
 

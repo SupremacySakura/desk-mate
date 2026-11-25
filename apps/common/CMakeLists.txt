@@ -7,6 +7,8 @@ add_library(deskmate_platform_common STATIC
     src/aoa.cpp
     src/input_frames.cpp
     src/session_profile.cpp
+    src/update_crypto.cpp
+    src/update_manifest.cpp
 )
 
 target_compile_features(deskmate_platform_common PUBLIC cxx_std_20)

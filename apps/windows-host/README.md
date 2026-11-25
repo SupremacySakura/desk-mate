@@ -75,3 +75,4 @@ bash apps/common/tests/run_platform_tests.sh
 - **虚拟扩展屏（`VirtualDisplayManager`）**：集成 Parsec VDD IOCTL（含 100ms keep-alive 与零闪烁状态保持）及 MttVDD 命名管道；自动启用非活跃扩展输出并通过 `SetDisplayConfig` 无重叠排布拓扑（支持左/右/上/下拓扑切换）。
 - **画面采集与编码**：DXGI Desktop Duplication（`IDXGIOutputDuplication`）+ D3D11 VideoProcessor（BGRA → NV12 并缩放）+ GDI 静态回退（含光标绘制）；Media Foundation 硬件 HEVC / H.264 编码，统一输出 Annex-B（IDR 前附带 VPS/SPS/PPS 或 SPS/PPS），支持按设备 `REQUEST_IDR`。
 - **四模式反向触控注入**：支持 **兼容手势映射**、**仅单点触控**、**虚拟触控板** 及 **原生多点触控**（基于 Win32 `SendInput` 与 `InitializeTouchInjection`），自动按独占显示器的工作区绝对坐标精确映射。
+- **应用内自动更新（`WinHTTP` + Ed25519）**：从 GitHub Releases 拉取带签名的 `update-manifest.json`，校验 SHA-256 与 Ed25519 数字签名后原地重命名替换 `DeskMateHost.exe` 并重启（不会影响已安装的 WinUSB 与 Parsec VDD 驱动），支持自定义 GitHub 加速前缀。
