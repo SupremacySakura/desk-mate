@@ -224,9 +224,11 @@ desk-mate/
 │   ├── host/           # macOS 主控端（SwiftUI 界面、ScreenCaptureKit、VideoToolbox、CGVirtualDisplay、libusb）
 │   └── device/         # HarmonyOS NEXT 客户端（ArkTS 自适应界面 + C++ N-API AOA 通信与 AVCodec 硬解）
 ├── docs/
-│   ├── assets/         # README 展示图片等资源
-│   ├── protocol.md     # 详细线缆格式、Session API 与 Golden Vectors 协议规范
-│   └── adr/            # 架构决策记录（ADR）
+│   ├── assets/               # README 展示图片等资源
+│   ├── architecture.md       # 工程架构设计与双端平台边界说明
+│   ├── protocol.md           # 详细线缆格式、Session API 与 Golden Vectors 协议规范
+│   ├── verification-notes.md # 自动化测试、真机排障修复与门禁记录
+│   └── adr/                  # 架构决策记录（ADR）
 ├── testdata/golden/    # 独立生成的二进制协议 Golden 测试向量
 ├── GLOSSARY.md         # 项目领域术语表
 └── Makefile            # C++20 核心库编译与测试入口
@@ -249,7 +251,9 @@ desk-mate/
 
 ## 参与贡献与技术文档
 
+- 工程架构与双端平台说明：[docs/architecture.md](./docs/architecture.md)
 - 协议与线缆格式规范：[docs/protocol.md](./docs/protocol.md)
+- 自动化测试与真机排障总结：[docs/verification-notes.md](./docs/verification-notes.md)
 - macOS Host 开发与调试说明：[apps/host/README.md](./apps/host/README.md)
 - 领域术语表：[GLOSSARY.md](./GLOSSARY.md)
 

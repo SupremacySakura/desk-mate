@@ -223,9 +223,11 @@ desk-mate/
 │   ├── host/           # macOS Host app (SwiftUI, ScreenCaptureKit, VideoToolbox, CGVirtualDisplay, libusb)
 │   └── device/         # HarmonyOS NEXT client (ArkTS UI + C++ N-API native AOA & AVCodec decoder)
 ├── docs/
-│   ├── assets/         # Documentation screenshots & media
-│   ├── protocol.md     # Detailed wire format, Session API, and golden vector specification
-│   └── adr/            # Architecture Decision Records
+│   ├── assets/               # Documentation screenshots & media
+│   ├── architecture.md       # System architecture & platform constraints
+│   ├── protocol.md           # Detailed wire format, Session API & golden vector spec
+│   ├── verification-notes.md # Contract tests, real-device fixes & probe status
+│   └── adr/                  # Architecture Decision Records
 ├── testdata/golden/    # Independent binary protocol golden test vectors
 ├── GLOSSARY.md         # Domain terminology
 └── Makefile            # Shared C++20 core build & test entrypoints
@@ -248,7 +250,9 @@ desk-mate/
 
 ## Contributing & Docs
 
+- System Architecture & Platform Constraints: [docs/architecture.md](./docs/architecture.md)
 - Protocol & Wire Format Spec: [docs/protocol.md](./docs/protocol.md)
+- Verification & Real-Device Notes: [docs/verification-notes.md](./docs/verification-notes.md)
 - macOS Host Engineering Notes: [apps/host/README.md](./apps/host/README.md)
 - Domain Glossary: [GLOSSARY.md](./GLOSSARY.md)
 
