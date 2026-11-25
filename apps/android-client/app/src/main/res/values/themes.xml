@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Platform-only Alabaster Studio light theme: avoids AndroidX/Material dependency. -->
+    <style name="Theme.DeskMate" parent="android:Theme.Material.Light.NoActionBar">
+        <item name="android:windowBackground">#FCFBF8</item>
+        <item name="android:windowLayoutInDisplayCutoutMode">shortEdges</item>
+        <item name="android:colorAccent">#9D193D</item>
+        <item name="android:navigationBarColor">#FCFBF8</item>
+        <item name="android:statusBarColor">#FCFBF8</item>
+    </style>
+</resources>

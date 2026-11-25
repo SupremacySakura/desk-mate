@@ -363,19 +363,19 @@ name | expectation | expected-payload-hex | packet-hex
   Frame 冻结/恢复、注入卡顿 `69.58 ms` 均有记录。Annex-B Host 样本互操作已由
   下方产品端到端实测确认（功能层面可解码上屏），但 Gate 3 整体仍因缺 Reference
   Link 保持 `needs-info`。
-- 产品端到端（`apps/host` + `apps/device`，非探针）：2026-11-24 真机实测
+- 产品端到端（`apps/macos-host` + `apps/harmonyos-client`，非探针）：2026-11-24 真机实测
   **平板成功显示 Mac 画面**，HEVC 与 H.264 均可上屏；反向触控在 Mac 上生效。
   这一条只证明「成品链路能出画面」，不改变上面任何硬件门禁的结论。
   - 卡点一：设备端 `read()` 在无消息时会阻塞在驱动内（`O_NONBLOCK` 不生效），
     必须以 `POLLIN` 作为「一次消息读取」的许可，否则 worker 发完 `CLIENT_HELLO`
-    就冻住。见 `apps/device/entry/src/main/cpp/fd_byte_io.hpp`。
+    就冻住。见 `apps/harmonyos-client/entry/src/main/cpp/fd_byte_io.hpp`。
   - 卡点二：Host 视频分片原为 32 KiB，超过设备 16 KiB 读缓冲上限，超出部分被驱动
     丢弃，表现为流起来 2–3 秒后 `invalid_wire_data`。现固定 12 KiB。
   - 卡点三（黑屏根因）：解码器 `Start()` 后立即把整个输入 buffer 池交给回调，此时
     首帧往往还没到；这些 buffer 被暂存，而喂帧只在 `OnNeedInputBuffer` 里触发。
     池被扣住后编解码器不再回调，形成死锁——HEVC 与 H.264 都表现为「会话
     `streaming`、Surface 已绑定、但一帧都没解码」。修复：`Push()` 入队后立即
-    `PumpFrames()`。见 `apps/device/entry/src/main/cpp/video_decoder.cpp`。
+    `PumpFrames()`。见 `apps/harmonyos-client/entry/src/main/cpp/video_decoder.cpp`。
   - 已知未解决：帧率偏低（Host 编码约 25 fps，实际送出约 9 fps、约 470 KB/s，
     `bulkErrors=0`、`framesDroppedBacklog=0`）。瓶颈在发送/消费速率，不在丢包或
     解码；未做性能优化，也不构成性能结论。

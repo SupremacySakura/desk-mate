@@ -14,9 +14,10 @@ DeskMate 是 macOS Host 与 HarmonyOS NEXT Device 之间的多设备有线扩展
 ## Build & Test Commands
 
 - 共享 C++20 核心单元测试：`make test`
-- macOS Host 编译与契约/多链路测试：`make -C apps/host test`
+- macOS Host 编译与契约/多链路测试：`make -C apps/macos-host test`
+- Android 配件 fd 契约测试：`bash apps/common/tests/run_android_io_test.sh`
 
 ## Conventions
 
 - 修改 `core/` 线缆结构或控制 opcode 时，须同步检查 `core/tests/` 与 `testdata/golden/`。
-- 不要提交 `apps/device/build-profile.json5` 中的个人签名配置（`signingConfigs`）或构建产物（`build/`、`.hvigor/`）。
+- 不要提交 `apps/harmonyos-client/build-profile.json5` 中的个人签名配置（`signingConfigs`）或构建产物（`build/`、`.hvigor/`）。

@@ -6,10 +6,10 @@
 
 ## 1. 总体架构
 
-DeskMate 将**传输与平台无关的协议核心（`core/`）**与**双端原生适配层（`apps/host`、`apps/device`）**彻底分离：
+DeskMate 将**传输与平台无关的协议核心（`core/`）**与**双端原生适配层（`apps/macos-host`、`apps/harmonyos-client`）**彻底分离：
 
 ```text
-macOS Host (apps/host)                         HarmonyOS Device (apps/device)
+macOS Host (apps/macos-host)             HarmonyOS Client (apps/harmonyos-client)
 ├─ SwiftUI Studio UI & 菜单栏浮窗               ├─ ArkTS 自适应 UI（平板 / 手机竖转横）
 ├─ DisplaySession / CGVirtualDisplay           ├─ UsbManager (USBAccessoryHandle 所有权)
 ├─ ScreenCaptureKit + VideoToolbox             ├─ XComponent 原生多点触控采集
@@ -41,7 +41,7 @@ macOS Host (apps/host)                         HarmonyOS Device (apps/device)
 
 ---
 
-## 3. macOS Host 端实现（`apps/host`）
+## 3. macOS Host 端实现（`apps/macos-host`）
 
 ### 3.1 多设备 USB-C AOA 中心（`Bridge.cpp`）
 
@@ -72,7 +72,7 @@ macOS Host (apps/host)                         HarmonyOS Device (apps/device)
 
 ---
 
-## 4. HarmonyOS 客户端实现（`apps/device`）
+## 4. HarmonyOS 客户端实现（`apps/harmonyos-client`）
 
 ### 4.1 USB 配件通道与生命周期
 

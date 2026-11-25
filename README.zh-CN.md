@@ -2,13 +2,14 @@
 
 # DeskMate
 
-**将鸿蒙（HarmonyOS）平板与手机通过 USB 有线连接变成 macOS 的低延迟、高刷新率扩展副屏 —— 支持多设备同时接入与四模式反向触控。**
+**将鸿蒙（HarmonyOS）与 Android 平板/手机通过 USB 有线连接变成 macOS 的低延迟、高刷新率扩展副屏 —— 支持多设备同时接入与四模式反向触控。**
 
-[![macOS](https://img.shields.io/badge/macOS-15%2B-111111?style=flat-square&logo=apple&logoColor=white)](./apps/host)
-[![HarmonyOS NEXT](https://img.shields.io/badge/HarmonyOS-NEXT%206.1%2B-0A59F7?style=flat-square)](./apps/device)
+[![macOS](https://img.shields.io/badge/macOS-15%2B-111111?style=flat-square&logo=apple&logoColor=white)](./apps/macos-host)
+[![HarmonyOS NEXT](https://img.shields.io/badge/HarmonyOS-NEXT%206.1%2B-0A59F7?style=flat-square)](./apps/harmonyos-client)
+[![Android](https://img.shields.io/badge/Android-8.0%2B-3DDC84?style=flat-square&logo=android&logoColor=white)](./apps/android-client)
 [![USB AOA](https://img.shields.io/badge/传输协议-USB--C%20AOA-9D193D?style=flat-square)](#系统架构)
 [![Codec](https://img.shields.io/badge/视频编码-HEVC%20%2F%20H.264%20最高%20120Hz-2D7D5B?style=flat-square)](#核心特性)
-[![Stack](https://img.shields.io/badge/技术栈-C%2B%2B20%20%C2%B7%20Swift%20%C2%B7%20ArkTS-5A545E?style=flat-square)](#仓库结构)
+[![Stack](https://img.shields.io/badge/技术栈-C%2B%2B20%20%C2%B7%20Swift%20%C2%B7%20ArkTS%20%C2%B7%20Android-5A545E?style=flat-square)](#仓库结构)
 [![License](https://img.shields.io/badge/开源协议-PolyForm%20Noncommercial%201.0.0-B9975B?style=flat-square)](./LICENSE)
 
 [English](./README.md) | 简体中文
@@ -55,7 +56,7 @@ DeskMate 将与操作系统无关的协议状态机、调度器和恢复逻辑�
 
 ```text
 ┌────────────────────────────────────────────────────────────────────────────┐
-│                             macOS Host (apps/host)                         │
+│                          macOS Host (apps/macos-host)                      │
 │  SwiftUI 工作台  ·  CGVirtualDisplay  ·  ScreenCaptureKit + VideoToolbox    │
 │  InputInjector（4 模式 CGEvent / Virtual HID） ·  libusb 多链路 AOA 调度中心  │
 └───────────────────────────────────────┬────────────────────────────────────┘
@@ -67,10 +68,10 @@ DeskMate 将与操作系统无关的协议状态机、调度器和恢复逻辑�
                                         │
                                         ▼
 ┌────────────────────────────────────────────────────────────────────────────┐
-│                        HarmonyOS Client (apps/device)                      │
-│  ArkTS 自适应界面（平板双栏 / 手机竖屏进横屏出）                              │
-│  N-API 原生引擎  ·  fd_byte_io (POLLIN)  ·  AVCodec 硬件解码上屏             │
-│  XComponent 原生多点触控采集 ──▶ 反向输入回传                                │
+│    HarmonyOS (apps/harmonyos-client)  与  Android (apps/android-client)    │
+│  Alabaster Studio 自适应界面（平板双栏 / 手机竖屏进横屏出）                  │
+│  原生引擎 (N-API / JNI)  ·  POLLIN ByteIo  ·  AVCodec / MediaCodec 硬解直出 │
+│  多点触控原生采集 ──────────────────────────────────▶ 反向输入回传           │
 └────────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -91,7 +92,9 @@ DeskMate 将与操作系统无关的协议状态机、调度器和恢复逻辑�
      ```bash
      xattr -dr com.apple.quarantine /Applications/DeskMate.app
      ```
-2. **鸿蒙端（`DeskMate-v*-harmonyos-unsigned.hap`）**
+2. **Android 端（`DeskMate-v*-android.apk`）** *（下载即装）*
+   - 直接下载 `.apk` 到 Android 8.0+ 平板或手机安装即可使用（内置 `arm64-v8a` 真机与 `x86_64` 架构，无需配置 Android Studio 或开启 USB 调试）。
+3. **鸿蒙端（`DeskMate-v*-harmonyos-unsigned.hap`）**
    - HarmonyOS NEXT 系统**不支持直接安装未签名的 `.hap`**；提供未签名包是为了省去安装 DevEco Studio 与编译 C++ 原生代码的步骤。
    - 下载后请使用你自己的华为调试证书（绑定设备 UDID），通过 `hap-sign-tool` 或常用鸿蒙重签工具重签后 `hdc install` 安装，或直接按下方「方式二」在 DevEco Studio 中一键运行安装。
 
@@ -100,6 +103,7 @@ DeskMate 将与操作系统无关的协议状态机、调度器和恢复逻辑�
 #### 环境要求
 
 - **Mac 端**：macOS 15.0+、Xcode 命令行工具（`xcode-select --install`）、Homebrew 安装 [`libusb`](https://formulae.brew.sh/formula/libusb)
+- **Android 设备端**：Android SDK 35 与 NDK 27+（离线脚本不依赖 Gradle / Maven 网络），支持数据传输的 USB-C 数据线
 - **鸿蒙设备端**：HarmonyOS NEXT（`compatibleSdkVersion 6.1.1(24)` / `targetSdkVersion 26.0.0`）、**DevEco Studio**（用于签名安装客户端 `.hap`）、支持数据传输的 USB-C 数据线（或供电充足的 USB Hub）
 
 #### 第一步：克隆仓库并构建 macOS Host 客户端
@@ -112,7 +116,7 @@ cd desk-mate
 brew install libusb
 
 # 编译生成 DeskMate.app（也可执行 `make dmg` 打出内置 libusb 的离线 .dmg）
-cd apps/host
+cd apps/macos-host
 make app
 
 # 启动 macOS 端
@@ -121,13 +125,21 @@ open build/DeskMate.app
 
 > **提示**：如果你在 Intel Mac 等环境中将 `libusb` 安装在其他路径（如 `/usr/local`），可通过 `LIBUSB_PREFIX=/usr/local make app` 指定路径。
 
-#### 第二步：构建并安装鸿蒙客户端
+#### 第二步：构建并安装客户端
 
-1. 使用 **DevEco Studio** 打开项目目录下的 [`apps/device`](./apps/device)。
-2. 用 USB 数据线连接你的鸿蒙平板或手机（确保设备已开启开发者模式 / USB 调试）。
-3. 在 DevEco Studio 中为当前设备配置个人调试签名（**File → Project Structure → Signing Configs**）。
-   > **注意**：如果你计划 Fork 本项目或提交 PR，请勿将个人的 `signingConfigs` 提交进 `apps/device/build-profile.json5`。
-4. 点击 **Run (`entry`)**，将 DeskMate 安装到你想作为副屏使用的每台鸿蒙设备上。
+- **Android 客户端（`apps/android-client`）**：
+  ```bash
+  # 离线编译并签名生成 app/build/outputs/apk/debug/app-debug.apk
+  ANDROID_HOME=~/Library/Android/sdk NDK=~/Library/Android/sdk/ndk/27.2.12479018 \
+    bash apps/android-client/package_apk.sh
+  adb install -r apps/android-client/app/build/outputs/apk/debug/app-debug.apk
+  ```
+- **HarmonyOS NEXT 客户端（`apps/harmonyos-client`）**：
+  1. 使用 **DevEco Studio** 打开项目目录下的 [`apps/harmonyos-client`](./apps/harmonyos-client)。
+  2. 用 USB 数据线连接你的鸿蒙平板或手机（确保设备已开启开发者模式 / USB 调试）。
+  3. 在 DevEco Studio 中为当前设备配置个人调试签名（**File → Project Structure → Signing Configs**）。
+     > **注意**：如果你计划 Fork 本项目或提交 PR，请勿将个人的 `signingConfigs` 提交进 `apps/harmonyos-client/build-profile.json5`。
+  4. 点击 **Run (`entry`)**，将 DeskMate 安装到你想作为副屏使用的每台鸿蒙设备上。
 
 #### 第三步：授予 macOS 系统权限
 
@@ -161,7 +173,7 @@ open build/DeskMate.app
 
 ## 命令行参数与自动化测试
 
-### Host 命令行参数（`apps/host/build/DeskMate.app/Contents/MacOS/DeskMate`）
+### Host 命令行参数（`apps/macos-host/build/DeskMate.app/Contents/MacOS/DeskMate`）
 
 ```bash
 ./build/DeskMate.app/Contents/MacOS/DeskMate --list-displays
@@ -187,42 +199,45 @@ open build/DeskMate.app
 make test
 
 # 2. 编译 macOS Host 并运行打包契约与多设备 USB 桥接单元测试
-make -C apps/host test
+make -C apps/macos-host test
+
+# 3. Android 配件 fd 契约测试（宿主机工具链，无需 NDK / USB 设备）
+bash apps/common/tests/run_android_io_test.sh
 ```
 
 ---
 
-## 需要 Windows 版或安卓版？交给 AI Agent 参照本项目开发！
+## 需要 Windows 版？交给 AI Agent 参照本项目开发！
 
-目前 DeskMate 仓库内置提供的是 **macOS（主控端 Host） + HarmonyOS NEXT（副屏端 Device）** 的完整实现。
+目前 DeskMate 仓库已内置提供 **macOS 主控端（[`apps/macos-host`](./apps/macos-host)）**、**HarmonyOS NEXT 副屏端（[`apps/harmonyos-client`](./apps/harmonyos-client)）** 与 **Android 副屏端（[`apps/android-client`](./apps/android-client)）**。
 
-如果你需要在 **Windows 电脑** 上做主控端，或者希望让 **Android 平板 / 手机** 作为副屏接入，完全不需要从零摸索 —— **你可以直接让 AI 编程助手（如 Antigravity、Claude Code、Cursor、Codex 等）以本仓库为蓝本进行跨平台移植开发！**
+如果你需要在 **Windows 电脑** 上做主控端，完全不需要从零摸索 —— **你可以直接让 AI 编程助手（如 Antigravity、Claude Code、Cursor、Codex 等）以本仓库为蓝本进行跨平台移植开发！**
 
 本项目的代码结构天生非常适合 AI Agent 迁移扩展：
 1. **核心协议层 [`core/`](./core) 100% 跨平台可复用**：采用纯标准 C++20 编写，零第三方依赖，包含 32 字节显式小端线缆格式、握手状态机、拥塞丢帧调度器、IDR 恢复门控、时钟同步及 100+ 项单元测试，可直接通过 CMake 在 **Windows（MSVC/Clang）** 与 **Android（NDK）** 编译复用。
-2. **平台边界极度清晰（`ByteIo` / `HostBoundary` / `DeviceBoundary`）**：所有 OS 相关逻辑（USB AOA、虚拟显示器、屏幕采集、硬件编解码、触控注入）都清晰隔离在 [`apps/host`](./apps/host) 和 [`apps/device`](./apps/device) 中，AI 可以直接对照两端实现一一映射。
+2. **平台边界极度清晰（`ByteIo` / `HostBoundary` / `DeviceBoundary`）**：所有 OS 相关逻辑（USB AOA、虚拟显示器、屏幕采集、硬件编解码、触控注入）都清晰隔离在 [`apps/macos-host`](./apps/macos-host)、[`apps/harmonyos-client`](./apps/harmonyos-client) 和 [`apps/android-client`](./apps/android-client) 中，AI 可以直接对照各端实现一一映射。
 
-### Windows / Android 移植对照表（供开发者与 AI Agent 参考）
+### Windows 移植对照表（供开发者与 AI Agent 参考）
 
-| 模块层 | 本仓库现有实现 | Windows Host 对应方案 | Android Client 对应方案 |
+| 模块层 | 本仓库现有实现 | Windows Host 对应方案 | Android 端（已内置） |
 | --- | --- | --- | --- |
-| **协议与会话核心** | [`core/`](./core)（C++20） | CMake / MSVC 直接编译接入 [`core/`](./core) | Android NDK CMake 直接编译接入 [`core/`](./core) |
-| **USB AOA 传输** | [`Bridge.cpp`](./apps/host/Sources/Bridge.cpp)（`libusb`）· [`fd_byte_io.cpp`](./apps/device/entry/src/main/cpp/fd_byte_io.cpp) | `libusb` / WinUSB 多设备 AOA 切换与并发会话（`PID 0x2D00–0x2D05`） | Android `UsbManager.openAccessory()` 获取 `ParcelFileDescriptor` + NDK `POLLIN` 读循环 |
-| **虚拟扩展显示器** | [`DMVirtualDisplay.m`](./apps/host/Sources/DMVirtualDisplay.m) | Windows IddCx 虚拟显示器驱动（如 Virtual-Display-Driver 思路） | 无需虚拟屏（Android 客户端全屏渲染到 `SurfaceView` / `TextureView`） |
-| **画面采集与硬件编解码** | `ScreenCaptureKit` + `VideoToolbox` · [`video_decoder.cpp`](./apps/device/entry/src/main/cpp/video_decoder.cpp)（`AVCodec`） | `Windows.Graphics.Capture` / DXGI 抓屏 + Media Foundation / NVENC 硬件编码 | `MediaCodec`（`video/hevc` / `video/avc`）硬解直出 `Surface` |
-| **反向触控注入与采集** | [`InputInjector.swift`](./apps/host/Sources/InputInjector.swift) · [`napi_init.cpp`](./apps/device/entry/src/main/cpp/napi_init.cpp) | Win32 `SendInput` / `InitializeTouchInjection` | `View.onTouchEvent`（多指 `MotionEvent`）通过 JNI / NDK 传入 `core/` |
+| **协议与会话核心** | [`core/`](./core)（C++20） | CMake / MSVC 直接编译接入 [`core/`](./core) | [`apps/android-client`](./apps/android-client)（NDK C++20） |
+| **USB AOA 传输** | [`Bridge.cpp`](./apps/macos-host/Sources/Bridge.cpp)（`libusb`）· [`fd_byte_io.cpp`](./apps/harmonyos-client/entry/src/main/cpp/fd_byte_io.cpp) | `libusb` / WinUSB 多设备 AOA 切换与并发会话（`PID 0x2D00–0x2D05`） | [`accessory_io.cpp`](./apps/android-client/app/src/main/cpp/accessory_io.cpp)（`POLLIN` + 无锁统计） |
+| **虚拟扩展显示器** | [`DMVirtualDisplay.m`](./apps/macos-host/Sources/DMVirtualDisplay.m) | Windows IddCx 虚拟显示器驱动（如 Virtual-Display-Driver 思路） | 无需虚拟屏（Android 端全屏渲染到 `SurfaceView`） |
+| **画面采集与硬件编解码** | `ScreenCaptureKit` + `VideoToolbox` · [`video_decoder.cpp`](./apps/harmonyos-client/entry/src/main/cpp/video_decoder.cpp)（`AVCodec`） | `Windows.Graphics.Capture` / DXGI 抓屏 + Media Foundation / NVENC 硬件编码 | [`video_decoder.cpp`](./apps/android-client/app/src/main/cpp/video_decoder.cpp)（双线程 `AMediaCodec`） |
+| **反向触控注入与采集** | [`InputInjector.swift`](./apps/macos-host/Sources/InputInjector.swift) · [`napi_init.cpp`](./apps/harmonyos-client/entry/src/main/cpp/napi_init.cpp) | Win32 `SendInput` / `InitializeTouchInjection` | [`MainActivity.java`](./apps/android-client/app/src/main/java/dev/deskmate/client/MainActivity.java)（`MotionEvent` → JNI） |
 
 <details>
 <summary><b>📋 可直接复制给 AI Agent 的参考开发提示词（Prompt）</b></summary>
 
 ```text
-请先通读当前 DeskMate 仓库，重点关注 `core/`、`docs/protocol.md`、`apps/host/Sources/Bridge.cpp` 以及 `apps/device/entry/src/main/cpp/`。
+请先通读当前 DeskMate 仓库，重点关注 `core/`、`docs/protocol.md`、`apps/macos-host/Sources/Bridge.cpp` 以及 `apps/harmonyos-client/entry/src/main/cpp/`。
 
-目标：参照现有代码架构，为本项目开发一个兼容的【Windows Host（位于 apps/windows-host）/ Android 客户端（位于 apps/android-client）】，要求能够通过 USB AOA 与现有【HarmonyOS 客户端 / macOS Host】原生互通。
+目标：参照现有代码架构，为本项目开发一个兼容的 Windows Host，要求能够通过 USB AOA 与现有 HarmonyOS 和 Android 客户端原生互通。
 
 要求：
 1. 直接复用 `core/`（通过 CMake 引入），不要修改既有的 32 字节协议头、控制 opcode 与 InputEvent 载荷格式。
-2. 按照 `core/` 中的 `ByteIo` 与 Session 边界接口实现对应平台适配层（Windows 使用 libusb/WinUSB 多设备 AOA + WGC/DXGI 采集 + Media Foundation 硬件编码 + IddCx 虚拟屏 + SendInput；Android 使用 UsbManager.openAccessory + NDK POLLIN 读写 + MediaCodec Surface 硬解 + MotionEvent 多点触控采集）。
+2. 按照 `core/` 中的 `ByteIo` 与 `HostBoundary` 接口实现 Windows 平台适配层（libusb/WinUSB 多设备 AOA + WGC/DXGI 采集 + Media Foundation 硬件编码 + IddCx 虚拟屏 + SendInput）。
 3. 保留多设备并发连接、12 KiB 视频分片上限与全双工非阻塞 USB I/O 设计。
 4. 编写构建脚本与协议兼容测试并确保编译通过。
 ```
@@ -235,19 +250,21 @@ make -C apps/host test
 
 ```text
 desk-mate/
-├── core/               # 跨平台 C++20 核心库：线缆协议、Session 状态机、发送调度器与单元测试
+├── core/                      # 跨平台 C++20 核心库：线缆协议、Session 状态机、发送调度器与单元测试
 ├── apps/
-│   ├── host/           # macOS 主控端（SwiftUI 界面、ScreenCaptureKit、VideoToolbox、CGVirtualDisplay、libusb）
-│   └── device/         # HarmonyOS NEXT 客户端（ArkTS 自适应界面 + C++ N-API AOA 通信与 AVCodec 硬解）
+│   ├── common/                # 跨端共用适配层（AOA ID、Session 配置、12 KiB 策略、Annex-B）
+│   ├── macos-host/            # macOS 主控端（SwiftUI 界面、ScreenCaptureKit、VideoToolbox、CGVirtualDisplay、libusb）
+│   ├── harmonyos-client/      # HarmonyOS NEXT 客户端（ArkTS 自适应界面 + C++ N-API AOA 通信与 AVCodec 硬解）
+│   └── android-client/        # Android 客户端（UsbManager 配件 fd、MediaCodec Surface、MotionEvent 触控）
 ├── docs/
-│   ├── assets/               # README 展示图片等资源
-│   ├── architecture.md       # 工程架构设计与双端平台边界说明
-│   ├── protocol.md           # 详细线缆格式、Session API 与 Golden Vectors 协议规范
-│   ├── verification-notes.md # 自动化测试、真机排障修复与门禁记录
-│   └── adr/                  # 架构决策记录（ADR）
-├── testdata/golden/    # 独立生成的二进制协议 Golden 测试向量
-├── GLOSSARY.md         # 项目领域术语表
-└── Makefile            # C++20 核心库编译与测试入口
+│   ├── assets/                # README 展示图片等资源
+│   ├── architecture.md        # 工程架构设计与双端平台边界说明
+│   ├── protocol.md            # 详细线缆格式、Session API 与 Golden Vectors 协议规范
+│   ├── verification-notes.md  # 自动化测试、真机排障修复与门禁记录
+│   └── adr/                   # 架构决策记录（ADR）
+├── testdata/golden/           # 独立生成的二进制协议 Golden 测试向量
+├── GLOSSARY.md                # 项目领域术语表
+└── Makefile                   # C++20 核心库编译与测试入口
 ```
 
 ---
@@ -270,7 +287,9 @@ desk-mate/
 - 工程架构与双端平台说明：[docs/architecture.md](./docs/architecture.md)
 - 协议与线缆格式规范：[docs/protocol.md](./docs/protocol.md)
 - 自动化测试与真机排障总结：[docs/verification-notes.md](./docs/verification-notes.md)
-- macOS Host 开发与调试说明：[apps/host/README.md](./apps/host/README.md)
+- macOS Host 开发与调试说明：[apps/macos-host/README.md](./apps/macos-host/README.md)
+- HarmonyOS 客户端说明：[apps/harmonyos-client/README.md](./apps/harmonyos-client/README.md)
+- Android 客户端说明：[apps/android-client/README.md](./apps/android-client/README.md)
 - 领域术语表：[GLOSSARY.md](./GLOSSARY.md)
 
 欢迎提交 Issue 与 Pull Request！如果你基于本仓库的 [`core/`](./core) 完成了 **Windows Host** 或 **Android 客户端** 的适配，也欢迎分享链接或提交 PR 一起完善多平台生态。

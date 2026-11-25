@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">DeskMate</string>
+    <string name="status_searching">等待 USB 有线接入</string>
+    <string name="status_connected">USB 已连接</string>
+    <string name="status_error">暂时无法连接</string>
+    <string name="permission_hint">请在系统提示中允许访问 USB 配件。</string>
+</resources>

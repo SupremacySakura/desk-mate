@@ -28,7 +28,7 @@ jobs:
         run: make test
 
       - name: Run macOS host tests
-        run: make -C apps/host test
+        run: make -C apps/macos-host test
 
       - name: Build self-contained macOS DMG
         env:
@@ -38,11 +38,11 @@ jobs:
           VERSION="${TAG#v}"
           echo "RELEASE_TAG=${TAG}" >> "$GITHUB_ENV"
           echo "RELEASE_VERSION=${VERSION}" >> "$GITHUB_ENV"
-          make -C apps/host dmg VERSION="$VERSION"
+          make -C apps/macos-host dmg VERSION="$VERSION"
 
       - name: Generate SHA256 checksum
         run: |
-          cd apps/host/build
+          cd apps/macos-host/build
           DMG_FILE="DeskMate-v${RELEASE_VERSION}-macos-arm64.dmg"
           shasum -a 256 "$DMG_FILE" > "${DMG_FILE}.sha256"
 
@@ -50,7 +50,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          DMG_PATH="apps/host/build/DeskMate-v${RELEASE_VERSION}-macos-arm64.dmg"
+          DMG_PATH="apps/macos-host/build/DeskMate-v${RELEASE_VERSION}-macos-arm64.dmg"
           SHA_PATH="${DMG_PATH}.sha256"
           if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
             gh release upload "$RELEASE_TAG" "$DMG_PATH" "$SHA_PATH" --clobber

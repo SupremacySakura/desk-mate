@@ -2,13 +2,14 @@
 
 # DeskMate
 
-**Turn HarmonyOS tablets and phones into low-latency, high-refresh-rate wired extended displays for macOS — with multi-device support and reverse touch input.**
+**Turn HarmonyOS and Android tablets/phones into low-latency, high-refresh-rate wired extended displays for macOS — with multi-device support and reverse touch input.**
 
-[![macOS](https://img.shields.io/badge/macOS-15%2B-111111?style=flat-square&logo=apple&logoColor=white)](./apps/host)
-[![HarmonyOS NEXT](https://img.shields.io/badge/HarmonyOS-NEXT%206.1%2B-0A59F7?style=flat-square)](./apps/device)
+[![macOS](https://img.shields.io/badge/macOS-15%2B-111111?style=flat-square&logo=apple&logoColor=white)](./apps/macos-host)
+[![HarmonyOS NEXT](https://img.shields.io/badge/HarmonyOS-NEXT%206.1%2B-0A59F7?style=flat-square)](./apps/harmonyos-client)
+[![Android](https://img.shields.io/badge/Android-8.0%2B-3DDC84?style=flat-square&logo=android&logoColor=white)](./apps/android-client)
 [![USB AOA](https://img.shields.io/badge/Transport-USB--C%20AOA-9D193D?style=flat-square)](#architecture)
 [![Codec](https://img.shields.io/badge/Video-HEVC%20%2F%20H.264%20up%20to%20120Hz-2D7D5B?style=flat-square)](#features)
-[![Stack](https://img.shields.io/badge/Stack-C%2B%2B20%20%C2%B7%20Swift%20%C2%B7%20ArkTS-5A545E?style=flat-square)](#project-layout)
+[![Stack](https://img.shields.io/badge/Stack-C%2B%2B20%20%C2%B7%20Swift%20%C2%B7%20ArkTS%20%C2%B7%20Android-5A545E?style=flat-square)](#project-layout)
 [![License](https://img.shields.io/badge/License-PolyForm%20Noncommercial%201.0.0-B9975B?style=flat-square)](./LICENSE)
 
 English | [简体中文](./README.zh-CN.md)
@@ -55,7 +56,7 @@ DeskMate splits transport-agnostic protocol state from platform-native I/O, enco
 
 ```text
 ┌────────────────────────────────────────────────────────────────────────────┐
-│                              macOS Host (apps/host)                        │
+│                           macOS Host (apps/macos-host)                     │
 │  SwiftUI Studio UI  ·  CGVirtualDisplay  ·  ScreenCaptureKit + VideoToolbox│
 │  InputInjector (4-Mode CGEvent / Virtual HID)  ·  libusb Multi-Link AOA Hub│
 └───────────────────────────────────────┬────────────────────────────────────┘
@@ -67,10 +68,10 @@ DeskMate splits transport-agnostic protocol state from platform-native I/O, enco
                                         │
                                         ▼
 ┌────────────────────────────────────────────────────────────────────────────┐
-│                        HarmonyOS Client (apps/device)                      │
-│  ArkTS Adaptive UI (Tablet & Phone Auto-Orientation)                       │
-│  N-API Native Engine  ·  fd_byte_io (POLLIN)  ·  AVCodec HW Decode         │
-│  XComponent Multi-Touch Capture ──▶ Reverse Input Injection                │
+│    HarmonyOS (apps/harmonyos-client)  &  Android (apps/android-client)     │
+│  Adaptive Studio UI (Tablet 2-Col / Phone Portrait-to-Landscape)           │
+│  Native Engine (N-API / JNI)  ·  POLLIN ByteIo  ·  AVCodec / MediaCodec HW │
+│  Multi-Touch Capture ──────────────────────────────▶ Reverse Input Inject  │
 └────────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -90,7 +91,9 @@ Download the latest artifacts from [**GitHub Releases**](https://github.com/Supr
      ```bash
      xattr -dr com.apple.quarantine /Applications/DeskMate.app
      ```
-2. **HarmonyOS Client (`DeskMate-v*-harmonyos-unsigned.hap`)**
+2. **Android Client (`DeskMate-v*-android.apk`)** *(Ready to install)*
+   - Download `DeskMate-v*-android.apk` directly onto your Android 8.0+ tablet or phone and install it (supports `arm64-v8a` hardware & `x86_64` emulators; no USB debugging or Android Studio required).
+3. **HarmonyOS Client (`DeskMate-v*-harmonyos-unsigned.hap`)**
    - HarmonyOS NEXT does **not** allow installing unsigned `.hap` packages directly. Download the `-unsigned.hap` to skip installing DevEco Studio and compiling C++ code, then **re-sign it with your own Huawei debug certificate** bound to your device UDID (using `hap-sign-tool` or community HarmonyOS re-signing tools) and install via `hdc install`, or use Option B below in DevEco Studio.
 
 ### Option B: Build from Source
@@ -98,7 +101,8 @@ Download the latest artifacts from [**GitHub Releases**](https://github.com/Supr
 #### Prerequisites
 
 - **Mac Host**: macOS 15.0+, Xcode Command Line Tools (`xcode-select --install`), Homebrew [`libusb`](https://formulae.brew.sh/formula/libusb)
-- **HarmonyOS Device**: HarmonyOS NEXT (`compatibleSdkVersion 6.1.1(24)` / `targetSdkVersion 26.0.0`), **DevEco Studio** (for building & signing the `.hap`), USB-C data cable
+- **Android Client**: Android SDK 35 & NDK 27+ (offline script needs no Gradle/Maven network access), USB-C data cable
+- **HarmonyOS Client**: HarmonyOS NEXT (`compatibleSdkVersion 6.1.1(24)` / `targetSdkVersion 26.0.0`), **DevEco Studio** (for building & signing the `.hap`), USB-C data cable
 
 #### 1. Clone & Build the macOS Host
 
@@ -110,7 +114,7 @@ cd desk-mate
 brew install libusb
 
 # Build DeskMate.app (or `make dmg` to create a self-contained .dmg)
-cd apps/host
+cd apps/macos-host
 make app
 
 # Launch DeskMate
@@ -119,13 +123,21 @@ open build/DeskMate.app
 
 > **Note**: If your `libusb` is installed outside `/opt/homebrew` (e.g., `/usr/local` on Intel Macs), pass `LIBUSB_PREFIX=/usr/local make app`.
 
-#### 2. Build & Install the HarmonyOS Client
+#### 2. Build & Install the Client
 
-1. Open `./apps/device` in **DevEco Studio**.
-2. Connect your HarmonyOS tablet or phone via USB with Developer Mode / USB Debugging enabled.
-3. Configure **automatic / personal signing** in DevEco Studio (**File → Project Structure → Signing Configs**).
-   > **Security tip**: Never commit your personal `signingConfigs` inside `apps/device/build-profile.json5` if you fork or open a PR.
-4. Click **Run (`entry`)** to install DeskMate onto each HarmonyOS device you want to use as a secondary monitor.
+- **Android (`apps/android-client`)**:
+  ```bash
+  # Builds & debug-signs app/build/outputs/apk/debug/app-debug.apk offline
+  ANDROID_HOME=~/Library/Android/sdk NDK=~/Library/Android/sdk/ndk/27.2.12479018 \
+    bash apps/android-client/package_apk.sh
+  adb install -r apps/android-client/app/build/outputs/apk/debug/app-debug.apk
+  ```
+- **HarmonyOS NEXT (`apps/harmonyos-client`)**:
+  1. Open `./apps/harmonyos-client` in **DevEco Studio**.
+  2. Connect your HarmonyOS tablet or phone via USB with Developer Mode / USB Debugging enabled.
+  3. Configure **automatic / personal signing** in DevEco Studio (**File → Project Structure → Signing Configs**).
+     > **Security tip**: Never commit your personal `signingConfigs` inside `apps/harmonyos-client/build-profile.json5` if you fork or open a PR.
+  4. Click **Run (`entry`)** to install DeskMate onto each HarmonyOS device you want to use as a secondary monitor.
 
 #### 3. Grant macOS Permissions
 
@@ -159,7 +171,7 @@ Configure under **Settings → 触控输入 (Touch Input)** or directly from the
 
 ## CLI Options & Running Tests
 
-### Host CLI (`apps/host/build/DeskMate.app/Contents/MacOS/DeskMate`)
+### Host CLI (`apps/macos-host/build/DeskMate.app/Contents/MacOS/DeskMate`)
 
 ```bash
 ./build/DeskMate.app/Contents/MacOS/DeskMate --list-displays
@@ -185,42 +197,45 @@ Configure under **Settings → 触控输入 (Touch Input)** or directly from the
 make test
 
 # 2. macOS Host build, bundle contract checks, and multi-link USB bridge tests
-make -C apps/host test
+make -C apps/macos-host test
+
+# 3. Android accessory fd contract tests (host toolchain, no NDK/USB needed)
+bash apps/common/tests/run_android_io_test.sh
 ```
 
 ---
 
-## Want Windows or Android? Build It with an AI Agent!
+## Want a Windows Host? Build It with an AI Agent!
 
-DeskMate currently ships first-class implementations for **macOS (Host)** and **HarmonyOS NEXT (Device)**.
+DeskMate currently ships first-class implementations for **macOS Host ([`apps/macos-host`](./apps/macos-host))**, **HarmonyOS NEXT ([`apps/harmonyos-client`](./apps/harmonyos-client))**, and **Android ([`apps/android-client`](./apps/android-client))**.
 
-If you want a **Windows Host** or an **Android Tablet/Phone Client**, you don't have to start from scratch — **let an AI coding agent (such as Antigravity, Claude Code, Cursor, or Codex) build it using this repository as the blueprint!**
+If you want a **Windows Host**, you don't have to start from scratch — **let an AI coding agent (such as Antigravity, Claude Code, Cursor, or Codex) build it using this repository as the blueprint!**
 
 Why this works especially well here:
-1. **The C++20 core ([`core/`](./core)) is 100% platform-agnostic** — zero third-party dependencies, explicit little-endian 32-byte wire protocol, handshake state machine, GOP-aware scheduler, frame recovery gate, clock sync, and 100+ unit tests can be compiled directly on **Windows** (MSVC / Clang) and **Android** (NDK CMake).
-2. **Clear architectural seams (`ByteIo`, `HostBoundary`, `DeviceBoundary`)** — every OS-specific responsibility (USB AOA, virtual display, screen capture, hardware encode/decode, touch injection) is cleanly isolated in [`apps/host`](./apps/host) and [`apps/device`](./apps/device).
+1. **The C++20 core ([`core/`](./core)) is 100% platform-agnostic** — zero third-party dependencies, explicit little-endian 32-byte wire protocol, handshake state machine, GOP-aware scheduler, frame recovery gate, clock sync, and 100+ unit tests can be compiled directly on **Windows** (MSVC / Clang).
+2. **Clear architectural seams (`ByteIo`, `HostBoundary`, `DeviceBoundary`)** — every OS-specific responsibility (USB AOA, virtual display, screen capture, hardware encode/decode, touch injection) is cleanly isolated in [`apps/macos-host`](./apps/macos-host), [`apps/harmonyos-client`](./apps/harmonyos-client), and [`apps/android-client`](./apps/android-client).
 
 ### Porting Blueprint for AI Agents
 
-| Layer | Existing Implementation | Windows Host Equivalent | Android Client Equivalent |
+| Layer | Existing Implementation | Windows Host Equivalent | Android Client (Included) |
 | --- | --- | --- | --- |
-| **Protocol & Session Core** | [`core/`](./core) (C++20) | Compile [`core/`](./core) directly via CMake/MSVC | Compile [`core/`](./core) via Android NDK CMake |
-| **USB AOA Transport** | [`Bridge.cpp`](./apps/host/Sources/Bridge.cpp) (`libusb`) · [`fd_byte_io.cpp`](./apps/device/entry/src/main/cpp/fd_byte_io.cpp) | `libusb` / WinUSB multi-link AOA switching (`PID 0x2D00–0x2D05`) | Android `UsbManager.openAccessory()` + `ParcelFileDescriptor` (`POLLIN` loop in C++ NDK) |
-| **Virtual Extended Display** | [`DMVirtualDisplay.m`](./apps/host/Sources/DMVirtualDisplay.m) | IddCx Indirect Display Driver (e.g., Virtual Display Driver / Parsec-VDD pattern) | N/A (Android renders directly to fullscreen `SurfaceView` / `TextureView`) |
-| **Capture & HW Encode / Decode** | `ScreenCaptureKit` + `VideoToolbox` · [`video_decoder.cpp`](./apps/device/entry/src/main/cpp/video_decoder.cpp) (`AVCodec`) | Windows.Graphics.Capture / DXGI Desktop Duplication + Media Foundation / NVENC | `MediaCodec` (`video/hevc`, `video/avc`) outputting directly to `Surface` |
-| **Reverse Touch Injection / Capture** | [`InputInjector.swift`](./apps/host/Sources/InputInjector.swift) · [`napi_init.cpp`](./apps/device/entry/src/main/cpp/napi_init.cpp) | `SendInput` / `InitializeTouchInjection` (Win32) | `View.onTouchEvent` (`MotionEvent` multi-touch pointers) → C++ JNI/NDK |
+| **Protocol & Session Core** | [`core/`](./core) (C++20) | Compile [`core/`](./core) directly via CMake/MSVC | [`apps/android-client`](./apps/android-client) (NDK C++20) |
+| **USB AOA Transport** | [`Bridge.cpp`](./apps/macos-host/Sources/Bridge.cpp) (`libusb`) · [`fd_byte_io.cpp`](./apps/harmonyos-client/entry/src/main/cpp/fd_byte_io.cpp) | `libusb` / WinUSB multi-link AOA switching (`PID 0x2D00–0x2D05`) | [`accessory_io.cpp`](./apps/android-client/app/src/main/cpp/accessory_io.cpp) (`POLLIN` + lock-free stats) |
+| **Virtual Extended Display** | [`DMVirtualDisplay.m`](./apps/macos-host/Sources/DMVirtualDisplay.m) | IddCx Indirect Display Driver (e.g., Virtual Display Driver / Parsec-VDD pattern) | N/A (Android renders directly to fullscreen `SurfaceView` / `TextureView`) |
+| **Capture & HW Encode / Decode** | `ScreenCaptureKit` + `VideoToolbox` · [`video_decoder.cpp`](./apps/harmonyos-client/entry/src/main/cpp/video_decoder.cpp) (`AVCodec`) | Windows.Graphics.Capture / DXGI Desktop Duplication + Media Foundation / NVENC | [`video_decoder.cpp`](./apps/android-client/app/src/main/cpp/video_decoder.cpp) (dual-thread `AMediaCodec`) |
+| **Reverse Touch Injection / Capture** | [`InputInjector.swift`](./apps/macos-host/Sources/InputInjector.swift) · [`napi_init.cpp`](./apps/harmonyos-client/entry/src/main/cpp/napi_init.cpp) | `SendInput` / `InitializeTouchInjection` (Win32) | [`MainActivity.java`](./apps/android-client/app/src/main/java/dev/deskmate/client/MainActivity.java) (`MotionEvent` → JNI) |
 
 <details>
 <summary><b>📋 Copy-Paste Starter Prompt for Your AI Agent</b></summary>
 
 ```text
-Inspect this DeskMate repository thoroughly — especially `core/`, `docs/protocol.md`, `apps/host/Sources/Bridge.cpp`, and `apps/device/entry/src/main/cpp/`.
+Inspect this DeskMate repository thoroughly — especially `core/`, `docs/protocol.md`, `apps/macos-host/Sources/Bridge.cpp`, and `apps/harmonyos-client/entry/src/main/cpp/`.
 
-Goal: Implement a compatible [Windows Host in apps/windows-host / Android Client in apps/android-client] that interoperates 1:1 with the existing DeskMate [HarmonyOS Client / macOS Host] over USB AOA.
+Goal: Implement a compatible Windows Host that interoperates 1:1 with the existing DeskMate HarmonyOS and Android clients over USB AOA.
 
 Requirements:
 1. Reuse `core/` directly via CMake without altering the 32-byte wire protocol, opcodes, or InputEvent layout.
-2. Implement the ByteIo and Session boundary adapters for [Windows: WinUSB/libusb multi-device AOA + WGC/DXGI capture + Media Foundation HEVC/H.264 + IddCx virtual display + SendInput | Android: UsbManager openAccessory + NDK POLLIN reader + MediaCodec Surface decoder + multi-touch MotionEvent].
+2. Implement the ByteIo and HostBoundary adapters for Windows: WinUSB/libusb multi-device AOA + WGC/DXGI capture + Media Foundation HEVC/H.264 + IddCx virtual display + SendInput.
 3. Preserve multi-device support, 12 KiB USB video fragment sizing, and non-blocking full-duplex USB I/O.
 4. Build and add unit/contract tests verifying protocol compatibility with `core/`.
 ```
@@ -233,19 +248,21 @@ Requirements:
 
 ```text
 desk-mate/
-├── core/               # Transport-agnostic C++20 protocol, session state machine, scheduler & tests
+├── core/                      # Transport-agnostic C++20 protocol, session state machine, scheduler & tests
 ├── apps/
-│   ├── host/           # macOS Host app (SwiftUI, ScreenCaptureKit, VideoToolbox, CGVirtualDisplay, libusb)
-│   └── device/         # HarmonyOS NEXT client (ArkTS UI + C++ N-API native AOA & AVCodec decoder)
+│   ├── common/                # Shared cross-platform adapters (AOA IDs, session profiles, 12 KiB policy, Annex-B)
+│   ├── macos-host/            # macOS Host app (SwiftUI, ScreenCaptureKit, VideoToolbox, CGVirtualDisplay, libusb)
+│   ├── harmonyos-client/      # HarmonyOS NEXT client (ArkTS UI + C++ N-API native AOA & AVCodec decoder)
+│   └── android-client/        # Android client (UsbManager accessory fd, MediaCodec Surface, MotionEvent touch)
 ├── docs/
 │   ├── assets/               # Documentation screenshots & media
 │   ├── architecture.md       # System architecture & platform constraints
 │   ├── protocol.md           # Detailed wire format, Session API & golden vector spec
 │   ├── verification-notes.md # Contract tests, real-device fixes & probe status
 │   └── adr/                  # Architecture Decision Records
-├── testdata/golden/    # Independent binary protocol golden test vectors
-├── GLOSSARY.md         # Domain terminology
-└── Makefile            # Shared C++20 core build & test entrypoints
+├── testdata/golden/           # Independent binary protocol golden test vectors
+├── GLOSSARY.md                # Domain terminology
+└── Makefile                   # Shared C++20 core build & test entrypoints
 ```
 
 ---
@@ -268,7 +285,9 @@ desk-mate/
 - System Architecture & Platform Constraints: [docs/architecture.md](./docs/architecture.md)
 - Protocol & Wire Format Spec: [docs/protocol.md](./docs/protocol.md)
 - Verification & Real-Device Notes: [docs/verification-notes.md](./docs/verification-notes.md)
-- macOS Host Engineering Notes: [apps/host/README.md](./apps/host/README.md)
+- macOS Host Engineering Notes: [apps/macos-host/README.md](./apps/macos-host/README.md)
+- HarmonyOS Client Notes: [apps/harmonyos-client/README.md](./apps/harmonyos-client/README.md)
+- Android Client Notes: [apps/android-client/README.md](./apps/android-client/README.md)
 - Domain Glossary: [GLOSSARY.md](./GLOSSARY.md)
 
 Issues and Pull Requests are welcome! If you build a **Windows Host** or **Android Client** port compatible with `core/`, feel free to share it or open a PR.

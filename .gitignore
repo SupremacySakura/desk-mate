@@ -2,3 +2,12 @@ build/
 .DS_Store
 .hvigor/
 probes/gate3/.build/
+
+# Android client
+apps/android-client/.gradle/
+apps/android-client/local.properties
+apps/android-client/app/build/
+apps/android-client/.idea/
+apps/android-client/captures/
+*.apk
+*.aab

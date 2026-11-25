@@ -6,7 +6,7 @@
 ## 构建
 
 ```sh
-cd apps/host
+cd apps/macos-host
 make app      # 生成 build/DeskMate.app
 make test     # 打包/参数/链接/脱敏契约检查
 ```

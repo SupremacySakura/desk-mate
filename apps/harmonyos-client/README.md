@@ -11,7 +11,7 @@
 需要 DevEco Studio 的 SDK、hvigor 与自带 JBR。命令行方式：
 
 ```sh
-cd apps/device
+cd apps/harmonyos-client
 
 export DEVECO_SDK_HOME=/Applications/DevEco-Studio.app/Contents/sdk
 export JAVA_HOME=/Applications/DevEco-Studio.app/Contents/jbr/Contents/Home
@@ -39,7 +39,7 @@ $HDC install entry/build/default/outputs/default/entry-default-signed.hap
 如果重新打开仍无法恢复轮询，可使用既有的开发辅助脚本；需要在平板仍处于 HDC 模式时启动：
 
 ```sh
-cd ../host
+cd ../macos-host
 make device-foreground HDC=$HDC BUNDLE=com.deskmate.gate3
 ```
 
