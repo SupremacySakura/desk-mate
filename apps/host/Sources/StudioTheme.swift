@@ -393,17 +393,41 @@ struct StudioFlatActionStyle: ButtonStyle {
 
 /// Interactive spatial dual-display monitor arranger card.
 /// Shows the Mac primary screen at center and lets the user click any cardinal side
-/// (top, bottom, left, right) to position the virtual extended HarmonyOS tablet.
+/// (top, bottom, left, right) to position virtual extended HarmonyOS displays.
 struct SpatialDisplayArrangerView: View {
     let linked: Bool
     let streaming: Bool
     let position: DisplayPosition
+    var sessions: [ActiveDisplaySessionState] = []
+    var selectedLinkID: UInt64? = nil
     let autoVirtualDisplay: Bool
     let sourceLabel: String
     let streamSummary: String
     let liveFps: Int
     let liveBitrateMbps: Double
     let onSelectPosition: (DisplayPosition) -> Void
+    var onSelectSession: (UInt64) -> Void = { _ in }
+
+    private var selectedSession: ActiveDisplaySessionState? {
+        if let selectedLinkID, let match = sessions.first(where: { $0.linkID == selectedLinkID }) {
+            return match
+        }
+        return sessions.first
+    }
+
+    private func sessions(at slot: DisplayPosition) -> [ActiveDisplaySessionState] {
+        if sessions.isEmpty {
+            return []
+        }
+        return sessions.filter { $0.position == slot }
+    }
+
+    private func isOccupied(_ slot: DisplayPosition) -> Bool {
+        if sessions.isEmpty {
+            return slot == position
+        }
+        return sessions.contains { $0.position == slot }
+    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -421,7 +445,7 @@ struct SpatialDisplayArrangerView: View {
 
                 Spacer(minLength: 6)
 
-                Text(autoVirtualDisplay ? "自动虚拟屏" : "物理/指定源")
+                Text(autoVirtualDisplay ? (sessions.count > 1 ? "\(sessions.count) 台独立屏" : "自动虚拟屏") : "物理/指定源")
                     .font(.system(size: 10, weight: .medium))
                     .foregroundStyle(StudioPalette.inkSecondary)
                     .padding(.horizontal, 7)
@@ -484,48 +508,64 @@ struct SpatialDisplayArrangerView: View {
                         style: StrokeStyle(lineWidth: 0.75, dash: [2.5, 3.5])
                     )
 
-                    // Active USB data bridge line between Mac box and selected Tablet slot
-                    let bridgeColor = (streaming || linked) ? StudioPalette.crimson : StudioPalette.inkMuted
-                    var bridge = Path()
-                    let midDot: CGPoint
-                    switch position {
-                    case .top:
-                        bridge.move(to: CGPoint(x: cx, y: cy - 28))
-                        bridge.addLine(to: CGPoint(x: cx, y: cy - 42))
-                        midDot = CGPoint(x: cx, y: cy - 35)
-                    case .bottom:
-                        bridge.move(to: CGPoint(x: cx, y: cy + 30))
-                        bridge.addLine(to: CGPoint(x: cx, y: cy + 42))
-                        midDot = CGPoint(x: cx, y: cy + 36)
-                    case .left:
-                        bridge.move(to: CGPoint(x: cx - 47, y: cy))
-                        bridge.addLine(to: CGPoint(x: cx - 64, y: cy))
-                        midDot = CGPoint(x: cx - 55.5, y: cy)
-                    case .right:
-                        bridge.move(to: CGPoint(x: cx + 47, y: cy))
-                        bridge.addLine(to: CGPoint(x: cx + 64, y: cy))
-                        midDot = CGPoint(x: cx + 55.5, y: cy)
+                    // Active USB data bridge lines between Mac box and every occupied slot
+                    for slot in DisplayPosition.allCases where isOccupied(slot) {
+                        let slotItems = sessions(at: slot)
+                        let hasSelected = slotItems.contains { $0.linkID == selectedSession?.linkID }
+                        let slotStreaming = slotItems.contains(where: \.streaming) || (sessions.isEmpty && streaming)
+                        let slotLinked = !slotItems.isEmpty || (sessions.isEmpty && linked)
+                        let bridgeColor: Color
+                        if hasSelected && (slotStreaming || slotLinked) {
+                            bridgeColor = StudioPalette.crimson
+                        } else if slotStreaming {
+                            bridgeColor = StudioPalette.crimson
+                        } else if slotLinked {
+                            bridgeColor = StudioPalette.champagne
+                        } else {
+                            bridgeColor = StudioPalette.inkMuted
+                        }
+
+                        var bridge = Path()
+                        let midDot: CGPoint
+                        switch slot {
+                        case .top:
+                            bridge.move(to: CGPoint(x: cx, y: cy - 28))
+                            bridge.addLine(to: CGPoint(x: cx, y: cy - 42))
+                            midDot = CGPoint(x: cx, y: cy - 35)
+                        case .bottom:
+                            bridge.move(to: CGPoint(x: cx, y: cy + 30))
+                            bridge.addLine(to: CGPoint(x: cx, y: cy + 42))
+                            midDot = CGPoint(x: cx, y: cy + 36)
+                        case .left:
+                            bridge.move(to: CGPoint(x: cx - 47, y: cy))
+                            bridge.addLine(to: CGPoint(x: cx - 64, y: cy))
+                            midDot = CGPoint(x: cx - 55.5, y: cy)
+                        case .right:
+                            bridge.move(to: CGPoint(x: cx + 47, y: cy))
+                            bridge.addLine(to: CGPoint(x: cx + 64, y: cy))
+                            midDot = CGPoint(x: cx + 55.5, y: cy)
+                        }
+                        context.stroke(bridge, with: .color(bridgeColor), lineWidth: (slotStreaming || slotLinked) ? 1.5 : 1.0)
+                        context.fill(
+                            Path(CGRect(x: midDot.x - 2.5, y: midDot.y - 2.5, width: 5, height: 5)),
+                            with: .color(bridgeColor)
+                        )
                     }
-                    context.stroke(bridge, with: .color(bridgeColor), lineWidth: (streaming || linked) ? 1.5 : 1.0)
-                    context.fill(
-                        Path(CGRect(x: midDot.x - 2.5, y: midDot.y - 2.5, width: 5, height: 5)),
-                        with: .color(bridgeColor)
-                    )
                 }
 
                 VStack(spacing: 11) {
                     // TOP SLOT
-                    cardinalSlot(.top, width: 104, height: 42)
+                    cardinalSlot(.top, width: 108, height: 42)
 
                     // MIDDLE ROW: LEFT + MAC + RIGHT
                     HStack(spacing: 18) {
-                        cardinalSlot(.left, width: 76, height: 56)
+                        cardinalSlot(.left, width: 78, height: 56)
                         macPrimaryBox
-                        cardinalSlot(.right, width: 76, height: 56)
+                        cardinalSlot(.right, width: 78, height: 56)
                     }
 
                     // BOTTOM SLOT
-                    cardinalSlot(.bottom, width: 104, height: 42)
+                    cardinalSlot(.bottom, width: 108, height: 42)
                 }
                 .padding(.vertical, 8)
             }
@@ -540,13 +580,20 @@ struct SpatialDisplayArrangerView: View {
             // Bottom live telemetry & layout footer inside card
             VStack(alignment: .leading, spacing: 4.5) {
                 HStack(spacing: 6) {
-                    Text("当前布局")
+                    Text(sessions.count > 1 ? "选中副屏" : "当前布局")
                         .font(.system(size: 11))
                         .foregroundStyle(StudioPalette.inkMuted)
                     Spacer()
-                    Text("主屏\(position.shortLabel)")
-                        .font(.system(size: 11.5, weight: .semibold))
-                        .foregroundStyle(StudioPalette.crimson)
+                    if let selectedSession {
+                        Text("\(selectedSession.deviceName) · \(selectedSession.position.shortLabel)")
+                            .font(.system(size: 11.5, weight: .semibold))
+                            .foregroundStyle(StudioPalette.crimson)
+                            .lineLimit(1)
+                    } else {
+                        Text("主屏\(position.shortLabel)")
+                            .font(.system(size: 11.5, weight: .semibold))
+                            .foregroundStyle(StudioPalette.crimson)
+                    }
                 }
 
                 HStack(spacing: 6) {
@@ -563,7 +610,7 @@ struct SpatialDisplayArrangerView: View {
 
                 if streaming && liveFps > 0 {
                     HStack(spacing: 6) {
-                        Text("实时输出")
+                        Text(sessions.count > 1 ? "总输出" : "实时输出")
                             .font(.system(size: 11))
                             .foregroundStyle(StudioPalette.inkMuted)
                         Spacer()
@@ -588,11 +635,14 @@ struct SpatialDisplayArrangerView: View {
     }
 
     private var specSummary: String {
+        if let selectedSession, !selectedSession.streamSummary.isEmpty {
+            return selectedSession.streamSummary
+        }
         if !streamSummary.isEmpty {
             return streamSummary
         }
         if autoVirtualDisplay {
-            return "按平板比例自动匹配 HiDPI"
+            return "按设备比例自动匹配 HiDPI"
         }
         return sourceLabel
     }
@@ -647,34 +697,80 @@ struct SpatialDisplayArrangerView: View {
 
     @ViewBuilder
     private func cardinalSlot(_ slotPosition: DisplayPosition, width: CGFloat, height: CGFloat) -> some View {
-        let isSelected = (slotPosition == position)
+        let slotSessions = sessions(at: slotPosition)
+        let occupied = isOccupied(slotPosition)
+        let containsSelected = slotSessions.contains { $0.linkID == selectedSession?.linkID } || (sessions.isEmpty && slotPosition == position)
+        let slotStreaming = slotSessions.contains(where: \.streaming) || (sessions.isEmpty && streaming)
+        let slotLinked = !slotSessions.isEmpty || (sessions.isEmpty && linked)
+
         Button {
-            onSelectPosition(slotPosition)
+            if !slotSessions.isEmpty {
+                if let currentSelected = selectedSession?.linkID,
+                   let idx = slotSessions.firstIndex(where: { $0.linkID == currentSelected }),
+                   slotSessions.count > 1 {
+                    let next = slotSessions[(idx + 1) % slotSessions.count]
+                    onSelectSession(next.linkID)
+                } else {
+                    onSelectSession(slotSessions[0].linkID)
+                }
+            } else {
+                onSelectPosition(slotPosition)
+            }
         } label: {
-            if isSelected {
+            if occupied {
+                let displayItem = slotSessions.first(where: { $0.linkID == selectedSession?.linkID }) ?? slotSessions.first
+                let slotTitle: String = {
+                    if slotSessions.count > 1 {
+                        return "\(slotSessions.count) 台副屏"
+                    }
+                    if let item = displayItem {
+                        return item.deviceName
+                    }
+                    return "扩展副屏"
+                }()
+                let slotSub: String = {
+                    if slotSessions.count > 1 {
+                        let sumFps = slotSessions.reduce(0) { $0 + $1.liveFps }
+                        return sumFps > 0 ? "\(sumFps) FPS" : "点击切换"
+                    }
+                    if let item = displayItem {
+                        if item.streaming && item.liveFps > 0 {
+                            return "\(item.liveFps) FPS"
+                        }
+                        return item.streaming ? "推流中" : "已连接"
+                    }
+                    return activeSlotSubtitle
+                }()
+
                 VStack(spacing: 2) {
                     HStack(spacing: 4) {
                         Rectangle()
-                            .fill(streaming ? StudioPalette.crimson : (linked ? StudioPalette.champagne : StudioPalette.inkMuted))
+                            .fill(slotStreaming ? StudioPalette.crimson : (slotLinked ? StudioPalette.champagne : StudioPalette.inkMuted))
                             .frame(width: 4, height: 4)
-                        Text("扩展副屏")
+                        Text(slotTitle)
                             .font(.system(size: 9.5, weight: .semibold))
                             .foregroundStyle(StudioPalette.ink)
+                            .lineLimit(1)
+                            .truncationMode(.tail)
                     }
+                    .padding(.horizontal, 4)
 
-                    Text(activeSlotSubtitle)
-                        .font(.system(size: 9.5, weight: .medium, design: .monospaced))
-                        .foregroundStyle((streaming || linked) ? StudioPalette.crimson : StudioPalette.inkMuted)
+                    Text(slotSub)
+                        .font(.system(size: 9, weight: .medium, design: .monospaced))
+                        .foregroundStyle((slotStreaming || slotLinked) ? StudioPalette.crimson : StudioPalette.inkMuted)
                         .lineLimit(1)
                 }
                 .frame(width: width, height: height)
                 .background(
                     RoundedRectangle(cornerRadius: StudioPalette.cornerRadius, style: .continuous)
-                        .fill(streaming ? StudioPalette.roseWash : (linked ? StudioPalette.subtleSurface : StudioPalette.cardSurface))
+                        .fill(slotStreaming ? StudioPalette.roseWash : (slotLinked ? StudioPalette.subtleSurface : StudioPalette.cardSurface))
                 )
                 .overlay(
                     RoundedRectangle(cornerRadius: StudioPalette.cornerRadius, style: .continuous)
-                        .stroke((streaming || linked) ? StudioPalette.crimson : StudioPalette.ink, lineWidth: 1.2)
+                        .stroke(
+                            containsSelected ? ((slotStreaming || slotLinked) ? StudioPalette.crimson : StudioPalette.ink) : StudioPalette.champagne,
+                            lineWidth: containsSelected ? 1.3 : 1.0
+                        )
                 )
             } else {
                 VStack(spacing: 1) {
@@ -694,7 +790,7 @@ struct SpatialDisplayArrangerView: View {
             }
         }
         .buttonStyle(.plain)
-        .help("将扩展副屏放置于主屏\(slotPosition.shortLabel)")
+        .help(occupied ? "点击选中主屏\(slotPosition.shortLabel)的设备" : "将当前副屏放置于主屏\(slotPosition.shortLabel)")
     }
 
     private var activeSlotSubtitle: String {

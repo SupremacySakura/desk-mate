@@ -57,6 +57,8 @@ struct MenuBarPopoverView: View {
     let setInput: (Bool) -> Void
     let setTouchInputMode: (TouchInputMode) -> Void
     let setPosition: (DisplayPosition) -> Void
+    let selectLink: (UInt64) -> Void
+    let disconnectLink: (UInt64) -> Void
     let setServiceRunning: (Bool) -> Void
     let openPermission: (Bool) -> Void
     let requestAccessibility: (Bool) -> Void
@@ -67,20 +69,22 @@ struct MenuBarPopoverView: View {
     private var state: HostWindowState { model.state }
 
     private var streaming: Bool {
-        state.badge == "会话已建立" || state.liveFps > 0
+        state.badge == "会话已建立" || state.badge.contains("运行中") || state.liveFps > 0
     }
 
     private var badgeTone: StudioTone {
-        switch state.badge {
-        case "会话已建立":
+        if state.badge == "会话已建立" || state.badge.contains("运行中") || state.badge == "测试模式" {
             return .crimson
+        }
+        switch state.badge {
         case "出错", "待授权", "未就绪", "已拦截":
             return .warning
         case "USB 已连接":
             return .positive
-        case "测试模式":
-            return .crimson
         default:
+            if state.badge.contains("已连接") {
+                return .positive
+            }
             return .neutral
         }
     }
@@ -248,7 +252,7 @@ struct MenuBarPopoverView: View {
                     Rectangle().fill(StudioPalette.softHairline).frame(height: 0.75)
 
                     VStack(alignment: .leading, spacing: 7) {
-                        Text("副屏方位")
+                        Text(state.activeSessions.count > 1 ? "当前选中副屏方位" : "副屏方位")
                             .font(.system(size: 11))
                             .foregroundStyle(StudioPalette.inkMuted)
 
@@ -265,6 +269,63 @@ struct MenuBarPopoverView: View {
                     }
                     .padding(.horizontal, 12)
                     .padding(.vertical, 9)
+
+                    if state.activeSessions.count > 1 {
+                        Rectangle().fill(StudioPalette.softHairline).frame(height: 0.75)
+
+                        VStack(alignment: .leading, spacing: 5) {
+                            Text("已连接设备 (\(state.activeSessions.count))")
+                                .font(.system(size: 10.5))
+                                .foregroundStyle(StudioPalette.inkMuted)
+
+                            ForEach(state.activeSessions) { session in
+                                let selected = (state.selectedLinkID == session.linkID)
+                                HStack(spacing: 6) {
+                                    Button {
+                                        selectLink(session.linkID)
+                                    } label: {
+                                        HStack(spacing: 6) {
+                                            Rectangle()
+                                                .fill(session.streaming ? StudioPalette.crimson : StudioPalette.jade)
+                                                .frame(width: 4, height: 4)
+                                            Text(session.deviceName)
+                                                .font(.system(size: 11, weight: selected ? .semibold : .regular))
+                                                .foregroundStyle(selected ? StudioPalette.crimson : StudioPalette.ink)
+                                                .lineLimit(1)
+                                            Spacer(minLength: 4)
+                                            Text("\(session.position.shortLabel) · \(session.liveFps > 0 ? "\(session.liveFps)fps" : session.badge)")
+                                                .font(.system(size: 10, design: .monospaced))
+                                                .foregroundStyle(StudioPalette.inkMuted)
+                                        }
+                                        .padding(.horizontal, 7)
+                                        .padding(.vertical, 4)
+                                        .background(
+                                            RoundedRectangle(cornerRadius: 2.5, style: .continuous)
+                                                .fill(selected ? StudioPalette.roseWash : StudioPalette.subtleSurface)
+                                        )
+                                        .overlay(
+                                            RoundedRectangle(cornerRadius: 2.5, style: .continuous)
+                                                .stroke(selected ? StudioPalette.roseBorder : StudioPalette.hairline, lineWidth: 0.6)
+                                        )
+                                    }
+                                    .buttonStyle(.plain)
+
+                                    Button {
+                                        disconnectLink(session.linkID)
+                                    } label: {
+                                        Image(systemName: "xmark")
+                                            .font(.system(size: 9.5, weight: .semibold))
+                                            .foregroundStyle(StudioPalette.inkMuted)
+                                            .frame(width: 20, height: 20)
+                                    }
+                                    .buttonStyle(.plain)
+                                    .help("断开 \(session.deviceName)")
+                                }
+                            }
+                        }
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 9)
+                    }
                 }
                 .background(StudioPalette.cardSurface)
                 .clipShape(RoundedRectangle(cornerRadius: StudioPalette.cardRadius, style: .continuous))
@@ -331,6 +392,9 @@ struct MenuBarPopoverView: View {
     }
 
     private var subtitleText: String {
+        if state.activeSessions.count > 1 {
+            return "已连接 \(state.activeSessions.count) 台副屏设备"
+        }
         if let name = state.connectedDeviceName, !name.isEmpty, state.linked {
             return "\(name) · 主屏\(state.position.shortLabel)"
         }

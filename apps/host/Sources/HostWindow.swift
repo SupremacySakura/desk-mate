@@ -6,9 +6,28 @@ struct DisplayChoice: Identifiable, Equatable {
     let title: String
 }
 
+struct ActiveDisplaySessionState: Identifiable, Equatable {
+    let linkID: UInt64
+    let deviceID: String
+    let deviceName: String
+    let state: String
+    let badge: String
+    let linked: Bool
+    let streaming: Bool
+    let streamSummary: String
+    let position: DisplayPosition
+    let liveFps: Int
+    let liveBitrateMbps: Double
+    let inputEventCount: Int
+    let displayID: UInt32?
+    let error: String?
+
+    var id: UInt64 { linkID }
+}
+
 struct HostWindowState: Equatable {
-    var title = "等待平板连接"
-    var guidance = "打开平板上的 DeskMate，再接上 USB 数据线。"
+    var title = "等待设备连接"
+    var guidance = "打开设备上的 DeskMate，再接上 USB 数据线。"
     var badge = "未连接"
     var linked = false
     var serviceRunning = true
@@ -18,9 +37,13 @@ struct HostWindowState: Equatable {
     var loginItemSummary = ""
     var loginItemError: String? = nil
     var pairedDevices: [PairedDevice] = []
+    var activeSessions: [ActiveDisplaySessionState] = []
+    var selectedLinkID: UInt64? = nil
+    var connectedDeviceIDs: Set<String> = []
     var connectedDeviceID: String? = nil
     var onlineDeviceIDs: Set<String> = []
     var connectedDeviceName: String? = nil
+    var blockedDeviceNames: [String] = []
     var blockedDeviceName: String? = nil
     var source = "自动创建虚拟显示器"
     var streamSummary = ""
@@ -80,6 +103,10 @@ struct HostWindow: View {
     let chooseSource: (UInt32) -> Void
     let setAutoVirtual: (Bool) -> Void
     let setPosition: (DisplayPosition) -> Void
+    let setDefaultPosition: (DisplayPosition) -> Void
+    let selectLink: (UInt64) -> Void
+    let setLinkPosition: (UInt64, DisplayPosition) -> Void
+    let disconnectLink: (UInt64) -> Void
     let setVideo: (Bool) -> Void
     let setInput: (Bool) -> Void
     let setTouchInputMode: (TouchInputMode) -> Void
@@ -92,6 +119,7 @@ struct HostWindow: View {
     let setServiceRunning: (Bool) -> Void
     let refreshDevices: () -> Void
     let setDeviceAllowed: (String, Bool) -> Void
+    let setDevicePreferredPosition: (String, DisplayPosition?) -> Void
     let renameDevice: (String, String) -> Void
     let removeDevice: (String) -> Void
     let copyDeviceID: (String) -> Void
@@ -101,20 +129,22 @@ struct HostWindow: View {
     private var state: HostWindowState { model.state }
 
     private var streaming: Bool {
-        state.badge == "会话已建立" || state.liveFps > 0
+        state.badge == "会话已建立" || state.badge.contains("运行中") || state.liveFps > 0
     }
 
     private var badgeTone: StudioTone {
-        switch state.badge {
-        case "会话已建立":
+        if state.badge == "会话已建立" || state.badge.contains("运行中") || state.badge == "测试模式" {
             return .crimson
+        }
+        switch state.badge {
         case "出错", "待授权", "未就绪", "已拦截":
             return .warning
         case "USB 已连接":
             return .positive
-        case "测试模式":
-            return .crimson
         default:
+            if state.badge.contains("已连接") {
+                return .positive
+            }
             return .neutral
         }
     }
@@ -224,12 +254,15 @@ struct HostWindow: View {
                 linked: state.linked,
                 streaming: streaming,
                 position: state.position,
+                sessions: state.activeSessions,
+                selectedLinkID: state.selectedLinkID,
                 autoVirtualDisplay: state.autoVirtualDisplay,
                 sourceLabel: state.source,
                 streamSummary: state.streamSummary,
                 liveFps: state.liveFps,
                 liveBitrateMbps: state.liveBitrateMbps,
-                onSelectPosition: setPosition
+                onSelectPosition: setPosition,
+                onSelectSession: selectLink
             )
 
             // Compact runtime summary strip below topology schematic
@@ -255,8 +288,11 @@ struct HostWindow: View {
         if !state.serviceRunning {
             return "服务已停止"
         }
-        if let blocked = state.blockedDeviceName, !blocked.isEmpty {
+        if let blocked = state.blockedDeviceName, !blocked.isEmpty, state.activeSessions.isEmpty {
             return "\(blocked) · 已拦截"
+        }
+        if state.activeSessions.count > 1 {
+            return "已接入 \(state.activeSessions.count) 台设备"
         }
         if state.linked {
             if let name = state.connectedDeviceName, !name.isEmpty {
@@ -264,7 +300,7 @@ struct HostWindow: View {
             }
             return "AOA 直连已就绪"
         }
-        return "等待平板接入"
+        return "等待设备接入"
     }
 
     private func metaRow(label: String, value: String, highlight: Bool) -> some View {
@@ -329,6 +365,10 @@ struct HostWindow: View {
 
             // Contextual action / authorization bar when needed
             actionCalloutIfNeeded
+
+            if !state.activeSessions.isEmpty {
+                activeSessionsSection
+            }
 
             // Telemetry bar
             VStack(alignment: .leading, spacing: 8) {
@@ -398,7 +438,7 @@ struct HostWindow: View {
 
                     VStack(alignment: .leading, spacing: 7) {
                         HStack(spacing: 8) {
-                            Text("虚拟副屏方位")
+                            Text(state.activeSessions.count > 1 ? "当前选中副屏方位" : "虚拟副屏方位")
                                 .font(.system(size: 12.5, weight: .medium))
                                 .foregroundStyle(StudioPalette.ink)
                             Spacer(minLength: 8)
@@ -413,7 +453,7 @@ struct HostWindow: View {
                                     title: pos.shortLabel,
                                     active: state.position == pos,
                                     expand: true,
-                                    action: { setPosition(pos) }
+                                    action: { setDefaultPosition(pos) }
                                 )
                             }
                         }
@@ -428,6 +468,116 @@ struct HostWindow: View {
                         .stroke(StudioPalette.hairline, lineWidth: 0.75)
                 )
             }
+        }
+    }
+
+    private var activeSessionsSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            StudioSectionHeader(
+                english: "ACTIVE DISPLAYS",
+                chinese: "在线副屏（\(state.activeSessions.count)）"
+            )
+
+            VStack(spacing: 8) {
+                ForEach(state.activeSessions) { session in
+                    activeSessionCard(session)
+                }
+            }
+        }
+    }
+
+    private func activeSessionCard(_ session: ActiveDisplaySessionState) -> some View {
+        let isSelected = (state.selectedLinkID == session.linkID)
+        let sessionTone: StudioTone = session.streaming ? .crimson : (session.error != nil ? .warning : .positive)
+
+        return VStack(spacing: 0) {
+            HStack(spacing: 10) {
+                StudioDeviceGlyph(active: session.streaming || isSelected, allowed: true, size: 28)
+
+                VStack(alignment: .leading, spacing: 3) {
+                    HStack(spacing: 7) {
+                        Text(session.deviceName)
+                            .font(.system(size: 12.5, weight: .medium))
+                            .foregroundStyle(StudioPalette.ink)
+                            .lineLimit(1)
+
+                        StudioStatusBadge(text: session.badge, tone: sessionTone)
+
+                        if isSelected && state.activeSessions.count > 1 {
+                            Text("已选中")
+                                .font(.system(size: 9.5, weight: .medium))
+                                .foregroundStyle(StudioPalette.crimson)
+                                .padding(.horizontal, 5)
+                                .padding(.vertical, 1.5)
+                                .background(StudioPalette.roseWash)
+                                .clipShape(RoundedRectangle(cornerRadius: 2, style: .continuous))
+                        }
+                    }
+
+                    HStack(spacing: 8) {
+                        if !session.streamSummary.isEmpty {
+                            Text(session.streamSummary)
+                                .font(.system(size: 10, design: .monospaced))
+                                .foregroundStyle(StudioPalette.inkSecondary)
+                        }
+                        if session.streaming && session.liveFps > 0 {
+                            Text(session.liveBitrateMbps > 0
+                                 ? String(format: "%d FPS · %.1f Mbps", session.liveFps, session.liveBitrateMbps)
+                                 : "\(session.liveFps) FPS")
+                                .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                                .foregroundStyle(StudioPalette.crimson)
+                        }
+                        if let displayID = session.displayID {
+                            Text("#\(displayID)")
+                                .font(.system(size: 10, design: .monospaced))
+                                .foregroundStyle(StudioPalette.inkMuted)
+                        }
+                    }
+                }
+
+                Spacer(minLength: 6)
+
+                HStack(spacing: 4) {
+                    ForEach(DisplayPosition.allCases, id: \.self) { pos in
+                        let active = (session.position == pos)
+                        Button {
+                            setLinkPosition(session.linkID, pos)
+                        } label: {
+                            Text(pos.shortLabel)
+                                .font(.system(size: 10, weight: active ? .semibold : .regular))
+                                .foregroundStyle(active ? StudioPalette.crimson : StudioPalette.inkMuted)
+                                .padding(.horizontal, 6)
+                                .padding(.vertical, 3.5)
+                                .background(
+                                    RoundedRectangle(cornerRadius: 2.5, style: .continuous)
+                                        .fill(active ? StudioPalette.roseWash : StudioPalette.subtleSurface)
+                                )
+                                .overlay(
+                                    RoundedRectangle(cornerRadius: 2.5, style: .continuous)
+                                        .stroke(active ? StudioPalette.roseBorder : StudioPalette.hairline, lineWidth: 0.6)
+                                )
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+
+                Button("断开") {
+                    disconnectLink(session.linkID)
+                }
+                .buttonStyle(StudioSecondaryButtonStyle())
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 9)
+        }
+        .background(StudioPalette.cardSurface)
+        .clipShape(RoundedRectangle(cornerRadius: StudioPalette.cardRadius, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: StudioPalette.cardRadius, style: .continuous)
+                .stroke(isSelected ? StudioPalette.roseBorder : StudioPalette.hairline, lineWidth: isSelected ? 1.0 : 0.75)
+        )
+        .contentShape(Rectangle())
+        .onTapGesture {
+            selectLink(session.linkID)
         }
     }
 
@@ -654,7 +804,7 @@ struct HostWindow: View {
     }
 
     private func pairedDeviceCard(_ device: PairedDevice) -> some View {
-        let isConnected = (state.connectedDeviceID == device.id)
+        let isConnected = state.connectedDeviceIDs.contains(device.id) || (state.connectedDeviceID == device.id)
         let isOnline = state.onlineDeviceIDs.contains(device.id) || isConnected
         let isRenaming = (model.renamingDeviceID == device.id)
 
@@ -677,6 +827,20 @@ struct HostWindow: View {
                             StudioStatusBadge(text: "USB 已接入", tone: .positive)
                         } else {
                             StudioStatusBadge(text: "允许连接", tone: .positive)
+                        }
+
+                        if let prefPos = device.preferredPosition {
+                            Text("默认\(prefPos.shortLabel)")
+                                .font(.system(size: 10, weight: .medium))
+                                .foregroundStyle(StudioPalette.inkSecondary)
+                                .padding(.horizontal, 6)
+                                .padding(.vertical, 2)
+                                .background(StudioPalette.subtleSurface)
+                                .clipShape(RoundedRectangle(cornerRadius: 2, style: .continuous))
+                                .overlay(
+                                    RoundedRectangle(cornerRadius: 2, style: .continuous)
+                                        .stroke(StudioPalette.hairline, lineWidth: 0.6)
+                                )
                         }
 
                         Text("最近连接 \(PairedDeviceStore.relativeTimeText(from: device.lastConnectedAt))")
@@ -702,6 +866,35 @@ struct HostWindow: View {
                     }
 
                     Menu {
+                        Menu("默认扩展方位") {
+                            Button {
+                                setDevicePreferredPosition(device.id, nil)
+                            } label: {
+                                if device.preferredPosition == nil {
+                                    Label("自动分配空闲侧", systemImage: "checkmark")
+                                } else {
+                                    Text("自动分配空闲侧")
+                                }
+                            }
+                            Divider()
+                            ForEach(DisplayPosition.allCases, id: \.self) { pos in
+                                Button {
+                                    setDevicePreferredPosition(device.id, pos)
+                                } label: {
+                                    if device.preferredPosition == pos {
+                                        Label(pos.label, systemImage: "checkmark")
+                                    } else {
+                                        Text(pos.label)
+                                    }
+                                }
+                            }
+                        }
+                        if isConnected, let session = state.activeSessions.first(where: { $0.deviceID == device.id }) {
+                            Button("断开当前连接") {
+                                disconnectLink(session.linkID)
+                            }
+                        }
+                        Divider()
                         Button("重命名设备") {
                             model.renamingDeviceID = device.id
                             model.renameDraft = device.displayName
@@ -921,7 +1114,7 @@ struct HostWindow: View {
                                     title: pos.shortLabel,
                                     active: state.position == pos,
                                     expand: true,
-                                    action: { setPosition(pos) }
+                                    action: { setDefaultPosition(pos) }
                                 )
                             }
                         }

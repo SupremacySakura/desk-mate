@@ -1123,6 +1123,10 @@ enum InputInjector {
     private static let engine = TouchInputEngine(sink: sink, mode: .compatibleGestures)
     private static var cachedProbe = LiveTouchInputSink.probeCapabilityDetail()
 
+    static func makeEngine(mode: TouchInputMode) -> TouchInputEngine {
+        TouchInputEngine(sink: sink, mode: mode)
+    }
+
     static var mode: TouchInputMode {
         get { engine.mode }
         set { engine.mode = newValue }

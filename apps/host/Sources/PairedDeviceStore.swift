@@ -10,6 +10,7 @@ struct PairedDevice: Identifiable, Codable, Equatable {
     var lastConnectedAt: Date
     var firstPairedAt: Date
     var lastResolution: String?
+    var preferredPosition: DisplayPosition? = nil
 
     var displayName: String {
         let trimmed = customName?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
@@ -135,6 +136,17 @@ final class PairedDeviceStore {
         devices.first(where: { $0.id == id })?.displayName
     }
 
+    func preferredPosition(for id: String) -> DisplayPosition? {
+        devices.first(where: { $0.id == id })?.preferredPosition
+    }
+
+    func setPreferredPosition(id: String, position: DisplayPosition?) {
+        guard let index = devices.firstIndex(where: { $0.id == id }) else { return }
+        guard devices[index].preferredPosition != position else { return }
+        devices[index].preferredPosition = position
+        save()
+    }
+
     static func relativeTimeText(from date: Date, now: Date = Date()) -> String {
         let seconds = max(0, now.timeIntervalSince(date))
         if seconds < 60 {
@@ -165,7 +177,9 @@ final class PairedDeviceStore {
             trimmed == "DeskMate" ||
             trimmed == "DeskMate Extended Display" ||
             trimmed == "DeskMate 平板设备" ||
-            trimmed == "HarmonyOS 平板"
+            trimmed == "DeskMate 设备" ||
+            trimmed == "HarmonyOS 平板" ||
+            trimmed == "HarmonyOS 设备"
     }
 
     private func sortDevices() {

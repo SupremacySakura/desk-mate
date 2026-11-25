@@ -174,6 +174,20 @@ static BOOL DMAnyBackingScale2Mode(uint32_t displayID) {
                                            logicalHeight:(uint32_t)logicalHeight
                                                    scale:(uint32_t)scale
                                              refreshRate:(double)refreshRate {
+    return [self createWithLogicalWidth:logicalWidth
+                          logicalHeight:logicalHeight
+                                  scale:scale
+                            refreshRate:refreshRate
+                                   name:@"DeskMate Extended Display"
+                              serialNum:0x0001];
+}
+
++ (NSDictionary<NSString *, id> *)createWithLogicalWidth:(uint32_t)logicalWidth
+                                           logicalHeight:(uint32_t)logicalHeight
+                                                   scale:(uint32_t)scale
+                                             refreshRate:(double)refreshRate
+                                                    name:(NSString *)name
+                                               serialNum:(uint32_t)serialNum {
     if (logicalWidth == 0 || logicalHeight == 0) {
         return DMFailure(@"logical display dimensions must be positive");
     }
@@ -192,19 +206,23 @@ static BOOL DMAnyBackingScale2Mode(uint32_t displayID) {
         return DMFailure(@"CGVirtualDisplay classes are unavailable");
     }
 
+    NSString *resolvedName = (name.length > 0) ? name : @"DeskMate Extended Display";
+    const uint32_t resolvedSerial = (serialNum != 0) ? serialNum : 0x0001;
+    NSString *queueLabel = [NSString stringWithFormat:@"dev.deskmate.host.virtual-display.%u", resolvedSerial];
+
     DMVirtualDisplaySession *session = [[DMVirtualDisplaySession alloc] init];
     session->_logicalWidth = logicalWidth;
     session->_logicalHeight = logicalHeight;
     session->_scale = scale;
     session->_refreshRate = refreshRate;
-    session->_queue = dispatch_queue_create("dev.deskmate.host.virtual-display", DISPATCH_QUEUE_SERIAL);
+    session->_queue = dispatch_queue_create(queueLabel.UTF8String, DISPATCH_QUEUE_SERIAL);
 
     id<DMCGVirtualDisplayDescriptor> descriptor =
         [(id<DMCGVirtualDisplayDescriptor>)[(id)descriptorClass alloc] init];
-    descriptor.name = @"DeskMate Extended Display";
+    descriptor.name = resolvedName;
     descriptor.vendorID = 0x0D53;
     descriptor.productID = 0x0005;
-    descriptor.serialNum = 0x0001;
+    descriptor.serialNum = resolvedSerial;
     const uint32_t pixelWidth = logicalWidth * scale;
     const uint32_t pixelHeight = logicalHeight * scale;
     descriptor.maxPixelsWide = pixelWidth;

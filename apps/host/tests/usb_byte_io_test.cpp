@@ -160,16 +160,23 @@ bool test_device_blocklist_and_disconnect() {
     std::fprintf(stderr, "FAIL could not allocate DMBridge for policy test\n");
     return false;
   }
+  auto link = std::make_shared<DeviceLink>();
+  link->bridge = bridge;
+  link->link_id = 1;
   {
-    std::lock_guard lock(bridge->snapshot_mutex);
-    bridge->active_device.id = "usb:MATEPAD-001";
-    bridge->active_device.name = "MatePad 12.2 Pro";
-    bridge->active_device_valid = true;
+    std::lock_guard lock(link->snapshot_mutex);
+    link->active_device.id = "usb:MATEPAD-001";
+    link->active_device.name = "MatePad 12.2 Pro";
+    link->active_device_valid = true;
+  }
+  {
+    std::lock_guard lock(bridge->links_mutex);
+    bridge->links.emplace(1, link);
   }
 
   const char *other[] = {"usb:OTHER-999"};
   dm_bridge_set_blocked_devices(bridge, other, 1);
-  if (bridge->disconnect_requested.load() ||
+  if (link->disconnect_requested.load() ||
       is_device_blocked(bridge, "usb:MATEPAD-001") ||
       !is_device_blocked(bridge, "usb:OTHER-999")) {
     std::fprintf(stderr, "FAIL non-matching blocklist triggered disconnect\n");
@@ -178,7 +185,7 @@ bool test_device_blocklist_and_disconnect() {
   }
 
   dm_bridge_disconnect_device(bridge, "usb:OTHER-999");
-  if (bridge->disconnect_requested.load()) {
+  if (link->disconnect_requested.load()) {
     std::fprintf(stderr, "FAIL non-matching explicit disconnect triggered\n");
     dm_bridge_destroy(bridge);
     return false;
@@ -187,13 +194,13 @@ bool test_device_blocklist_and_disconnect() {
   const char *blocked_active[] = {"usb:MATEPAD-001"};
   dm_bridge_set_blocked_devices(bridge, blocked_active, 1);
   if (!is_device_blocked(bridge, "usb:MATEPAD-001") ||
-      !bridge->disconnect_requested.load()) {
+      !link->disconnect_requested.load()) {
     std::fprintf(stderr, "FAIL blocking active device did not request disconnect\n");
     dm_bridge_destroy(bridge);
     return false;
   }
 
-  bridge->disconnect_requested.store(false);
+  link->disconnect_requested.store(false);
   dm_bridge_set_blocked_devices(bridge, nullptr, 0);
   if (is_device_blocked(bridge, "usb:MATEPAD-001")) {
     std::fprintf(stderr, "FAIL clearing blocklist left device blocked\n");
@@ -202,7 +209,7 @@ bool test_device_blocklist_and_disconnect() {
   }
 
   dm_bridge_disconnect_device(bridge, "usb:MATEPAD-001");
-  if (!bridge->disconnect_requested.load()) {
+  if (!link->disconnect_requested.load()) {
     std::fprintf(stderr, "FAIL matching explicit disconnect did not trigger\n");
     dm_bridge_destroy(bridge);
     return false;
@@ -217,6 +224,152 @@ bool test_device_blocklist_and_disconnect() {
     return false;
   }
   std::puts("PASS device blocklist and active disconnect policy");
+  return true;
+}
+
+bool test_multi_device_links_and_policy() {
+  DMBridge *bridge = dm_bridge_create(nullptr);
+  if (bridge == nullptr) {
+    std::fprintf(stderr, "FAIL could not allocate DMBridge for multi-device test\n");
+    return false;
+  }
+
+  auto link1 = std::make_shared<DeviceLink>();
+  link1->bridge = bridge;
+  link1->link_id = 1;
+  {
+    std::lock_guard lock(link1->snapshot_mutex);
+    link1->active_device.id = "usb:MATEPAD-001";
+    link1->active_device.name = "MatePad 12.2 Pro";
+    link1->active_device_valid = true;
+    link1->cached_state = "streaming";
+    link1->cached_negotiated = "hevc 2800x1840@60";
+  }
+
+  auto link2 = std::make_shared<DeviceLink>();
+  link2->bridge = bridge;
+  link2->link_id = 2;
+  {
+    std::lock_guard lock(link2->snapshot_mutex);
+    link2->active_device.id = "usb:PHONE-002";
+    link2->active_device.name = "Pura 70 Pro";
+    link2->active_device_valid = true;
+    link2->cached_state = "streaming";
+    link2->cached_negotiated = "hevc 2720x1260@60";
+  }
+
+  {
+    std::lock_guard lock(bridge->links_mutex);
+    bridge->links.emplace(1, link1);
+    bridge->links.emplace(2, link2);
+  }
+
+  // Snapshot contains both concurrent links and activeLinkCount == 2.
+  char *snap_raw = dm_bridge_snapshot(bridge);
+  const std::string snap_text = snap_raw != nullptr ? snap_raw : "";
+  std::free(snap_raw);
+  if (snap_text.find("\"activeLinkCount\":2") == std::string::npos ||
+      snap_text.find("usb:MATEPAD-001") == std::string::npos ||
+      snap_text.find("usb:PHONE-002") == std::string::npos) {
+    std::fprintf(stderr, "FAIL snapshot missing multi-link entries: %s\n", snap_text.c_str());
+    dm_bridge_destroy(bridge);
+    return false;
+  }
+
+  // Blocking Device 1 disconnects only Link 1, leaving Link 2 intact.
+  const char *blocked_one[] = {"usb:MATEPAD-001"};
+  dm_bridge_set_blocked_devices(bridge, blocked_one, 1);
+  if (!link1->disconnect_requested.load() || link2->disconnect_requested.load()) {
+    std::fprintf(stderr, "FAIL blocklist did not isolate Link 1 from Link 2\n");
+    dm_bridge_destroy(bridge);
+    return false;
+  }
+
+  link1->disconnect_requested.store(false);
+  dm_bridge_disconnect_link(bridge, 2);
+  if (link1->disconnect_requested.load() || !link2->disconnect_requested.load()) {
+    std::fprintf(stderr, "FAIL dm_bridge_disconnect_link did not isolate Link 2\n");
+    dm_bridge_destroy(bridge);
+    return false;
+  }
+
+  // Per-link video and input queues remain isolated.
+  const std::array<std::uint8_t, 4> frame1{0x00, 0x00, 0x00, 0x01};
+  const std::array<std::uint8_t, 4> frame2{0x00, 0x00, 0x00, 0x02};
+  if (dm_bridge_submit_video_for_link(bridge, 1, frame1.data(), frame1.size(), 100, 1) != 0 ||
+      dm_bridge_submit_video_for_link(bridge, 2, frame2.data(), frame2.size(), 200, 1) != 0 ||
+      dm_bridge_submit_video_for_link(bridge, 99, frame1.data(), frame1.size(), 300, 1) != -1) {
+    std::fprintf(stderr, "FAIL per-link video routing returned unexpected status\n");
+    dm_bridge_destroy(bridge);
+    return false;
+  }
+  {
+    std::lock_guard lock1(link1->video_mutex);
+    std::lock_guard lock2(link2->video_mutex);
+    if (link1->video_queue.size() != 1 || link1->video_queue.front().pts_us != 100 ||
+        link2->video_queue.size() != 1 || link2->video_queue.front().pts_us != 200) {
+      std::fprintf(stderr, "FAIL per-link video queues mixed frames across links\n");
+      dm_bridge_destroy(bridge);
+      return false;
+    }
+  }
+  {
+    std::lock_guard lock(link2->input_mutex);
+    deskmate::protocol::InputEvent ev{};
+    ev.kind = deskmate::protocol::InputKind::TouchDown;
+    ev.x = 0.25f;
+    ev.y = 0.75f;
+    link2->pending_inputs.push_back(ev);
+  }
+  DMInputEvent out1[4]{}, out2[4]{};
+  if (dm_bridge_take_input_for_link(bridge, 1, out1, 4) != 0 ||
+      dm_bridge_take_input_for_link(bridge, 2, out2, 4) != 1 ||
+      out2[0].x != 0.25f || out2[0].y != 0.75f) {
+    std::fprintf(stderr, "FAIL per-link input drain did not isolate queues\n");
+    dm_bridge_destroy(bridge);
+    return false;
+  }
+
+  // Serial-less AOA devices on distinct USB ports resolve via port_path without colliding.
+  UsbDeviceIdentity hdc_a{};
+  hdc_a.vendor_id = kHdcVendorId;
+  hdc_a.product_id = kHdcProductId;
+  hdc_a.port_path = "2:1.1";
+  hdc_a.name = "MatePad A";
+  resolve_device_identity(bridge, hdc_a);
+
+  UsbDeviceIdentity hdc_b{};
+  hdc_b.vendor_id = kHdcVendorId;
+  hdc_b.product_id = kHdcProductId;
+  hdc_b.port_path = "2:1.2";
+  hdc_b.name = "Phone B";
+  resolve_device_identity(bridge, hdc_b);
+
+  UsbDeviceIdentity aoa_a{};
+  aoa_a.vendor_id = kAccessoryVendorId;
+  aoa_a.product_id = kAccessoryProductIdMin;
+  aoa_a.port_path = "2:1.1";
+  aoa_a.in_accessory_mode = true;
+  resolve_device_identity(bridge, aoa_a);
+
+  UsbDeviceIdentity aoa_b{};
+  aoa_b.vendor_id = kAccessoryVendorId;
+  aoa_b.product_id = kAccessoryProductIdMin;
+  aoa_b.port_path = "2:1.2";
+  aoa_b.in_accessory_mode = true;
+  resolve_device_identity(bridge, aoa_b);
+
+  if (aoa_a.id != "usb:port:2:1.1" || aoa_a.name != "MatePad A" ||
+      aoa_b.id != "usb:port:2:1.2" || aoa_b.name != "Phone B" ||
+      aoa_a.id == aoa_b.id) {
+    std::fprintf(stderr, "FAIL port-path identity resolution collided: %s (%s) vs %s (%s)\n",
+                 aoa_a.id.c_str(), aoa_a.name.c_str(), aoa_b.id.c_str(), aoa_b.name.c_str());
+    dm_bridge_destroy(bridge);
+    return false;
+  }
+
+  dm_bridge_destroy(bridge);
+  std::puts("PASS multi-device links, queue isolation, and port-path identity");
   return true;
 }
 
@@ -246,5 +399,6 @@ int main() {
   const bool streaming = test_steady_video_with_no_reverse_input();
   const bool high_fps = test_sustained_120fps_video_with_keyframes_and_tuned_host_scheduler();
   const bool policy = test_device_blocklist_and_disconnect();
-  return partial_read && streaming && high_fps && policy ? 0 : 1;
+  const bool multi = test_multi_device_links_and_policy();
+  return partial_read && streaming && high_fps && policy && multi ? 0 : 1;
 }

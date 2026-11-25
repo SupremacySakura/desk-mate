@@ -14,6 +14,13 @@ NS_ASSUME_NONNULL_BEGIN
                                                    scale:(uint32_t)scale
                                              refreshRate:(double)refreshRate;
 
++ (NSDictionary<NSString *, id> *)createWithLogicalWidth:(uint32_t)logicalWidth
+                                           logicalHeight:(uint32_t)logicalHeight
+                                                   scale:(uint32_t)scale
+                                             refreshRate:(double)refreshRate
+                                                    name:(NSString *)name
+                                               serialNum:(uint32_t)serialNum;
+
 - (NSDictionary<NSString *, id> *)applyAndSelectHiDPIMode;
 - (NSDictionary<NSString *, id> *)destroyAndWait;
 

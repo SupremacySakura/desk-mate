@@ -29,10 +29,7 @@ final class CapturePipeline: NSObject, SCStreamOutput, SCStreamDelegate {
     private let height: Int
     private let frameRate: Double
     private let codec: String
-    private let captureQueue = DispatchQueue(
-        label: "dev.deskmate.host.capture",
-        qos: .userInteractive
-    )
+    private let captureQueue: DispatchQueue
     private let stateLock = NSLock()
     private var encoder: VideoEncoderCore?
     private var stream: SCStream?
@@ -62,6 +59,10 @@ final class CapturePipeline: NSObject, SCStreamOutput, SCStreamDelegate {
         self.height = height
         self.frameRate = frameRate
         self.codec = codec
+        self.captureQueue = DispatchQueue(
+            label: "dev.deskmate.host.capture.\(displayID)",
+            qos: .userInteractive
+        )
         self.keyframeRequestIDProvider = keyframeRequestIDProvider
         self.onFrame = onFrame
         self.onFailure = onFailure

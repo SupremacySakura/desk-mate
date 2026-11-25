@@ -1,7 +1,7 @@
 import CoreGraphics
 import Foundation
 
-enum DisplayPosition: String, CaseIterable, Identifiable {
+enum DisplayPosition: String, CaseIterable, Identifiable, Codable {
     case right
     case left
     case top
@@ -148,13 +148,17 @@ final class DisplaySession {
         logicalHeight: Int,
         scale: Int,
         refreshRate: Double,
-        position: DisplayPosition = .right
+        position: DisplayPosition = .right,
+        displayName: String = "DeskMate Extended Display",
+        serialNum: UInt32 = 0x0001
     ) throws -> DisplaySession {
         let result = DMVirtualDisplaySession.create(
             withLogicalWidth: UInt32(logicalWidth),
             logicalHeight: UInt32(logicalHeight),
             scale: UInt32(scale),
-            refreshRate: refreshRate
+            refreshRate: refreshRate,
+            name: displayName,
+            serialNum: serialNum
         )
         guard (result["ok"] as? Bool) == true,
               let session = result["session"] as? DMVirtualDisplaySession,
@@ -196,7 +200,9 @@ final class DisplaySession {
         pixelWidth: Int,
         pixelHeight: Int,
         refreshRate: Double,
-        position: DisplayPosition
+        position: DisplayPosition,
+        displayName: String = "DeskMate Extended Display",
+        serialNum: UInt32 = 0x0001
     ) throws -> DisplaySession {
         let useHiDPI = (pixelWidth % 2 == 0) && (pixelHeight % 2 == 0) && pixelWidth >= 1600
         let scale = useHiDPI ? 2 : 1
@@ -208,7 +214,9 @@ final class DisplaySession {
                 logicalHeight: logicalHeight,
                 scale: scale,
                 refreshRate: refreshRate,
-                position: position
+                position: position,
+                displayName: displayName,
+                serialNum: serialNum
             )
         } catch {
             if scale == 2 {
@@ -218,11 +226,96 @@ final class DisplaySession {
                     logicalHeight: pixelHeight,
                     scale: 1,
                     refreshRate: refreshRate,
-                    position: position
+                    position: position,
+                    displayName: displayName,
+                    serialNum: serialNum
                 )
             }
             throw error
         }
+    }
+
+    static func stableSerialNumber(for deviceID: String, avoiding existing: Set<UInt32>) -> UInt32 {
+        var hash: UInt32 = 2166136261
+        for byte in deviceID.utf8 {
+            hash ^= UInt32(byte)
+            hash &*= 16777619
+        }
+        var candidate = hash == 0 ? 1 : hash
+        while existing.contains(candidate) || candidate == 0 {
+            candidate &+= 1
+        }
+        return candidate
+    }
+
+    static func arrangeDisplays(_ entries: [(session: DisplaySession, position: DisplayPosition)]) {
+        let mainID = CGMainDisplayID()
+        let mainBounds = CGDisplayBounds(mainID)
+        guard !entries.isEmpty, mainBounds.width > 0, mainBounds.height > 0 else { return }
+
+        var origins: [(displayID: UInt32, origin: CGPoint)] = []
+
+        let rightEntries = entries.filter { $0.position == .right }
+        var cursorX = mainBounds.maxX
+        for entry in rightEntries {
+            let bounds = CGDisplayBounds(entry.session.info.displayID)
+            guard bounds.width > 0, bounds.height > 0 else { continue }
+            let originY = mainBounds.origin.y + (mainBounds.height - bounds.height) / 2.0
+            origins.append((entry.session.info.displayID, CGPoint(x: cursorX, y: originY)))
+            cursorX += bounds.width
+        }
+
+        let leftEntries = entries.filter { $0.position == .left }
+        var leftEdgeX = mainBounds.minX
+        for entry in leftEntries {
+            let bounds = CGDisplayBounds(entry.session.info.displayID)
+            guard bounds.width > 0, bounds.height > 0 else { continue }
+            let originX = leftEdgeX - bounds.width
+            let originY = mainBounds.origin.y + (mainBounds.height - bounds.height) / 2.0
+            origins.append((entry.session.info.displayID, CGPoint(x: originX, y: originY)))
+            leftEdgeX = originX
+        }
+
+        let topEntries = entries.filter { $0.position == .top }
+        if !topEntries.isEmpty {
+            let boundsList = topEntries.map { CGDisplayBounds($0.session.info.displayID) }
+            let totalWidth = boundsList.reduce(CGFloat(0)) { $0 + $1.width }
+            var currentX = mainBounds.midX - totalWidth / 2.0
+            for (entry, bounds) in zip(topEntries, boundsList) where bounds.width > 0 && bounds.height > 0 {
+                let originY = mainBounds.minY - bounds.height
+                origins.append((entry.session.info.displayID, CGPoint(x: currentX, y: originY)))
+                currentX += bounds.width
+            }
+        }
+
+        let bottomEntries = entries.filter { $0.position == .bottom }
+        if !bottomEntries.isEmpty {
+            let boundsList = bottomEntries.map { CGDisplayBounds($0.session.info.displayID) }
+            let totalWidth = boundsList.reduce(CGFloat(0)) { $0 + $1.width }
+            var currentX = mainBounds.midX - totalWidth / 2.0
+            for (entry, bounds) in zip(bottomEntries, boundsList) where bounds.width > 0 && bounds.height > 0 {
+                let originY = mainBounds.maxY
+                origins.append((entry.session.info.displayID, CGPoint(x: currentX, y: originY)))
+                currentX += bounds.width
+            }
+        }
+
+        guard !origins.isEmpty else { return }
+        var config: CGDisplayConfigRef?
+        guard CGBeginDisplayConfiguration(&config) == .success, let config else { return }
+        for item in origins where item.displayID != mainID {
+            let err = CGConfigureDisplayOrigin(
+                config,
+                item.displayID,
+                Int32(item.origin.x.rounded()),
+                Int32(item.origin.y.rounded())
+            )
+            if err != .success {
+                CGCancelDisplayConfiguration(config)
+                return
+            }
+        }
+        _ = CGCompleteDisplayConfiguration(config, .forSession)
     }
 
     func applyPosition(_ position: DisplayPosition) {
@@ -273,5 +366,33 @@ final class DisplaySession {
     func destroy() {
         guard let virtualSession else { return }
         _ = virtualSession.destroyAndWait()
+    }
+}
+
+/// Serializes virtual display creation, destruction, and CoreGraphics origin arrangement
+/// so concurrent device connections never race SkyLight display transactions.
+final class DisplayConfigCoordinator {
+    static let shared = DisplayConfigCoordinator()
+    private let queue = DispatchQueue(label: "dev.deskmate.host.display-config")
+
+    func run<T>(_ operation: @escaping () throws -> T) async throws -> T {
+        try await withCheckedThrowingContinuation { continuation in
+            queue.async {
+                do {
+                    continuation.resume(returning: try operation())
+                } catch {
+                    continuation.resume(throwing: error)
+                }
+            }
+        }
+    }
+
+    func run(_ operation: @escaping () -> Void) async {
+        await withCheckedContinuation { continuation in
+            queue.async {
+                operation()
+                continuation.resume()
+            }
+        }
     }
 }
