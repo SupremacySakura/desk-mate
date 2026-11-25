@@ -118,11 +118,25 @@ final class AppController: NSObject, NSApplicationDelegate {
     private var displayPosition: DisplayPosition = .right
     private var videoEnabled = true
     private var allowInput = true
+    private var touchInputMode: TouchInputMode = .compatibleGestures
+    private var touchCapability = InputInjector.capabilityStatus()
     private var captureStarting = false
+    private let startupManager = StartupServiceManager()
+    private var startupStatus = StartupStatus()
+    private let pairedStore = PairedDeviceStore()
+    private var autoStartService = true
+    private var serviceRunning = false
+    private var serviceTransitioning = false
+    private var connectedDeviceID: String?
+    private var connectedDeviceName: String?
+    private var lastDeviceTouchTime = 0.0
+    private var onlineDeviceIDs: Set<String> = []
     private static let displayPreference = "preferredExtendedDisplayID"
     private static let autoVirtualPreference = "autoVirtualDisplay"
     private static let positionPreference = "virtualDisplayPosition"
     private static let inputPreference = "allowReverseInput"
+    private static let touchModePreference = "touchInputMode"
+    private static let autoStartPreference = "autoStartService"
     private var inputDrainScheduled = false
     private let inputDrainLock = NSLock()
     private var displaySession: DisplaySession?
@@ -146,8 +160,13 @@ final class AppController: NSObject, NSApplicationDelegate {
     private var captureTask: Task<Void, Never>?
     private var destroyDisplayTask: Task<Void, Never>?
     private var cachedScreenPermission = CGPreflightScreenCaptureAccess()
-    private var cachedInputPermission = AXIsProcessTrusted()
+    private var cachedAXPermission = AXIsProcessTrusted()
+    private var cachedPostEventPermission = CGPreflightPostEventAccess()
+    private var cachedInputPermission = AXIsProcessTrusted() && CGPreflightPostEventAccess()
     private var lastPermissionCheckTime = 0.0
+    private var accessibilityWatchDeadline = 0.0
+    private var loggedFirstInputBatch = false
+    private var lastBlockedInputLogTime = 0.0
 
     init(options: HostOptions) {
         self.options = options
@@ -171,6 +190,17 @@ final class AppController: NSObject, NSApplicationDelegate {
         } else {
             self.allowInput = true
         }
+        if let rawMode = UserDefaults.standard.string(forKey: Self.touchModePreference),
+           let parsedMode = TouchInputMode(rawValue: rawMode) {
+            self.touchInputMode = parsedMode
+        }
+        InputInjector.mode = self.touchInputMode
+        self.touchCapability = InputInjector.refreshCapability()
+        if UserDefaults.standard.object(forKey: Self.autoStartPreference) != nil {
+            self.autoStartService = UserDefaults.standard.bool(forKey: Self.autoStartPreference)
+        } else {
+            self.autoStartService = true
+        }
         super.init()
     }
 
@@ -182,20 +212,50 @@ final class AppController: NSObject, NSApplicationDelegate {
             reason: "DeskMate real-time extended display streaming"
         )
         NSApp.setActivationPolicy(.regular)
+        startupStatus = startupManager.currentStatus()
         installStatusItem()
         installWindow()
         NSApp.activate(ignoringOtherApps: true)
 
+        NotificationCenter.default.addObserver(
+            forName: NSApplication.didBecomeActiveNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            guard let self else { return }
+            self.startupStatus = self.startupManager.currentStatus()
+            self.refreshPermissions(force: true)
+            self.syncWindow()
+        }
+
         startTimer()
         if !options.dryRun { observeSystemEvents() }
-        prepare()
+        if autoStartService || options.dryRun {
+            serviceRunning = true
+            prepare()
+        } else {
+            serviceRunning = false
+            lastSnapshot = "{\"state\":\"stopped\"}"
+            syncWindow()
+        }
+        refreshPairedDevices()
     }
 
     private func refreshPermissions(force: Bool = false) {
         let now = ProcessInfo.processInfo.systemUptime
-        if force || !cachedScreenPermission || !cachedInputPermission || (now - lastPermissionCheckTime) >= 2.0 {
+        let watchingAccessibility = now < accessibilityWatchDeadline
+        if force || watchingAccessibility || !cachedScreenPermission || !cachedInputPermission || (now - lastPermissionCheckTime) >= 2.0 {
             cachedScreenPermission = CGPreflightScreenCaptureAccess()
-            cachedInputPermission = AXIsProcessTrusted()
+            let wasInputOK = cachedInputPermission
+            cachedAXPermission = AXIsProcessTrusted()
+            cachedPostEventPermission = CGPreflightPostEventAccess()
+            cachedInputPermission = cachedAXPermission && cachedPostEventPermission
+            if cachedInputPermission && !wasInputOK {
+                accessibilityWatchDeadline = 0.0
+                if UserDefaults.standard.object(forKey: Self.inputPreference) == nil || allowInput {
+                    allowInput = true
+                }
+            }
             lastPermissionCheckTime = now
         }
     }
@@ -335,10 +395,16 @@ final class AppController: NSObject, NSApplicationDelegate {
             model: windowModel,
             setVideo: { [weak self] enabled in self?.setVideo(enabled) },
             setInput: { [weak self] enabled in self?.setInput(enabled) },
+            setTouchInputMode: { [weak self] mode in self?.setTouchInputMode(mode) },
             setPosition: { [weak self] pos in self?.setPosition(pos) },
+            setServiceRunning: { [weak self] enabled in self?.setServiceRunning(enabled) },
             openPermission: { [weak self] screen in
                 self?.popover?.performClose(nil)
                 self?.openPermission(screen: screen)
+            },
+            requestAccessibility: { [weak self] resetStale in
+                self?.popover?.performClose(nil)
+                self?.requestAccessibilityPermission(resetStale: resetStale)
             },
             showWindow: { [weak self] in
                 self?.popover?.performClose(nil)
@@ -397,10 +463,26 @@ final class AppController: NSObject, NSApplicationDelegate {
     private func setInput(_ enabled: Bool) {
         allowInput = enabled
         UserDefaults.standard.set(enabled, forKey: Self.inputPreference)
-        if enabled && !AXIsProcessTrusted() {
+        if !enabled {
+            InputInjector.reset(displayBounds: displaySession?.bounds())
+        } else if !cachedInputPermission {
             openPermission(screen: false)
         }
         syncWindow()
+    }
+
+    private func setTouchInputMode(_ mode: TouchInputMode) {
+        touchInputMode = mode
+        UserDefaults.standard.set(mode.rawValue, forKey: Self.touchModePreference)
+        InputInjector.mode = mode
+        touchCapability = InputInjector.capabilityStatus()
+        syncWindow()
+    }
+
+    private func openTrackpadSettings() {
+        if let url = URL(string: "x-apple.systempreferences:com.apple.Trackpad-Settings.extension") {
+            NSWorkspace.shared.open(url)
+        }
     }
 
     private func setAutoVirtual(_ enabled: Bool) {
@@ -456,8 +538,10 @@ final class AppController: NSObject, NSApplicationDelegate {
         if screen {
             _ = CGRequestScreenCaptureAccess()
         } else {
+            _ = CGRequestPostEventAccess()
             let promptKey = kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String
             _ = AXIsProcessTrustedWithOptions([promptKey: true] as CFDictionary)
+            accessibilityWatchDeadline = ProcessInfo.processInfo.systemUptime + 30.0
         }
         refreshPermissions(force: true)
         syncWindow()
@@ -465,6 +549,29 @@ final class AppController: NSObject, NSApplicationDelegate {
         if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?\(privacy)") {
             NSWorkspace.shared.open(url)
         }
+    }
+
+    private func requestAccessibilityPermission(resetStale: Bool) {
+        allowInput = true
+        UserDefaults.standard.set(true, forKey: Self.inputPreference)
+        accessibilityWatchDeadline = ProcessInfo.processInfo.systemUptime + 30.0
+
+        if resetStale {
+            let bundleID = Bundle.main.bundleIdentifier ?? "dev.deskmate.host"
+            DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+                let process = Process()
+                process.executableURL = URL(fileURLWithPath: "/usr/bin/tccutil")
+                process.arguments = ["reset", "Accessibility", bundleID]
+                try? process.run()
+                process.waitUntilExit()
+                DispatchQueue.main.async { [weak self] in
+                    self?.openPermission(screen: false)
+                }
+            }
+            return
+        }
+
+        openPermission(screen: false)
     }
 
     private func installWindow() {
@@ -492,7 +599,19 @@ final class AppController: NSObject, NSApplicationDelegate {
             setPosition: { [weak self] pos in self?.setPosition(pos) },
             setVideo: { [weak self] enabled in self?.setVideo(enabled) },
             setInput: { [weak self] enabled in self?.setInput(enabled) },
+            setTouchInputMode: { [weak self] mode in self?.setTouchInputMode(mode) },
+            openTrackpadSettings: { [weak self] in self?.openTrackpadSettings() },
             openPermission: { [weak self] screen in self?.openPermission(screen: screen) },
+            requestAccessibility: { [weak self] resetStale in self?.requestAccessibilityPermission(resetStale: resetStale) },
+            setLaunchAtLogin: { [weak self] enabled in self?.setLaunchAtLogin(enabled) },
+            openLoginItemsSettings: { [weak self] in self?.startupManager.openSystemLoginItemsSettings() },
+            setAutoStartService: { [weak self] enabled in self?.setAutoStartService(enabled) },
+            setServiceRunning: { [weak self] enabled in self?.setServiceRunning(enabled) },
+            refreshDevices: { [weak self] in self?.refreshPairedDevices() },
+            setDeviceAllowed: { [weak self] id, allowed in self?.setDeviceAllowed(id: id, allowed: allowed) },
+            renameDevice: { [weak self] id, name in self?.renameDevice(id: id, name: name) },
+            removeDevice: { [weak self] id in self?.removeDevice(id: id) },
+            copyDeviceID: { [weak self] id in self?.copyDeviceID(id) },
             retry: { [weak self] in self?.retry() },
             copy: { [weak self] in self?.copyStatus() }
         ))
@@ -511,12 +630,137 @@ final class AppController: NSObject, NSApplicationDelegate {
     private func retry() {
         refreshPermissions(force: true)
         fatalError = nil
+        if !serviceRunning {
+            setServiceRunning(true)
+            return
+        }
         if bridge == nil && (!options.dryRun || displaySession == nil) {
             prepare()
         } else {
             Task { await startCaptureIfNeeded() }
         }
         syncWindow()
+    }
+
+    private func setLaunchAtLogin(_ enabled: Bool) {
+        startupStatus = startupManager.setLaunchAtLogin(enabled)
+        syncWindow()
+    }
+
+    private func setAutoStartService(_ enabled: Bool) {
+        autoStartService = enabled
+        UserDefaults.standard.set(enabled, forKey: Self.autoStartPreference)
+        syncWindow()
+    }
+
+    private func setServiceRunning(_ enabled: Bool) {
+        guard !serviceTransitioning else { return }
+        if enabled {
+            guard !serviceRunning else { return }
+            serviceRunning = true
+            fatalError = nil
+            prepare()
+            syncBlockedDevicesToBridge()
+            refreshPairedDevices()
+            syncWindow()
+            updateStatusIcon()
+        } else {
+            guard serviceRunning else { return }
+            serviceTransitioning = true
+            serviceRunning = false
+            captureWanted = false
+            inputWanted = false
+            InputInjector.reset(displayBounds: displaySession?.bounds())
+            connectedDeviceID = nil
+            connectedDeviceName = nil
+            liveFps = 0
+            liveBitrateMbps = 0.0
+            stopCapture(destroyAutoDisplay: true, immediate: true)
+            let bridgeRaw = bridge.map { UInt(bitPattern: $0) }
+            bridge = nil
+            lastSnapshot = "{\"state\":\"stopped\"}"
+            syncWindow()
+            updateStatusIcon()
+            Task.detached(priority: .userInitiated) { [weak self, bridgeRaw] in
+                if let bridgeRaw, let ptr = OpaquePointer(bitPattern: bridgeRaw) {
+                    dm_bridge_destroy(ptr)
+                }
+                await MainActor.run {
+                    guard let self else { return }
+                    self.serviceTransitioning = false
+                    self.syncWindow()
+                    self.updateStatusIcon()
+                }
+            }
+        }
+    }
+
+    private func syncBlockedDevicesToBridge() {
+        guard let bridge else { return }
+        let blocked = pairedStore.blockedDeviceIDs()
+        if blocked.isEmpty {
+            dm_bridge_set_blocked_devices(bridge, nil, 0)
+            return
+        }
+        let cStrings: [UnsafeMutablePointer<CChar>?] = blocked.map { strdup($0) }
+        defer {
+            for ptr in cStrings {
+                free(ptr)
+            }
+        }
+        let constPointers: [UnsafePointer<CChar>?] = cStrings.map { UnsafePointer($0) }
+        constPointers.withUnsafeBufferPointer { buffer in
+            dm_bridge_set_blocked_devices(bridge, buffer.baseAddress, Int32(buffer.count))
+        }
+    }
+
+    private func refreshPairedDevices() {
+        guard let raw = dm_bridge_scan_devices(bridge) else { return }
+        defer { free(raw) }
+        let jsonString = String(cString: raw)
+        guard let data = jsonString.data(using: .utf8),
+              let scanned = try? JSONDecoder().decode([ScannedUsbDevice].self, from: data) else {
+            return
+        }
+        onlineDeviceIDs = Set(scanned.map(\.id))
+        for item in scanned {
+            pairedStore.recordSeenDevice(
+                id: item.id,
+                name: item.name,
+                manufacturer: item.manufacturer,
+                serial: item.serial,
+                markConnected: false
+            )
+        }
+        syncBlockedDevicesToBridge()
+        syncWindow()
+    }
+
+    private func setDeviceAllowed(id: String, allowed: Bool) {
+        pairedStore.setAllowed(id: id, allowed: allowed)
+        syncBlockedDevicesToBridge()
+        syncWindow()
+    }
+
+    private func renameDevice(id: String, name: String) {
+        pairedStore.rename(id: id, customName: name)
+        syncWindow()
+    }
+
+    private func removeDevice(id: String) {
+        if let bridge, connectedDeviceID == id {
+            id.withCString { cStr in
+                dm_bridge_disconnect_device(bridge, cStr)
+            }
+        }
+        pairedStore.remove(id: id)
+        syncBlockedDevicesToBridge()
+        syncWindow()
+    }
+
+    private func copyDeviceID(_ id: String) {
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(id, forType: .string)
     }
 
     private func displayChoices() -> [DisplayChoice] {
@@ -534,27 +778,73 @@ final class AppController: NSObject, NSApplicationDelegate {
 
     private func syncWindow() {
         let snapshot = parseSnapshot(lastSnapshot)
-        let state = snapshot?["state"] as? String ?? (options.dryRun ? "dry-run" : "starting")
+        let state = snapshot?["state"] as? String ?? (options.dryRun ? "dry-run" : (serviceRunning ? "starting" : "stopped"))
         let negotiated = snapshot?["negotiated"] as? String ?? "none"
         let inputs = snapshot?["inputEvents"] as? Int ?? 0
         let bridgeError = snapshot?["error"] as? String ?? ""
+        let snapDeviceID = snapshot?["deviceId"] as? String ?? ""
+        let snapDeviceName = snapshot?["deviceName"] as? String ?? ""
+        let snapDeviceMfg = snapshot?["deviceManufacturer"] as? String ?? ""
+        let snapDeviceSerial = snapshot?["deviceSerial"] as? String ?? ""
+        let snapBlocked = (snapshot?["deviceBlocked"] as? Bool) ?? false
+        let snapBlockedName = snapshot?["blockedDeviceName"] as? String ?? ""
+
+        let activeResolution = negotiated != "none" ? negotiated.uppercased() : nil
+        if !snapDeviceID.isEmpty && state != "idle" && state != "stopped" {
+            let now = ProcessInfo.processInfo.systemUptime
+            let isNewConnection = (connectedDeviceID != snapDeviceID)
+            if isNewConnection || (now - lastDeviceTouchTime) >= 15.0 || activeResolution != nil {
+                pairedStore.recordSeenDevice(
+                    id: snapDeviceID,
+                    name: snapDeviceName,
+                    manufacturer: snapDeviceMfg,
+                    serial: snapDeviceSerial,
+                    resolution: activeResolution,
+                    markConnected: isNewConnection || (now - lastDeviceTouchTime) >= 30.0
+                )
+                lastDeviceTouchTime = now
+            }
+            connectedDeviceID = snapDeviceID
+            connectedDeviceName = pairedStore.displayName(for: snapDeviceID) ?? (snapDeviceName.isEmpty ? nil : snapDeviceName)
+            onlineDeviceIDs.insert(snapDeviceID)
+        } else if state == "idle" || state == "stopped" {
+            if let oldID = connectedDeviceID, state == "stopped" {
+                onlineDeviceIDs.remove(oldID)
+            }
+            connectedDeviceID = nil
+            connectedDeviceName = nil
+        }
+
         var view = HostWindowState()
         view.screenPermission = cachedScreenPermission
         view.inputPermission = cachedInputPermission
         view.videoEnabled = videoEnabled
         view.inputEnabled = allowInput && view.inputPermission
+        view.touchInputMode = touchInputMode
+        view.touchCapability = touchCapability
         view.autoVirtualDisplay = autoVirtualDisplay
         view.position = displayPosition
         view.liveFps = liveFps
         view.liveBitrateMbps = liveBitrateMbps
         view.inputEventCount = inputs
+        view.serviceRunning = serviceRunning
+        view.autoStartService = autoStartService
+        view.launchAtLogin = startupStatus.launchAtLoginEnabled
+        view.loginItemNeedsApproval = startupStatus.needsApproval
+        view.loginItemSummary = startupStatus.statusDescription
+        view.loginItemError = startupStatus.errorMessage
+        view.pairedDevices = pairedStore.devices
+        view.connectedDeviceID = connectedDeviceID
+        view.onlineDeviceIDs = onlineDeviceIDs
+        view.connectedDeviceName = connectedDeviceName
+        view.blockedDeviceName = snapBlocked ? (snapBlockedName.isEmpty ? "未允许的 USB 设备" : snapBlockedName) : nil
         if negotiated != "none" {
             view.streamSummary = negotiated.uppercased()
         }
         if !view.inputPermission {
             view.input = "需授权辅助功能"
         } else {
-            view.input = view.inputEnabled ? (inputWanted ? "已启用" : "等待会话") : "未开启"
+            view.input = view.inputEnabled ? (inputWanted ? "\(touchInputMode.shortLabel) · 已启用" : "\(touchInputMode.shortLabel) · 待会话") : "未开启"
         }
         view.choices = displayChoices()
         view.fixedSource = options.createDisplay || options.displayID != nil
@@ -569,7 +859,12 @@ final class AppController: NSObject, NSApplicationDelegate {
         } else if autoVirtualDisplay {
             view.source = "连接时自动创建（\(displayPosition.shortLabel)）"
         }
-        if !view.screenPermission {
+        if !serviceRunning {
+            view.title = "串流服务已停止"
+            view.guidance = "当前未开启自动服务或已手动暂停；点击「启动服务」即可恢复监听 USB 平板连接。"
+            view.badge = "已停止"
+            view.canRetry = true
+        } else if !view.screenPermission {
             (view.title, view.guidance, view.badge) = ("需要屏幕录制权限", "在系统设置中允许 DeskMate 录制屏幕，再返回重试。", "待授权")
             view.canRetry = true
         } else if !autoVirtualDisplay && displaySession == nil {
@@ -582,6 +877,11 @@ final class AppController: NSObject, NSApplicationDelegate {
             view.canRetry = true
         } else if options.dryRun {
             (view.title, view.guidance, view.badge) = ("本机采集测试", "仅在本机采集，不建立 USB 会话。", "测试模式")
+        } else if snapBlocked {
+            let blockedLabel = view.blockedDeviceName ?? "此平板"
+            view.title = "已拦截未允许的设备"
+            view.guidance = "检测到 \(blockedLabel) 接入，但该设备在「已配对设备」列表中已禁止连接。"
+            view.badge = "已拦截"
         } else if state == "idle" && !bridgeError.isEmpty {
             view.title = "USB 连接重试中"
             view.guidance = "USB 通信暂时异常（\(bridgeError)），正在自动重连。"
@@ -591,7 +891,8 @@ final class AppController: NSObject, NSApplicationDelegate {
             (view.title, view.guidance, view.badge) = ("等待平板确认", "请在平板上打开 DeskMate，并在系统提示中允许 USB 配件连接。", "USB 已连接")
             view.linked = true
         } else if state == "streaming" && videoEnabled && capture != nil {
-            (view.title, view.guidance, view.badge) = ("正在发送画面", "在平板上查看并触控 Mac 的扩展桌面。", "会话已建立")
+            let target = view.connectedDeviceName ?? "平板"
+            (view.title, view.guidance, view.badge) = ("正在发送画面", "正在向「\(target)」传输扩展桌面画面与反向触控。", "会话已建立")
             view.linked = true
             view.video = "正在发送"
         } else if state.hasPrefix("awaiting_") || state == "streaming" || state == "paused" {
@@ -601,7 +902,8 @@ final class AppController: NSObject, NSApplicationDelegate {
             view.guidance = !videoEnabled ? "需要继续时，开启画面发送。" : "保持 USB 数据线连接，并确认 Mac 未锁屏。"
         }
         if !videoEnabled { view.video = "已关闭" }
-        view.diagnostic = "连接：\(state)\n显示来源：\(view.source)\n码流：\(negotiated)\n编码帧：\(capture?.encodedFrameCount ?? 0)\n触控事件：\(inputs)\n\(fatalError ?? "")\n\(lastSnapshot)"
+        let boundsText = displaySession.map { NSStringFromRect($0.bounds()) } ?? "none"
+        view.diagnostic = "服务：\(serviceRunning ? "运行中" : "已停止")（登录启动=\(view.launchAtLogin)，自动启动=\(autoStartService)）\n连接：\(state)\n设备：\(view.connectedDeviceName ?? "未连接")（已记录 \(view.pairedDevices.count) 台）\n显示来源：\(view.source) bounds=\(boundsText)\n码流：\(negotiated)\n编码帧：\(capture?.encodedFrameCount ?? 0)\n触控：mode=\(touchInputMode.rawValue) backend=\(touchCapability.activeBackendLabel) intent=\(inputWanted) allow=\(allowInput) ax=\(cachedAXPermission) postEvent=\(cachedPostEventPermission) events=\(inputs)\n\(fatalError ?? "")\n\(lastSnapshot)"
         if windowModel.state != view { windowModel.state = view }
     }
 
@@ -671,6 +973,8 @@ final class AppController: NSObject, NSApplicationDelegate {
             controller.scheduleInputDrain()
         }, Unmanaged.passUnretained(self).toOpaque())
 
+        syncBlockedDevicesToBridge()
+
         if dm_bridge_start(bridge) != 0 {
             fail("failed to start USB bridge")
             dm_bridge_destroy(bridge)
@@ -692,6 +996,9 @@ final class AppController: NSObject, NSApplicationDelegate {
             }
             if input >= 0 {
                 self.inputWanted = input != 0
+                if !self.inputWanted {
+                    InputInjector.reset(displayBounds: self.displaySession?.bounds())
+                }
             }
             self.syncWindow()
             self.updateStatusIcon()
@@ -710,6 +1017,9 @@ final class AppController: NSObject, NSApplicationDelegate {
     }
 
     private func pollKeyframeRequest() {
+        if inputWanted && allowInput && cachedInputPermission, let displaySession {
+            InputInjector.tick(displayBounds: displaySession.bounds())
+        }
         guard let bridge, let capture, dm_bridge_needs_keyframe(bridge) != 0 else {
             nextKeyframeRetry = 0
             return
@@ -811,8 +1121,22 @@ final class AppController: NSObject, NSApplicationDelegate {
             if count <= 0 { break }
             if canInject, let displaySession {
                 let bounds = displaySession.bounds()
+                if !loggedFirstInputBatch {
+                    loggedFirstInputBatch = true
+                    NSLog("DeskMate: injecting touch batch count=%d mode=%@ bounds=(%.0f,%.0f %.0fx%.0f)",
+                          count, touchInputMode.rawValue, bounds.origin.x, bounds.origin.y, bounds.width, bounds.height)
+                }
                 for index in 0..<Int(count) {
                     _ = InputInjector.inject(DMInputEventValue(buffer[index]), displayBounds: bounds)
+                }
+            } else {
+                let now = ProcessInfo.processInfo.systemUptime
+                if (now - lastBlockedInputLogTime) >= 2.0 {
+                    lastBlockedInputLogTime = now
+                    NSLog("DeskMate: dropped %d touch events (inputWanted=%d allowInput=%d ax=%d postEvent=%d hasDisplay=%d)",
+                          count, inputWanted ? 1 : 0, allowInput ? 1 : 0,
+                          cachedAXPermission ? 1 : 0, cachedPostEventPermission ? 1 : 0,
+                          displaySession != nil ? 1 : 0)
                 }
             }
             if count < Int32(buffer.count) { break }

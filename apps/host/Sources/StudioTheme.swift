@@ -141,6 +141,61 @@ struct DualDisplayGlyph: View {
     }
 }
 
+/// Clean architectural tablet glyph for the Paired Devices list.
+struct StudioDeviceGlyph: View {
+    let active: Bool
+    let allowed: Bool
+    var size: CGFloat = 32
+
+    var body: some View {
+        ZStack {
+            RoundedRectangle(cornerRadius: StudioPalette.cardRadius, style: .continuous)
+                .fill(active ? StudioPalette.roseWash.opacity(0.65) : StudioPalette.subtleSurface)
+                .overlay(
+                    RoundedRectangle(cornerRadius: StudioPalette.cardRadius, style: .continuous)
+                        .stroke(active ? StudioPalette.roseBorder : StudioPalette.hairline, lineWidth: 0.75)
+                )
+
+            Canvas { context, canvasSize in
+                let w = canvasSize.width
+                let h = canvasSize.height
+                let frameRect = CGRect(x: w * 0.18, y: h * 0.27, width: w * 0.64, height: h * 0.46)
+                let framePath = Path(roundedRect: frameRect, cornerRadius: 2.0)
+
+                if active {
+                    context.fill(framePath, with: .color(StudioPalette.roseWash))
+                } else {
+                    context.fill(framePath, with: .color(StudioPalette.cardSurface))
+                }
+
+                let strokeColor: Color
+                if !allowed {
+                    strokeColor = StudioPalette.inkMuted.opacity(0.65)
+                } else if active {
+                    strokeColor = StudioPalette.crimson
+                } else {
+                    strokeColor = StudioPalette.ink.opacity(0.8)
+                }
+                context.stroke(framePath, with: .color(strokeColor), lineWidth: active ? 1.25 : 1.05)
+
+                // Subtle inner screen border
+                let innerRect = frameRect.insetBy(dx: 2.4, dy: 2.2)
+                context.stroke(
+                    Path(roundedRect: innerRect, cornerRadius: 0.8),
+                    with: .color(StudioPalette.hairline.opacity(0.85)),
+                    lineWidth: 0.6
+                )
+
+                // Top-right status square
+                let dotRect = CGRect(x: innerRect.maxX - 3.6, y: innerRect.minY + 1.8, width: 2.2, height: 2.2)
+                let dotColor = !allowed ? StudioPalette.inkMuted : (active ? StudioPalette.crimson : StudioPalette.jade)
+                context.fill(Path(dotRect), with: .color(dotColor))
+            }
+        }
+        .frame(width: size, height: size)
+    }
+}
+
 struct StudioStatusBadge: View {
     let text: String
     let tone: StudioTone
@@ -154,7 +209,9 @@ struct StudioStatusBadge: View {
                 .font(.system(size: 11, weight: .medium))
                 .foregroundStyle(tone.foreground)
                 .lineLimit(1)
+                .fixedSize(horizontal: true, vertical: false)
         }
+        .fixedSize(horizontal: true, vertical: false)
         .padding(.horizontal, 9)
         .padding(.vertical, 4)
         .background(

@@ -55,8 +55,11 @@ struct MenuBarPopoverView: View {
     @ObservedObject var model: HostWindowModel
     let setVideo: (Bool) -> Void
     let setInput: (Bool) -> Void
+    let setTouchInputMode: (TouchInputMode) -> Void
     let setPosition: (DisplayPosition) -> Void
+    let setServiceRunning: (Bool) -> Void
     let openPermission: (Bool) -> Void
+    let requestAccessibility: (Bool) -> Void
     let showWindow: () -> Void
     let copyStatus: () -> Void
     let quit: () -> Void
@@ -71,7 +74,7 @@ struct MenuBarPopoverView: View {
         switch state.badge {
         case "会话已建立":
             return .crimson
-        case "出错", "待授权", "未就绪":
+        case "出错", "待授权", "未就绪", "已拦截":
             return .warning
         case "USB 已连接":
             return .positive
@@ -96,7 +99,7 @@ struct MenuBarPopoverView: View {
                             .font(.system(size: 13.5, weight: .semibold))
                             .foregroundStyle(StudioPalette.ink)
 
-                        Text(state.autoVirtualDisplay ? "虚拟屏 · 主屏\(state.position.shortLabel)" : state.source)
+                        Text(subtitleText)
                             .font(.system(size: 10.5))
                             .foregroundStyle(StudioPalette.inkMuted)
                             .lineLimit(1)
@@ -139,17 +142,45 @@ struct MenuBarPopoverView: View {
                         .stroke(StudioPalette.hairline, lineWidth: 0.75)
                 )
 
-                // Compact permission banner if required
-                if !state.screenPermission || (state.inputEnabled && !state.inputPermission) {
+                // Compact service or permission callout if required
+                if !state.serviceRunning {
+                    HStack(spacing: 8) {
+                        Text("串流服务已停止")
+                            .font(.system(size: 11, weight: .medium))
+                            .foregroundStyle(StudioPalette.ink)
+                        Spacer()
+                        Button("启动服务") {
+                            setServiceRunning(true)
+                        }
+                        .buttonStyle(StudioPrimaryButtonStyle())
+                    }
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 8)
+                    .background(
+                        RoundedRectangle(cornerRadius: StudioPalette.cardRadius, style: .continuous)
+                            .fill(StudioPalette.subtleSurface)
+                    )
+                    .overlay(
+                        RoundedRectangle(cornerRadius: StudioPalette.cardRadius, style: .continuous)
+                            .stroke(StudioPalette.hairline, lineWidth: 0.75)
+                    )
+                } else if !state.screenPermission || (state.inputEnabled && !state.inputPermission) {
                     HStack(spacing: 8) {
                         Text(!state.screenPermission ? "需要屏幕录制权限" : "需要辅助功能权限")
                             .font(.system(size: 11, weight: .medium))
                             .foregroundStyle(StudioPalette.ink)
                         Spacer()
-                        Button("前往授权") {
-                            openPermission(!state.screenPermission)
+                        if !state.screenPermission {
+                            Button("前往授权") {
+                                openPermission(true)
+                            }
+                            .buttonStyle(StudioPrimaryButtonStyle())
+                        } else {
+                            Button("一键授权") {
+                                requestAccessibility(false)
+                            }
+                            .buttonStyle(StudioPrimaryButtonStyle())
                         }
-                        .buttonStyle(StudioPrimaryButtonStyle())
                     }
                     .padding(.horizontal, 10)
                     .padding(.vertical, 8)
@@ -180,9 +211,32 @@ struct MenuBarPopoverView: View {
                     Rectangle().fill(StudioPalette.softHairline).frame(height: 0.75)
 
                     HStack {
-                        Text("触控回传")
-                            .font(.system(size: 12, weight: .medium))
-                            .foregroundStyle(StudioPalette.ink)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("触控回传")
+                                .font(.system(size: 12, weight: .medium))
+                                .foregroundStyle(StudioPalette.ink)
+
+                            Menu {
+                                ForEach(TouchInputMode.allCases) { mode in
+                                    Button {
+                                        setTouchInputMode(mode)
+                                    } label: {
+                                        if state.touchInputMode == mode {
+                                            Label(mode.displayName, systemImage: "checkmark")
+                                        } else {
+                                            Text(mode.displayName)
+                                        }
+                                    }
+                                }
+                            } label: {
+                                Text(state.touchInputMode.displayName)
+                                    .font(.system(size: 10.5))
+                                    .foregroundStyle(StudioPalette.inkSecondary)
+                                    .lineLimit(1)
+                            }
+                            .menuStyle(.borderlessButton)
+                            .fixedSize()
+                        }
                         Spacer()
                         StudioHairlineToggle(isOn: state.inputEnabled) {
                             setInput(!state.inputEnabled)
@@ -241,6 +295,17 @@ struct MenuBarPopoverView: View {
 
                     Spacer(minLength: 4)
 
+                    if state.serviceRunning {
+                        Button {
+                            setServiceRunning(false)
+                        } label: {
+                            Text("停止服务")
+                                .font(.system(size: 11))
+                                .foregroundStyle(StudioPalette.inkSecondary)
+                        }
+                        .buttonStyle(StudioFlatActionStyle())
+                    }
+
                     Button {
                         copyStatus()
                     } label: {
@@ -263,6 +328,13 @@ struct MenuBarPopoverView: View {
             .padding(16)
         }
         .frame(width: 332)
+    }
+
+    private var subtitleText: String {
+        if let name = state.connectedDeviceName, !name.isEmpty, state.linked {
+            return "\(name) · 主屏\(state.position.shortLabel)"
+        }
+        return state.autoVirtualDisplay ? "虚拟屏 · 主屏\(state.position.shortLabel)" : state.source
     }
 
     private func compactMetric(label: String, value: String, highlight: Bool) -> some View {

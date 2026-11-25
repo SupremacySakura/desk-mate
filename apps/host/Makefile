@@ -11,6 +11,7 @@ CORE_SOURCES := $(wildcard $(REPO)/core/src/*.cpp)
 CORE_OBJECTS := $(patsubst $(REPO)/core/src/%.cpp,$(BUILD_DIR)/core/%.o,$(CORE_SOURCES))
 BRIDGE_OBJECT := $(BUILD_DIR)/Bridge.o
 OBJC_OBJECT := $(BUILD_DIR)/DMVirtualDisplay.o
+HID_OBJC_OBJECT := $(BUILD_DIR)/DMVirtualHID.o
 USB_BYTE_IO_TEST := $(BUILD_DIR)/usb-byte-io-test
 
 SWIFT_SOURCES := $(wildcard $(ROOT)/Sources/*.swift)
@@ -26,9 +27,11 @@ FRAMEWORKS := \
 	-framework CoreGraphics \
 	-framework CoreMedia \
 	-framework CoreVideo \
+	-framework IOKit \
 	-framework ScreenCaptureKit \
 	-framework VideoToolbox \
-	-framework ApplicationServices
+	-framework ApplicationServices \
+	-framework ServiceManagement
 
 CORE_INCLUDES := -I$(REPO)/core/include -I$(ROOT)/include -I$(ROOT)/Sources/include \
 	-I$(LIBUSB_PREFIX)/include
@@ -76,7 +79,19 @@ $(OBJC_OBJECT): $(ROOT)/Sources/DMVirtualDisplay.m $(BRIDGE_HEADER) | $(BUILD_DI
 		-c "$<" \
 		-o "$@"
 
-build: $(CORE_OBJECTS) $(BRIDGE_OBJECT) $(OBJC_OBJECT) $(ROOT)/Resources/AppIcon.icns | $(BUILD_DIR) $(MODULE_CACHE)
+$(HID_OBJC_OBJECT): $(ROOT)/Sources/DMVirtualHID.m $(BRIDGE_HEADER) | $(BUILD_DIR) $(MODULE_CACHE)
+	@printf 'Building %s\n' "$@"
+	@CLANG_MODULE_CACHE_PATH="$(MODULE_CACHE)/clang" \
+		xcrun --sdk macosx clang \
+		-isysroot "$(SDK)" \
+		-mmacosx-version-min=15.0 \
+		-fobjc-arc \
+		-fmodules \
+		-I "$(ROOT)/Sources/include" \
+		-c "$<" \
+		-o "$@"
+
+build: $(CORE_OBJECTS) $(BRIDGE_OBJECT) $(OBJC_OBJECT) $(HID_OBJC_OBJECT) $(ROOT)/Resources/AppIcon.icns | $(BUILD_DIR) $(MODULE_CACHE)
 	@rm -rf "$(APP)"
 	@mkdir -p "$(APP)/Contents/MacOS" "$(APP)/Contents/Resources"
 	@cp "$(ROOT)/Info.plist" "$(APP)/Contents/Info.plist"
@@ -101,7 +116,8 @@ build: $(CORE_OBJECTS) $(BRIDGE_OBJECT) $(OBJC_OBJECT) $(ROOT)/Resources/AppIcon
 		$(SWIFT_SOURCES) \
 		$(CORE_OBJECTS) \
 		$(BRIDGE_OBJECT) \
-		$(OBJC_OBJECT)
+		$(OBJC_OBJECT) \
+		$(HID_OBJC_OBJECT)
 
 app: build
 

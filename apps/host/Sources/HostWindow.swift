@@ -11,6 +11,17 @@ struct HostWindowState: Equatable {
     var guidance = "打开平板上的 DeskMate，再接上 USB 数据线。"
     var badge = "未连接"
     var linked = false
+    var serviceRunning = true
+    var autoStartService = true
+    var launchAtLogin = false
+    var loginItemNeedsApproval = false
+    var loginItemSummary = ""
+    var loginItemError: String? = nil
+    var pairedDevices: [PairedDevice] = []
+    var connectedDeviceID: String? = nil
+    var onlineDeviceIDs: Set<String> = []
+    var connectedDeviceName: String? = nil
+    var blockedDeviceName: String? = nil
     var source = "自动创建虚拟显示器"
     var streamSummary = ""
     var video = "等待连接"
@@ -19,6 +30,13 @@ struct HostWindowState: Equatable {
     var inputPermission = false
     var videoEnabled = true
     var inputEnabled = false
+    var touchInputMode: TouchInputMode = .compatibleGestures
+    var touchCapability = TouchCapabilityStatus(
+        virtualHIDAvailable: false,
+        fallbackActive: false,
+        activeBackendLabel: "兼容手势映射",
+        statusDetail: ""
+    )
     var autoVirtualDisplay = true
     var position: DisplayPosition = .right
     var liveFps = 0
@@ -37,19 +55,23 @@ final class HostWindowModel: ObservableObject {
     @Published var page: HostWindow.Page = .display
     @Published var showDiagnostics = false
     @Published var copiedDiagnostics = false
+    @Published var renamingDeviceID: String? = nil
+    @Published var renameDraft: String = ""
 }
 
 struct HostWindow: View {
     enum Page: String, CaseIterable {
-        case display = "扩展概览"
-        case settings = "显示设置"
-        case diagnostics = "连接诊断"
+        case display = "概览"
+        case devices = "设备"
+        case settings = "设置"
+        case diagnostics = "诊断"
 
         var englishTag: String {
             switch self {
             case .display: return "DISPLAY"
+            case .devices: return "DEVICES"
             case .settings: return "SETTINGS"
-            case .diagnostics: return "DIAGNOSTICS"
+            case .diagnostics: return "LOGS"
             }
         }
     }
@@ -60,7 +82,19 @@ struct HostWindow: View {
     let setPosition: (DisplayPosition) -> Void
     let setVideo: (Bool) -> Void
     let setInput: (Bool) -> Void
+    let setTouchInputMode: (TouchInputMode) -> Void
+    let openTrackpadSettings: () -> Void
     let openPermission: (Bool) -> Void
+    let requestAccessibility: (Bool) -> Void
+    let setLaunchAtLogin: (Bool) -> Void
+    let openLoginItemsSettings: () -> Void
+    let setAutoStartService: (Bool) -> Void
+    let setServiceRunning: (Bool) -> Void
+    let refreshDevices: () -> Void
+    let setDeviceAllowed: (String, Bool) -> Void
+    let renameDevice: (String, String) -> Void
+    let removeDevice: (String) -> Void
+    let copyDeviceID: (String) -> Void
     let retry: () -> Void
     let copy: () -> Void
 
@@ -74,9 +108,7 @@ struct HostWindow: View {
         switch state.badge {
         case "会话已建立":
             return .crimson
-        case "出错":
-            return .warning
-        case "待授权", "未就绪":
+        case "出错", "待授权", "未就绪", "已拦截":
             return .warning
         case "USB 已连接":
             return .positive
@@ -146,7 +178,7 @@ struct HostWindow: View {
 
             Spacer(minLength: 16)
 
-            HStack(spacing: 20) {
+            HStack(spacing: 18) {
                 ForEach(Page.allCases, id: \.self) { tab in
                     topTabButton(tab)
                 }
@@ -172,6 +204,7 @@ struct HostWindow: View {
                         .font(.system(size: 11, weight: active ? .semibold : .regular))
                         .foregroundStyle(active ? StudioPalette.crimson : StudioPalette.inkMuted)
                         .lineLimit(1)
+                        .fixedSize(horizontal: true, vertical: false)
                 }
 
                 Rectangle()
@@ -201,7 +234,7 @@ struct HostWindow: View {
 
             // Compact runtime summary strip below topology schematic
             VStack(spacing: 0) {
-                metaRow(label: "USB 通道", value: state.linked ? "AOA 直连已就绪" : "等待平板接入", highlight: state.linked)
+                metaRow(label: "USB 通道", value: usbChannelText, highlight: state.linked)
                 Rectangle().fill(StudioPalette.softHairline).frame(height: 0.75)
                 metaRow(label: "画面管线", value: state.video, highlight: streaming)
                 Rectangle().fill(StudioPalette.softHairline).frame(height: 0.75)
@@ -216,6 +249,22 @@ struct HostWindow: View {
 
             Spacer(minLength: 0)
         }
+    }
+
+    private var usbChannelText: String {
+        if !state.serviceRunning {
+            return "服务已停止"
+        }
+        if let blocked = state.blockedDeviceName, !blocked.isEmpty {
+            return "\(blocked) · 已拦截"
+        }
+        if state.linked {
+            if let name = state.connectedDeviceName, !name.isEmpty {
+                return "\(name) · AOA 直连"
+            }
+            return "AOA 直连已就绪"
+        }
+        return "等待平板接入"
     }
 
     private func metaRow(label: String, value: String, highlight: Bool) -> some View {
@@ -239,10 +288,12 @@ struct HostWindow: View {
     @ViewBuilder
     private var rightContentColumn: some View {
         ScrollView(.vertical, showsIndicators: false) {
-            VStack(alignment: .leading, spacing: 20) {
+            VStack(alignment: .leading, spacing: 18) {
                 switch model.page {
                 case .display:
                     displayOverviewContent
+                case .devices:
+                    devicesContent
                 case .settings:
                     settingsContent
                 case .diagnostics:
@@ -338,7 +389,7 @@ struct HostWindow: View {
 
                     controlToggleRow(
                         title: "平板触控回传",
-                        subtitle: "允许通过平板触摸、双指滚动操作 Mac 副屏",
+                        subtitle: "当前模式：\(state.touchInputMode.displayName) · 可在「设置」中切换",
                         isOn: state.inputEnabled,
                         action: { setInput(!state.inputEnabled) }
                     )
@@ -382,10 +433,60 @@ struct HostWindow: View {
 
     @ViewBuilder
     private var actionCalloutIfNeeded: some View {
+        let stopped = !state.serviceRunning
+        let hasBlocked = (state.blockedDeviceName?.isEmpty == false) && !state.linked
         let missingScreen = !state.screenPermission
         let missingInput = state.inputEnabled && !state.inputPermission
 
-        if missingScreen || missingInput || state.canRetry {
+        if stopped {
+            HStack(spacing: 12) {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("串流服务当前处于停止状态")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(StudioPalette.ink)
+                    Text("启动服务后将监听 USB 接入并按偏好创建虚拟显示器。")
+                        .font(.system(size: 11))
+                        .foregroundStyle(StudioPalette.inkSecondary)
+                }
+                Spacer(minLength: 10)
+                Button("启动串流服务") { setServiceRunning(true) }
+                    .buttonStyle(StudioPrimaryButtonStyle())
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 10)
+            .background(
+                RoundedRectangle(cornerRadius: StudioPalette.cardRadius, style: .continuous)
+                    .fill(StudioPalette.subtleSurface)
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: StudioPalette.cardRadius, style: .continuous)
+                    .stroke(StudioPalette.hairline, lineWidth: 0.75)
+            )
+        } else if hasBlocked, let blocked = state.blockedDeviceName {
+            HStack(spacing: 12) {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("已阻止连接：\(blocked)")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(StudioPalette.ink)
+                    Text("该设备已在「已配对设备」中设为禁止连接。")
+                        .font(.system(size: 11))
+                        .foregroundStyle(StudioPalette.inkSecondary)
+                }
+                Spacer(minLength: 10)
+                Button("前往设备列表") { model.page = .devices }
+                    .buttonStyle(StudioSecondaryButtonStyle())
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 10)
+            .background(
+                RoundedRectangle(cornerRadius: StudioPalette.cardRadius, style: .continuous)
+                    .fill(StudioPalette.amberWash)
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: StudioPalette.cardRadius, style: .continuous)
+                    .stroke(StudioTone.warning.border, lineWidth: 0.75)
+            )
+        } else if missingScreen || missingInput || state.canRetry {
             HStack(spacing: 12) {
                 VStack(alignment: .leading, spacing: 3) {
                     Text(missingScreen ? "需要屏幕录制权限" : (missingInput ? "需要辅助功能权限" : "连接维护"))
@@ -408,9 +509,14 @@ struct HostWindow: View {
                     if missingScreen {
                         Button("授权屏幕录制") { openPermission(true) }
                             .buttonStyle(StudioPrimaryButtonStyle())
+                            .fixedSize()
                     } else if missingInput {
-                        Button("打开辅助功能") { openPermission(false) }
+                        Button("一键获取") { requestAccessibility(false) }
                             .buttonStyle(StudioPrimaryButtonStyle())
+                            .fixedSize()
+                        Button("重置旧授权") { requestAccessibility(true) }
+                            .buttonStyle(StudioSecondaryButtonStyle())
+                            .fixedSize()
                     }
 
                     if state.canRetry {
@@ -467,6 +573,7 @@ struct HostWindow: View {
                 Text(subtitle)
                     .font(.system(size: 11))
                     .foregroundStyle(StudioPalette.inkMuted)
+                    .fixedSize(horizontal: false, vertical: true)
             }
 
             Spacer(minLength: 10)
@@ -475,6 +582,203 @@ struct HostWindow: View {
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 9)
+    }
+
+    // MARK: - Paired Devices Page
+
+    private var devicesContent: some View {
+        VStack(alignment: .leading, spacing: 15) {
+            VStack(alignment: .leading, spacing: 4) {
+                Text("DEVICES // 客户端设备管理")
+                    .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                    .tracking(1.4)
+                    .foregroundStyle(StudioPalette.crimson)
+
+                Text("已配对设备")
+                    .font(.system(size: 20, weight: .light))
+                    .foregroundStyle(StudioPalette.ink)
+
+                Text("管理允许通过 USB 连接此 Mac 的平板设备；关闭授权将禁止自动接管并立即断开当前会话。")
+                    .font(.system(size: 11.5))
+                    .foregroundStyle(StudioPalette.inkSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            HStack(spacing: 10) {
+                StudioStatusBadge(
+                    text: "\(state.pairedDevices.count) 台设备",
+                    tone: state.pairedDevices.isEmpty ? .neutral : .positive
+                )
+
+                Spacer()
+
+                Button {
+                    refreshDevices()
+                } label: {
+                    HStack(spacing: 5) {
+                        Image(systemName: "arrow.clockwise")
+                            .font(.system(size: 10.5, weight: .medium))
+                        Text("刷新")
+                    }
+                }
+                .buttonStyle(StudioSecondaryButtonStyle())
+            }
+
+            if state.pairedDevices.isEmpty {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("暂无已配对的客户端设备")
+                        .font(.system(size: 12.5, weight: .medium))
+                        .foregroundStyle(StudioPalette.ink)
+                    Text("使用 USB 数据线连接平板并打开 DeskMate 后，设备会自动记录在这里；也可点击右上角「刷新」手动扫描已接入设备。")
+                        .font(.system(size: 11.5))
+                        .foregroundStyle(StudioPalette.inkMuted)
+                        .lineSpacing(2.5)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(16)
+                .background(StudioPalette.cardSurface)
+                .clipShape(RoundedRectangle(cornerRadius: StudioPalette.cardRadius, style: .continuous))
+                .overlay(
+                    RoundedRectangle(cornerRadius: StudioPalette.cardRadius, style: .continuous)
+                        .stroke(StudioPalette.hairline, lineWidth: 0.75)
+                )
+            } else {
+                VStack(spacing: 10) {
+                    ForEach(state.pairedDevices) { device in
+                        pairedDeviceCard(device)
+                    }
+                }
+            }
+        }
+    }
+
+    private func pairedDeviceCard(_ device: PairedDevice) -> some View {
+        let isConnected = (state.connectedDeviceID == device.id)
+        let isOnline = state.onlineDeviceIDs.contains(device.id) || isConnected
+        let isRenaming = (model.renamingDeviceID == device.id)
+
+        return VStack(spacing: 0) {
+            HStack(spacing: 12) {
+                StudioDeviceGlyph(active: isConnected, allowed: device.allowed, size: 32)
+
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(device.displayName)
+                        .font(.system(size: 13, weight: .medium))
+                        .foregroundStyle(StudioPalette.ink)
+                        .lineLimit(1)
+
+                    HStack(spacing: 8) {
+                        if isConnected {
+                            StudioStatusBadge(text: "当前连接", tone: .crimson)
+                        } else if !device.allowed {
+                            StudioStatusBadge(text: "已禁止连接", tone: .warning)
+                        } else if isOnline {
+                            StudioStatusBadge(text: "USB 已接入", tone: .positive)
+                        } else {
+                            StudioStatusBadge(text: "允许连接", tone: .positive)
+                        }
+
+                        Text("最近连接 \(PairedDeviceStore.relativeTimeText(from: device.lastConnectedAt))")
+                            .font(.system(size: 11))
+                            .foregroundStyle(StudioPalette.inkMuted)
+                            .lineLimit(1)
+                            .fixedSize(horizontal: true, vertical: false)
+                    }
+
+                    if let resolution = device.lastResolution, !resolution.isEmpty {
+                        Text(resolution)
+                            .font(.system(size: 10, design: .monospaced))
+                            .foregroundStyle(StudioPalette.inkMuted)
+                            .lineLimit(1)
+                    }
+                }
+
+                Spacer(minLength: 8)
+
+                HStack(spacing: 10) {
+                    StudioHairlineToggle(isOn: device.allowed) {
+                        setDeviceAllowed(device.id, !device.allowed)
+                    }
+
+                    Menu {
+                        Button("重命名设备") {
+                            model.renamingDeviceID = device.id
+                            model.renameDraft = device.displayName
+                        }
+                        Button("复制设备标识") {
+                            copyDeviceID(device.id)
+                        }
+                        Divider()
+                        Button(role: .destructive) {
+                            if model.renamingDeviceID == device.id {
+                                model.renamingDeviceID = nil
+                            }
+                            removeDevice(device.id)
+                        } label: {
+                            Text("移除设备")
+                        }
+                    } label: {
+                        Image(systemName: "ellipsis")
+                            .font(.system(size: 11.5, weight: .medium))
+                            .foregroundStyle(StudioPalette.inkSecondary)
+                            .frame(width: 24, height: 24)
+                            .background(
+                                RoundedRectangle(cornerRadius: StudioPalette.cornerRadius, style: .continuous)
+                                    .fill(StudioPalette.subtleSurface)
+                            )
+                            .overlay(
+                                RoundedRectangle(cornerRadius: StudioPalette.cornerRadius, style: .continuous)
+                                    .stroke(StudioPalette.hairline, lineWidth: 0.75)
+                            )
+                    }
+                    .menuStyle(.borderlessButton)
+                    .fixedSize()
+                }
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 11)
+
+            if isRenaming {
+                Rectangle().fill(StudioPalette.softHairline).frame(height: 0.75)
+
+                HStack(spacing: 8) {
+                    TextField("输入自定义设备名称（留空恢复默认）", text: $model.renameDraft)
+                        .textFieldStyle(.plain)
+                        .font(.system(size: 11.5))
+                        .padding(.horizontal, 9)
+                        .padding(.vertical, 5.5)
+                        .background(
+                            RoundedRectangle(cornerRadius: StudioPalette.cornerRadius, style: .continuous)
+                                .fill(StudioPalette.cardSurface)
+                        )
+                        .overlay(
+                            RoundedRectangle(cornerRadius: StudioPalette.cornerRadius, style: .continuous)
+                                .stroke(StudioPalette.hairline, lineWidth: 0.75)
+                        )
+
+                    Button("保存") {
+                        renameDevice(device.id, model.renameDraft)
+                        model.renamingDeviceID = nil
+                    }
+                    .buttonStyle(StudioPrimaryButtonStyle())
+
+                    Button("取消") {
+                        model.renamingDeviceID = nil
+                    }
+                    .buttonStyle(StudioSecondaryButtonStyle())
+                }
+                .padding(.horizontal, 14)
+                .padding(.vertical, 9)
+                .background(StudioPalette.subtleSurface)
+            }
+        }
+        .background(StudioPalette.cardSurface)
+        .clipShape(RoundedRectangle(cornerRadius: StudioPalette.cardRadius, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: StudioPalette.cardRadius, style: .continuous)
+                .stroke(isConnected ? StudioPalette.roseBorder : StudioPalette.hairline, lineWidth: isConnected ? 1.0 : 0.75)
+        )
     }
 
     // MARK: - Settings Page
@@ -487,10 +791,104 @@ struct HostWindow: View {
                     .tracking(1.4)
                     .foregroundStyle(StudioPalette.crimson)
 
-                Text("显示与权限设置")
+                Text("显示与启动设置")
                     .font(.system(size: 20, weight: .light))
                     .foregroundStyle(StudioPalette.ink)
             }
+
+            // Startup Behavior section
+            VStack(alignment: .leading, spacing: 10) {
+                StudioSectionHeader(english: "STARTUP", chinese: "启动行为")
+
+                VStack(spacing: 0) {
+                    controlToggleRow(
+                        title: "登录时打开 DeskMate",
+                        subtitle: state.loginItemSummary.isEmpty ? "配置 macOS 登录项，登录系统时自动启动应用。" : state.loginItemSummary,
+                        isOn: state.launchAtLogin,
+                        action: { setLaunchAtLogin(!state.launchAtLogin) }
+                    )
+
+                    if state.loginItemNeedsApproval || (state.loginItemError?.isEmpty == false) {
+                        Rectangle().fill(StudioPalette.softHairline).frame(height: 0.75)
+
+                        HStack(spacing: 10) {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(state.loginItemNeedsApproval ? "需要在系统登录项中批准" : "登录项注册错误")
+                                    .font(.system(size: 11.5, weight: .semibold))
+                                    .foregroundStyle(StudioPalette.ink)
+
+                                if let err = state.loginItemError, !err.isEmpty {
+                                    Text(err)
+                                        .font(.system(size: 10.5, design: .monospaced))
+                                        .foregroundStyle(StudioPalette.inkSecondary)
+                                        .fixedSize(horizontal: false, vertical: true)
+                                }
+                            }
+
+                            Spacer(minLength: 8)
+
+                            Button("打开登录项设置") {
+                                openLoginItemsSettings()
+                            }
+                            .buttonStyle(StudioSecondaryButtonStyle())
+                        }
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 9)
+                        .background(StudioPalette.amberWash)
+                    }
+
+                    Rectangle().fill(StudioPalette.softHairline).frame(height: 0.75)
+
+                    controlToggleRow(
+                        title: "打开应用后自动启动服务",
+                        subtitle: "与上方登录项同时开启后，登录 Mac 即可自动提供 USB 扩展串流服务。",
+                        isOn: state.autoStartService,
+                        action: { setAutoStartService(!state.autoStartService) }
+                    )
+
+                    Rectangle().fill(StudioPalette.softHairline).frame(height: 0.75)
+
+                    HStack(spacing: 12) {
+                        VStack(alignment: .leading, spacing: 2) {
+                            HStack(spacing: 8) {
+                                Text("当前串流服务")
+                                    .font(.system(size: 12.5, weight: .medium))
+                                    .foregroundStyle(StudioPalette.ink)
+
+                                StudioStatusBadge(
+                                    text: state.serviceRunning ? "运行中" : "已停止",
+                                    tone: state.serviceRunning ? .positive : .neutral
+                                )
+                            }
+
+                            Text(state.serviceRunning ? "正在监听 USB 平板连接并管理虚拟显示器" : "服务已停止，不会自动接管 USB 设备")
+                                .font(.system(size: 11))
+                                .foregroundStyle(StudioPalette.inkMuted)
+                        }
+
+                        Spacer(minLength: 10)
+
+                        if state.serviceRunning {
+                            Button("停止服务") { setServiceRunning(false) }
+                                .buttonStyle(StudioSecondaryButtonStyle())
+                        } else {
+                            Button("启动服务") { setServiceRunning(true) }
+                                .buttonStyle(StudioPrimaryButtonStyle())
+                        }
+                    }
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 9)
+                }
+                .background(StudioPalette.cardSurface)
+                .clipShape(RoundedRectangle(cornerRadius: StudioPalette.cardRadius, style: .continuous))
+                .overlay(
+                    RoundedRectangle(cornerRadius: StudioPalette.cardRadius, style: .continuous)
+                        .stroke(StudioPalette.hairline, lineWidth: 0.75)
+                )
+            }
+
+            // Touch Input Mode section
+            touchInputSection
 
             // Virtual Display & Source section
             VStack(alignment: .leading, spacing: 10) {
@@ -619,15 +1017,49 @@ struct HostWindow: View {
 
                     Rectangle().fill(StudioPalette.softHairline).frame(height: 0.75)
 
-                    permissionRow(
-                        title: "辅助功能",
-                        granted: state.inputPermission,
-                        detail: state.inputPermission
-                            ? "已授予输入事件注入权限"
-                            : "开启平板触控回传时需授予该权限",
-                        actionTitle: "前往系统设置",
-                        action: { openPermission(false) }
-                    )
+                    HStack(spacing: 12) {
+                        VStack(alignment: .leading, spacing: 2) {
+                            HStack(spacing: 8) {
+                                Text("辅助功能")
+                                    .font(.system(size: 12.5, weight: .medium))
+                                    .foregroundStyle(StudioPalette.ink)
+
+                                StudioStatusBadge(
+                                    text: state.inputPermission ? "已授权" : "未授权",
+                                    tone: state.inputPermission ? .positive : .warning
+                                )
+                            }
+
+                            Text(state.inputPermission
+                                ? "已授予输入事件注入权限"
+                                : "一键弹窗注册权限并直达系统设置勾选 DeskMate；重编覆盖后若失效可点重置。")
+                                .font(.system(size: 11))
+                                .foregroundStyle(StudioPalette.inkMuted)
+                        }
+
+                        Spacer(minLength: 10)
+
+                        if state.inputPermission {
+                            Button("系统设置") {
+                                openPermission(false)
+                            }
+                            .buttonStyle(StudioSecondaryButtonStyle())
+                        } else {
+                            HStack(spacing: 8) {
+                                Button("重置旧授权") {
+                                    requestAccessibility(true)
+                                }
+                                .buttonStyle(StudioSecondaryButtonStyle())
+
+                                Button("一键获取") {
+                                    requestAccessibility(false)
+                                }
+                                .buttonStyle(StudioPrimaryButtonStyle())
+                            }
+                        }
+                    }
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 9)
                 }
                 .background(StudioPalette.cardSurface)
                 .clipShape(RoundedRectangle(cornerRadius: StudioPalette.cardRadius, style: .continuous))
@@ -637,6 +1069,191 @@ struct HostWindow: View {
                 )
             }
         }
+    }
+
+    private var touchInputSection: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            StudioSectionHeader(english: "TOUCH INPUT", chinese: "触控输入")
+
+            VStack(spacing: 0) {
+                controlToggleRow(
+                    title: "平板触控回传",
+                    subtitle: "选择 Mac 如何接收客户端触控；支持按场景切换触控模式并实时生效。",
+                    isOn: state.inputEnabled,
+                    action: { setInput(!state.inputEnabled) }
+                )
+
+                Rectangle().fill(StudioPalette.softHairline).frame(height: 0.75)
+
+                HStack(spacing: 12) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("输入模式")
+                            .font(.system(size: 12.5, weight: .medium))
+                            .foregroundStyle(StudioPalette.ink)
+                        Text("选择单指、多指手势或原生/妙控板映射方式")
+                            .font(.system(size: 11))
+                            .foregroundStyle(StudioPalette.inkMuted)
+                    }
+
+                    Spacer(minLength: 10)
+
+                    Menu {
+                        ForEach(TouchInputMode.allCases) { mode in
+                            Button {
+                                setTouchInputMode(mode)
+                            } label: {
+                                if state.touchInputMode == mode {
+                                    Label(mode.displayName, systemImage: "checkmark")
+                                } else {
+                                    Text(mode.displayName)
+                                }
+                            }
+                        }
+                    } label: {
+                        Text(state.touchInputMode.displayName)
+                            .font(.system(size: 11.5, weight: .medium))
+                            .foregroundStyle(StudioPalette.ink)
+                            .lineLimit(1)
+                            .padding(.horizontal, 11)
+                            .padding(.vertical, 6)
+                            .background(
+                                RoundedRectangle(cornerRadius: StudioPalette.cornerRadius, style: .continuous)
+                                    .fill(StudioPalette.subtleSurface)
+                            )
+                            .overlay(
+                                RoundedRectangle(cornerRadius: StudioPalette.cornerRadius, style: .continuous)
+                                    .stroke(StudioPalette.hairline, lineWidth: 0.75)
+                            )
+                    }
+                    .menuStyle(.borderlessButton)
+                    .fixedSize()
+                }
+                .padding(.horizontal, 14)
+                .padding(.vertical, 9)
+
+                Rectangle().fill(StudioPalette.softHairline).frame(height: 0.75)
+
+                touchModeDetailPanel
+            }
+            .background(StudioPalette.cardSurface)
+            .clipShape(RoundedRectangle(cornerRadius: StudioPalette.cardRadius, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: StudioPalette.cardRadius, style: .continuous)
+                    .stroke(StudioPalette.hairline, lineWidth: 0.75)
+            )
+        }
+    }
+
+    @ViewBuilder
+    private var touchModeDetailPanel: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            if !state.inputPermission {
+                HStack(spacing: 10) {
+                    StudioStatusBadge(text: "需要辅助功能", tone: .warning)
+                    Spacer(minLength: 6)
+                    Button("一键获取") {
+                        requestAccessibility(false)
+                    }
+                    .buttonStyle(StudioPrimaryButtonStyle())
+                    .fixedSize()
+                    Button("重置旧授权") {
+                        requestAccessibility(true)
+                    }
+                    .buttonStyle(StudioSecondaryButtonStyle())
+                    .fixedSize()
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 9)
+                .background(
+                    RoundedRectangle(cornerRadius: StudioPalette.cornerRadius, style: .continuous)
+                        .fill(StudioPalette.amberWash)
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: StudioPalette.cornerRadius, style: .continuous)
+                        .stroke(StudioTone.warning.border, lineWidth: 0.75)
+                )
+            }
+
+            if state.touchInputMode.usesVirtualHIDWhenAvailable {
+                HStack(spacing: 10) {
+                    StudioStatusBadge(
+                        text: state.touchCapability.virtualHIDAvailable
+                            ? "虚拟 HID 可用"
+                            : (state.touchInputMode == .virtualTrackpad ? "妙控板手势模拟" : "兼容手势映射回退"),
+                        tone: state.touchCapability.virtualHIDAvailable ? .positive : .neutral
+                    )
+
+                    Text(state.touchCapability.activeBackendLabel)
+                        .font(.system(size: 10.5, design: .monospaced))
+                        .foregroundStyle(StudioPalette.inkMuted)
+                        .lineLimit(1)
+
+                    Spacer(minLength: 8)
+
+                    if state.touchInputMode == .virtualTrackpad {
+                        Button("触控板设置") {
+                            openTrackpadSettings()
+                        }
+                        .buttonStyle(StudioSecondaryButtonStyle())
+                    }
+
+                    Button("管理授权") {
+                        openPermission(false)
+                    }
+                    .buttonStyle(StudioSecondaryButtonStyle())
+                }
+            }
+
+            Text(state.touchInputMode.summaryText)
+                .font(.system(size: 11.5))
+                .foregroundStyle(StudioPalette.inkSecondary)
+                .lineSpacing(2)
+                .fixedSize(horizontal: false, vertical: true)
+
+            if state.touchInputMode == .compatibleGestures {
+                VStack(spacing: 6) {
+                    ForEach(state.touchInputMode.compatibleGestureRows, id: \.fingers) { row in
+                        HStack(alignment: .firstTextBaseline, spacing: 12) {
+                            Text(row.fingers)
+                                .font(.system(size: 11.5, weight: .medium))
+                                .foregroundStyle(StudioPalette.ink)
+                                .frame(width: 82, alignment: .leading)
+
+                            Text(row.description)
+                                .font(.system(size: 11.5))
+                                .foregroundStyle(StudioPalette.inkSecondary)
+                                .fixedSize(horizontal: false, vertical: true)
+
+                            Spacer(minLength: 0)
+                        }
+                    }
+                }
+                .padding(.top, 2)
+            } else if state.touchInputMode == .virtualTrackpad {
+                VStack(alignment: .leading, spacing: 5) {
+                    ForEach(state.touchInputMode.trackpadGuidanceLines, id: \.self) { line in
+                        Text(line)
+                            .font(.system(size: 11))
+                            .foregroundStyle(StudioPalette.inkMuted)
+                            .lineSpacing(2)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+                .padding(10)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(
+                    RoundedRectangle(cornerRadius: StudioPalette.cornerRadius, style: .continuous)
+                        .fill(StudioPalette.subtleSurface)
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: StudioPalette.cornerRadius, style: .continuous)
+                        .stroke(StudioPalette.softHairline, lineWidth: 0.75)
+                )
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, 14)
+        .padding(.vertical, 11)
     }
 
     private func permissionRow(title: String, granted: Bool, detail: String, actionTitle: String, action: @escaping () -> Void) -> some View {
@@ -728,12 +1345,15 @@ struct HostWindow: View {
         }
         return """
         state: \(state.badge)
+        service_running: \(state.serviceRunning) (auto_start=\(state.autoStartService), launch_at_login=\(state.launchAtLogin))
         linked: \(state.linked)
+        device: \(state.connectedDeviceName ?? "none")
+        paired_devices: \(state.pairedDevices.count)
         source: \(state.source)
         auto_virtual_display: \(state.autoVirtualDisplay)
         position: \(state.position.shortLabel)
         video: \(state.video) (enabled=\(state.videoEnabled))
-        input: \(state.input) (enabled=\(state.inputEnabled), events=\(state.inputEventCount))
+        input: \(state.input) (enabled=\(state.inputEnabled), mode=\(state.touchInputMode.displayName), backend=\(state.touchCapability.activeBackendLabel), events=\(state.inputEventCount))
         permissions: screen=\(state.screenPermission), accessibility=\(state.inputPermission)
         stream: \(state.streamSummary.isEmpty ? "none" : state.streamSummary)
         """

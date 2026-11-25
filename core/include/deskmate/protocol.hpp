@@ -144,6 +144,10 @@ enum class InputKind : std::uint8_t {
 // are normalized to the Device display (0..1); `dx`/`dy` carry scroll deltas in
 // display widths/heights. A `keycode` is only meaningful for `InputKind::Key`.
 inline constexpr std::uint16_t kInputFlagPrimaryButton = 0x0001;
+inline constexpr std::uint16_t kInputFlagMultiTouchFrame = 0x0002;
+inline constexpr std::uint16_t kInputFlagFrameCommit = 0x0004;
+inline constexpr std::uint16_t kInputFlagContactCountMask = 0x0F00;
+inline constexpr std::uint16_t kInputFlagContactCountShift = 8;
 
 struct InputEvent {
   InputKind kind{InputKind::TouchMove};

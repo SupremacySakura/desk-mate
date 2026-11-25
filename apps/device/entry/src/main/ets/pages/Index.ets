@@ -5,14 +5,6 @@ import { display, window } from '@kit.ArkUI';
 PersistentStorage.persistProp('deskMateShowFps', false);
 PersistentStorage.persistProp('deskMateCodec', 'auto');
 
-const KIND_TOUCH_DOWN: number = 1;
-const KIND_TOUCH_MOVE: number = 2;
-const KIND_TOUCH_UP: number = 3;
-const KIND_TOUCH_CANCEL: number = 4;
-const KIND_SCROLL: number = 5;
-const FLAG_PRIMARY: number = 0x0001;
-const SCROLL_THRESHOLD: number = 0.0002;
-
 interface EngineSnapshot {
   session: string;
   failure: string;
@@ -45,11 +37,6 @@ const CODEC_OPTIONS: Array<CodecOption> = [
   { value: 'hevc', title: 'HEVC', subtitle: 'H.265' },
   { value: 'h264', title: 'H.264', subtitle: 'AVC' }
 ];
-
-interface NormalizedPoint {
-  x: number;
-  y: number;
-}
 
 interface DiagnosticRow {
   label: string;
@@ -345,8 +332,7 @@ struct Index {
         this.lastRxBytes = 0;
         this.lastSampleAt = 0;
         this.engine = '{}';
-        this.scrolling = false;
-        this.pointerDown = false;
+        this.syncTouchCapture();
         if (this.page === 'display') {
           this.navigate('home');
         }
@@ -354,21 +340,20 @@ struct Index {
       this.link = snapshot;
     });
   private refreshTimer: number = -1;
-  private surfaceWidth: number = 1;
-  private surfaceHeight: number = 1;
   private lastRendered: number = 0;
   private lastRxBytes: number = 0;
   private lastSampleAt: number = 0;
   private enteredThisLink: boolean = false;
-  private pointerDown: boolean = false;
+  private touchCaptureActive: boolean = false;
 
-  // One pointer drives the host cursor; a second pointer switches the gesture to
-  // scroll and cancels the cursor drag so no button is left pressed.
-  private scrolling: boolean = false;
-  private lastX: number = 0;
-  private lastY: number = 0;
-  private lastTwoFingerX: number = 0;
-  private lastTwoFingerY: number = 0;
+  private syncTouchCapture(): void {
+    const active: boolean =
+      this.page === 'display' && this.link.state === 'connected' && this.frameReady;
+    if (active !== this.touchCaptureActive) {
+      this.touchCaptureActive = active;
+      native.setTouchEnabled(active);
+    }
+  }
 
   private reportDisplayMetrics(): void {
     try {
@@ -416,10 +401,15 @@ struct Index {
       } else if (parsed.session !== 'streaming' && parsed.session !== 'paused') {
         this.frameReady = false;
       }
+      this.syncTouchCapture();
     }, 250);
   }
 
   aboutToDisappear(): void {
+    if (this.touchCaptureActive) {
+      this.touchCaptureActive = false;
+      native.setTouchEnabled(false);
+    }
     if (this.refreshTimer >= 0) {
       clearInterval(this.refreshTimer);
       this.refreshTimer = -1;
@@ -473,138 +463,10 @@ struct Index {
     this.lastSampleAt = now;
   }
 
-  private normalize(x: number, y: number, event?: TouchEvent): NormalizedPoint {
-    let width: number = this.surfaceWidth;
-    let height: number = this.surfaceHeight;
-    if ((width <= 1 || height <= 1) && event !== undefined) {
-      const areaWidth: number = Number(event.target.area.width);
-      const areaHeight: number = Number(event.target.area.height);
-      if (areaWidth > 1 && areaHeight > 1) {
-        width = areaWidth;
-        height = areaHeight;
-      }
-    }
-    if (width <= 0) {
-      width = 1;
-    }
-    if (height <= 0) {
-      height = 1;
-    }
-    const point: NormalizedPoint = {
-      x: Math.min(1, Math.max(0, x / width)),
-      y: Math.min(1, Math.max(0, y / height))
-    };
-    return point;
-  }
-
-  private averagePoint(event: TouchEvent): NormalizedPoint {
-    const count: number = event.touches.length;
-    if (count <= 0) {
-      return { x: 0.5, y: 0.5 };
-    }
-    let totalX: number = 0;
-    let totalY: number = 0;
-    for (const touch of event.touches) {
-      totalX += touch.x;
-      totalY += touch.y;
-    }
-    return this.normalize(totalX / count, totalY / count, event);
-  }
-
-  private onTouchEvent(event: TouchEvent): void {
-    if (this.page !== 'display' || this.link.state !== 'connected' || !this.frameReady) {
-      return;
-    }
-    const count: number = event.touches.length;
-    if (event.type === TouchType.Down) {
-      if (count >= 2) {
-        if (!this.scrolling) {
-          this.scrolling = true;
-          if (this.pointerDown) {
-            native.sendInput(KIND_TOUCH_CANCEL, 0, 0, this.lastX, this.lastY,
-              0, 0, 0);
-            this.pointerDown = false;
-          }
-        }
-        const avg: NormalizedPoint = this.averagePoint(event);
-        this.lastTwoFingerX = avg.x;
-        this.lastTwoFingerY = avg.y;
-        return;
-      }
-      if (count === 0) {
-        return;
-      }
-      const first: TouchObject = event.touches[0];
-      const point: NormalizedPoint = this.normalize(first.x, first.y, event);
-      this.lastX = point.x;
-      this.lastY = point.y;
-      native.sendInput(KIND_TOUCH_DOWN, 0, FLAG_PRIMARY, point.x, point.y,
-        0, 0, 0);
-      this.pointerDown = true;
-      return;
-    }
-
-    if (event.type === TouchType.Move) {
-      if (this.scrolling || count >= 2) {
-        if (!this.scrolling) {
-          this.scrolling = true;
-          if (this.pointerDown) {
-            native.sendInput(KIND_TOUCH_CANCEL, 0, 0, this.lastX, this.lastY,
-              0, 0, 0);
-            this.pointerDown = false;
-          }
-          const avgStart: NormalizedPoint = this.averagePoint(event);
-          this.lastTwoFingerX = avgStart.x;
-          this.lastTwoFingerY = avgStart.y;
-          return;
-        }
-        const avg: NormalizedPoint = this.averagePoint(event);
-        const dx: number = avg.x - this.lastTwoFingerX;
-        const dy: number = avg.y - this.lastTwoFingerY;
-        this.lastTwoFingerX = avg.x;
-        this.lastTwoFingerY = avg.y;
-        if (Math.abs(dx) > SCROLL_THRESHOLD || Math.abs(dy) > SCROLL_THRESHOLD) {
-          native.sendInput(KIND_SCROLL, 0, 0, avg.x, avg.y, dx, dy, 0);
-        }
-        return;
-      }
-      if (count === 0 || !this.pointerDown) {
-        return;
-      }
-      const first: TouchObject = event.touches[0];
-      const point: NormalizedPoint = this.normalize(first.x, first.y, event);
-      this.lastX = point.x;
-      this.lastY = point.y;
-      native.sendInput(KIND_TOUCH_MOVE, 0, FLAG_PRIMARY, point.x, point.y,
-        0, 0, 0);
-      return;
-    }
-
-    if (event.type === TouchType.Up || event.type === TouchType.Cancel) {
-      if (this.scrolling) {
-        if (count <= 1) {
-          this.scrolling = false;
-        }
-        return;
-      }
-      if (this.pointerDown) {
-        this.pointerDown = false;
-        const kind: number = event.type === TouchType.Cancel ? KIND_TOUCH_CANCEL : KIND_TOUCH_UP;
-        native.sendInput(kind, 0, 0, this.lastX, this.lastY, 0, 0, 0);
-      }
-    }
-  }
-
   private navigate(page: Page): void {
-    if (this.page === 'display' && page !== 'display') {
-      if (this.pointerDown) {
-        native.sendInput(KIND_TOUCH_CANCEL, 0, 0, this.lastX, this.lastY, 0, 0, 0);
-      }
-      this.pointerDown = false;
-      this.scrolling = false;
-    }
     this.controlsExpanded = false;
     this.page = page;
+    this.syncTouchCapture();
     window.getLastWindow(this.getUIContext().getHostContext()).then((appWindow: window.Window) => {
       const bars: Array<'status' | 'navigation'> = this.page === 'display' ? [] : ['status', 'navigation'];
       return appWindow.setWindowSystemBarEnable(bars);
@@ -1330,11 +1192,6 @@ struct Index {
         .width('100%')
         .height('100%')
         .backgroundColor('#000000')
-        .onAreaChange((oldArea: Area, newArea: Area) => {
-          this.surfaceWidth = Number(newArea.width);
-          this.surfaceHeight = Number(newArea.height);
-        })
-        .onTouch((event: TouchEvent) => this.onTouchEvent(event))
 
       if (this.page !== 'display') {
         this.shell()

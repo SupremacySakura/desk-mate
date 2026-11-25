@@ -2,3 +2,4 @@
 
 #import "DMVirtualDisplay.h"
 #import "DMBridge.h"
+#import "DMVirtualHID.h"

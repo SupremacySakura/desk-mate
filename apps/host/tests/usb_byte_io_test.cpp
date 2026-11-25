@@ -154,6 +154,72 @@ bool test_partial_read_on_timeout() {
   return true;
 }
 
+bool test_device_blocklist_and_disconnect() {
+  DMBridge *bridge = dm_bridge_create(nullptr);
+  if (bridge == nullptr) {
+    std::fprintf(stderr, "FAIL could not allocate DMBridge for policy test\n");
+    return false;
+  }
+  {
+    std::lock_guard lock(bridge->snapshot_mutex);
+    bridge->active_device.id = "usb:MATEPAD-001";
+    bridge->active_device.name = "MatePad 12.2 Pro";
+    bridge->active_device_valid = true;
+  }
+
+  const char *other[] = {"usb:OTHER-999"};
+  dm_bridge_set_blocked_devices(bridge, other, 1);
+  if (bridge->disconnect_requested.load() ||
+      is_device_blocked(bridge, "usb:MATEPAD-001") ||
+      !is_device_blocked(bridge, "usb:OTHER-999")) {
+    std::fprintf(stderr, "FAIL non-matching blocklist triggered disconnect\n");
+    dm_bridge_destroy(bridge);
+    return false;
+  }
+
+  dm_bridge_disconnect_device(bridge, "usb:OTHER-999");
+  if (bridge->disconnect_requested.load()) {
+    std::fprintf(stderr, "FAIL non-matching explicit disconnect triggered\n");
+    dm_bridge_destroy(bridge);
+    return false;
+  }
+
+  const char *blocked_active[] = {"usb:MATEPAD-001"};
+  dm_bridge_set_blocked_devices(bridge, blocked_active, 1);
+  if (!is_device_blocked(bridge, "usb:MATEPAD-001") ||
+      !bridge->disconnect_requested.load()) {
+    std::fprintf(stderr, "FAIL blocking active device did not request disconnect\n");
+    dm_bridge_destroy(bridge);
+    return false;
+  }
+
+  bridge->disconnect_requested.store(false);
+  dm_bridge_set_blocked_devices(bridge, nullptr, 0);
+  if (is_device_blocked(bridge, "usb:MATEPAD-001")) {
+    std::fprintf(stderr, "FAIL clearing blocklist left device blocked\n");
+    dm_bridge_destroy(bridge);
+    return false;
+  }
+
+  dm_bridge_disconnect_device(bridge, "usb:MATEPAD-001");
+  if (!bridge->disconnect_requested.load()) {
+    std::fprintf(stderr, "FAIL matching explicit disconnect did not trigger\n");
+    dm_bridge_destroy(bridge);
+    return false;
+  }
+
+  char *scanned = dm_bridge_scan_devices(bridge);
+  const bool valid_scan = scanned != nullptr && scanned[0] == '[';
+  std::free(scanned);
+  dm_bridge_destroy(bridge);
+  if (!valid_scan) {
+    std::fprintf(stderr, "FAIL device scan did not return a JSON array\n");
+    return false;
+  }
+  std::puts("PASS device blocklist and active disconnect policy");
+  return true;
+}
+
 int main() {
   using deskmate::protocol::IoStatus;
   std::atomic<std::uint64_t> rx{}, tx{}, errors{};
@@ -179,5 +245,6 @@ int main() {
   const bool partial_read = test_partial_read_on_timeout();
   const bool streaming = test_steady_video_with_no_reverse_input();
   const bool high_fps = test_sustained_120fps_video_with_keyframes_and_tuned_host_scheduler();
-  return partial_read && streaming && high_fps ? 0 : 1;
+  const bool policy = test_device_blocklist_and_disconnect();
+  return partial_read && streaming && high_fps && policy ? 0 : 1;
 }

@@ -81,6 +81,15 @@ int32_t dm_bridge_host_event(DMBridge *bridge, int32_t event);
 /* Heap-allocated JSON snapshot; caller must free() it. */
 char *dm_bridge_snapshot(DMBridge *bridge);
 
+/* Updates the list of blocked device IDs; disconnects the active device if blocked. */
+void dm_bridge_set_blocked_devices(DMBridge *bridge,
+                                   const char *const *device_ids,
+                                   int32_t count);
+/* Disconnects the active USB accessory session if device_id is NULL or matches. */
+void dm_bridge_disconnect_device(DMBridge *bridge, const char *device_id);
+/* Scans currently attached matching USB devices and returns a heap-allocated JSON array; caller must free() it. */
+char *dm_bridge_scan_devices(DMBridge *bridge);
+
 #ifdef __cplusplus
 }
 #endif

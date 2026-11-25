@@ -1185,6 +1185,43 @@ void test_golden_vectors() {
   CHECK(vector_count >= 20U);
 }
 
+void test_input_multitouch_flags_round_trip() {
+  deskmate::protocol::InputEvent event;
+  event.kind = deskmate::protocol::InputKind::TouchMove;
+  event.pointer_id = 9;
+  event.flags = static_cast<std::uint16_t>(
+      deskmate::protocol::kInputFlagPrimaryButton |
+      deskmate::protocol::kInputFlagMultiTouchFrame |
+      deskmate::protocol::kInputFlagFrameCommit |
+      ((10U << deskmate::protocol::kInputFlagContactCountShift) &
+       deskmate::protocol::kInputFlagContactCountMask));
+  event.x = 0.25F;
+  event.y = 0.75F;
+  event.dx = -0.0125F;
+  event.dy = 0.03125F;
+  event.keycode = 0;
+
+  const auto encoded = deskmate::protocol::encode_input_payload(event);
+  CHECK(encoded);
+  CHECK_EQ(encoded.value().size(), 28U);
+
+  const auto decoded = deskmate::protocol::decode_input_payload(encoded.value());
+  CHECK(decoded);
+  CHECK_EQ(static_cast<int>(decoded.value().kind),
+           static_cast<int>(deskmate::protocol::InputKind::TouchMove));
+  CHECK_EQ(decoded.value().pointer_id, 9U);
+  CHECK_EQ(decoded.value().flags, event.flags);
+  CHECK_EQ((decoded.value().flags & deskmate::protocol::kInputFlagContactCountMask) >>
+               deskmate::protocol::kInputFlagContactCountShift,
+           10);
+  CHECK((decoded.value().flags & deskmate::protocol::kInputFlagMultiTouchFrame) != 0U);
+  CHECK((decoded.value().flags & deskmate::protocol::kInputFlagFrameCommit) != 0U);
+  CHECK_EQ(decoded.value().x, 0.25F);
+  CHECK_EQ(decoded.value().y, 0.75F);
+  CHECK_EQ(decoded.value().dx, -0.0125F);
+  CHECK_EQ(decoded.value().dy, 0.03125F);
+}
+
 struct TestCase {
   const char* name;
   void (*run)();
@@ -1232,6 +1269,7 @@ int main(int argc, char** argv) {
        test_control_payload_round_trip_and_validation},
       {"payload and frame length boundaries", test_payload_and_frame_length_boundaries},
       {"golden vectors", test_golden_vectors},
+      {"input multitouch flags round trip", test_input_multitouch_flags_round_trip},
   };
 
   for (const auto& test : tests) {

@@ -23,6 +23,8 @@
 #include <sstream>
 #include <string>
 #include <thread>
+#include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 namespace {
@@ -358,72 +360,64 @@ enum class ConnectOutcome {
   Error,
 };
 
-ConnectOutcome switch_to_accessory(libusb_context *context,
-                                   std::uint16_t vendor_id,
-                                   std::uint16_t product_id,
-                                   std::string &error) {
-  libusb_device *device = find_device(context, vendor_id, product_id, false);
-  if (device == nullptr) {
-    if (libusb_device *existing = find_device(context, 0, 0, true);
-        existing != nullptr) {
-      libusb_unref_device(existing);
-      error = "";
-      return ConnectOutcome::Connected; /* already an accessory */
-    }
-    error.clear();
-    return ConnectOutcome::NoDevice;
-  }
+struct UsbDeviceIdentity {
+  std::string id;
+  std::string name;
+  std::string manufacturer;
+  std::string serial;
+  std::uint16_t vendor_id = 0;
+  std::uint16_t product_id = 0;
+  std::uint8_t bus = 0;
+  std::uint8_t address = 0;
+  bool in_accessory_mode = false;
+};
 
-  libusb_device_handle *handle = nullptr;
-  const int open_rc = libusb_open(device, &handle);
-  libusb_unref_device(device);
-  if (open_rc != LIBUSB_SUCCESS || handle == nullptr) {
-    error = "libusb_open failed: " + libusb_text(open_rc);
-    return ConnectOutcome::Error;
-  }
+bool is_hdc_device(std::uint16_t vendor_id, std::uint16_t product_id) {
+  return vendor_id == kHdcVendorId && product_id == kHdcProductId;
+}
 
-  std::uint8_t protocol_bytes[2] = {0, 0};
-  const int protocol_rc = libusb_control_transfer(
-      handle,
-      LIBUSB_REQUEST_TYPE_VENDOR | LIBUSB_RECIPIENT_DEVICE |
-          LIBUSB_ENDPOINT_IN,
-      51, 0, 0, protocol_bytes, sizeof(protocol_bytes), kControlTimeoutMs);
-  if (protocol_rc < 0) {
-    error = "AOA GET_PROTOCOL failed: " + libusb_text(protocol_rc) +
-            " (device may not implement AOA)";
-    libusb_close(handle);
-    return ConnectOutcome::Error;
-  }
-  const std::uint16_t protocol = static_cast<std::uint16_t>(protocol_bytes[0]) |
-                                 static_cast<std::uint16_t>(protocol_bytes[1])
-                                     << 8;
-  if (protocol < 1) {
-    error = "AOA GET_PROTOCOL returned version 0";
-    libusb_close(handle);
-    return ConnectOutcome::Error;
-  }
-
-  const char *strings[4] = {"DeskMate", "DeskMate Extended Display",
-                            "Wired extended display for HarmonyOS tablets",
-                            "1.0"};
-  for (std::uint16_t index = 0; index < 4; ++index) {
-    if (!send_aoa_string(handle, index, strings[index], error)) {
-      libusb_close(handle);
-      return ConnectOutcome::Error;
+std::string trim_ascii(std::string value) {
+  auto keep = [](unsigned char ch) { return ch >= 0x20 && ch != 0x7F; };
+  std::string cleaned;
+  cleaned.reserve(value.size());
+  for (unsigned char ch : value) {
+    if (keep(ch)) {
+      cleaned.push_back(static_cast<char>(ch));
     }
   }
-  std::uint8_t no_data = 0;
-  const int start_rc = libusb_control_transfer(
-      handle,
-      LIBUSB_REQUEST_TYPE_VENDOR | LIBUSB_RECIPIENT_DEVICE |
-          LIBUSB_ENDPOINT_OUT,
-      53, 0, 0, &no_data, 0, kControlTimeoutMs);
-  libusb_close(handle);
-  if (start_rc < 0) {
-    error = "AOA START failed: " + libusb_text(start_rc);
-    return ConnectOutcome::Error;
+  const auto start = cleaned.find_first_not_of(" \t");
+  if (start == std::string::npos) {
+    return "";
   }
-  return ConnectOutcome::Connected;
+  const auto end = cleaned.find_last_not_of(" \t");
+  return cleaned.substr(start, end - start + 1);
+}
+
+std::string read_usb_string(libusb_device_handle *handle, std::uint8_t index) {
+  if (handle == nullptr || index == 0) {
+    return "";
+  }
+  unsigned char buffer[256] = {};
+  const int rc = libusb_get_string_descriptor_ascii(
+      handle, index, buffer, static_cast<int>(sizeof(buffer) - 1));
+  if (rc <= 0) {
+    return "";
+  }
+  return trim_ascii(std::string(reinterpret_cast<const char *>(buffer),
+                                static_cast<std::size_t>(rc)));
+}
+
+bool is_generic_device_name(const std::string &name) {
+  return name.empty() || name == "Android" || name == "Accessory" ||
+         name == "AOA" || name == "DeskMate" ||
+         name == "DeskMate Extended Display";
+}
+
+std::string format_usb_fallback_id(std::uint16_t vendor_id,
+                                   std::uint16_t product_id) {
+  char buf[32] = {};
+  std::snprintf(buf, sizeof(buf), "usb:%04x:%04x", vendor_id, product_id);
+  return std::string(buf);
 }
 
 }  // namespace
@@ -460,9 +454,23 @@ struct DMBridge {
   std::string cached_state{"idle"};
   std::string cached_negotiated{"none"};
   bool cached_input_enabled{false};
+  UsbDeviceIdentity active_device{};
+  bool active_device_valid{false};
+  std::uint8_t active_bus{0};
+  std::uint8_t active_address{0};
+  bool blocked_device_present{false};
+  std::string blocked_device_name;
+
+  std::mutex device_policy_mutex;
+  std::unordered_set<std::string> blocked_device_ids;
+  std::unordered_map<std::string, UsbDeviceIdentity> hdc_identity_cache;
+  UsbDeviceIdentity last_hdc_identity{};
+  bool has_last_hdc_identity{false};
+  std::chrono::steady_clock::time_point last_hdc_seen_at{};
 
   std::thread worker;
   std::atomic<bool> stop_requested{false};
+  std::atomic<bool> disconnect_requested{false};
   std::atomic<bool> running{false};
   std::atomic<bool> auto_match_resolution{false};
   std::atomic<bool> needs_keyframe{false};
@@ -649,6 +657,263 @@ void dm_bridge_set_input_callback(DMBridge *bridge, DMInputCallback callback,
 
 namespace {
 
+void resolve_device_identity(DMBridge *bridge, UsbDeviceIdentity &identity) {
+  if (!identity.in_accessory_mode) {
+    identity.id = !identity.serial.empty()
+                      ? ("usb:" + identity.serial)
+                      : format_usb_fallback_id(identity.vendor_id,
+                                               identity.product_id);
+    if (is_generic_device_name(identity.name)) {
+      identity.name = !identity.manufacturer.empty()
+                          ? (identity.manufacturer + " 平板")
+                          : "HarmonyOS 平板";
+    }
+    if (bridge != nullptr) {
+      std::lock_guard lock(bridge->device_policy_mutex);
+      bridge->hdc_identity_cache[identity.id] = identity;
+      bridge->last_hdc_identity = identity;
+      bridge->has_last_hdc_identity = true;
+      bridge->last_hdc_seen_at = std::chrono::steady_clock::now();
+    }
+    return;
+  }
+
+  if (bridge != nullptr) {
+    std::lock_guard lock(bridge->device_policy_mutex);
+    if (!identity.serial.empty()) {
+      auto it = bridge->hdc_identity_cache.find("usb:" + identity.serial);
+      if (it != bridge->hdc_identity_cache.end()) {
+        identity.id = it->second.id;
+        if (is_generic_device_name(identity.name)) {
+          identity.name = it->second.name;
+        }
+        if (identity.manufacturer.empty()) {
+          identity.manufacturer = it->second.manufacturer;
+        }
+        return;
+      }
+    } else if (bridge->has_last_hdc_identity &&
+               (std::chrono::steady_clock::now() - bridge->last_hdc_seen_at) <=
+                   std::chrono::seconds(20)) {
+      identity.id = bridge->last_hdc_identity.id;
+      identity.serial = bridge->last_hdc_identity.serial;
+      if (is_generic_device_name(identity.name)) {
+        identity.name = bridge->last_hdc_identity.name;
+      }
+      if (identity.manufacturer.empty()) {
+        identity.manufacturer = bridge->last_hdc_identity.manufacturer;
+      }
+      return;
+    }
+  }
+
+  identity.id = !identity.serial.empty()
+                    ? ("usb:" + identity.serial)
+                    : format_usb_fallback_id(identity.vendor_id,
+                                             identity.product_id);
+  if (is_generic_device_name(identity.name)) {
+    identity.name = !identity.manufacturer.empty()
+                        ? (identity.manufacturer + " 平板")
+                        : "DeskMate 平板设备";
+  }
+}
+
+void inspect_usb_device(DMBridge *bridge, libusb_device *device,
+                        const libusb_device_descriptor &desc,
+                        libusb_device_handle *existing_handle,
+                        bool try_open,
+                        UsbDeviceIdentity &identity) {
+  identity = {};
+  identity.vendor_id = desc.idVendor;
+  identity.product_id = desc.idProduct;
+  identity.bus = libusb_get_bus_number(device);
+  identity.address = libusb_get_device_address(device);
+  identity.in_accessory_mode = is_accessory(desc.idVendor, desc.idProduct);
+
+  if (bridge != nullptr) {
+    std::lock_guard snap_lock(bridge->snapshot_mutex);
+    if (bridge->active_device_valid && bridge->active_bus == identity.bus &&
+        bridge->active_address == identity.address) {
+      identity = bridge->active_device;
+      return;
+    }
+  }
+
+  libusb_device_handle *opened = nullptr;
+  libusb_device_handle *handle = existing_handle;
+  if (handle == nullptr && try_open) {
+    if (libusb_open(device, &opened) == LIBUSB_SUCCESS && opened != nullptr) {
+      handle = opened;
+    }
+  }
+  if (handle != nullptr) {
+    identity.manufacturer = read_usb_string(handle, desc.iManufacturer);
+    identity.name = read_usb_string(handle, desc.iProduct);
+    identity.serial = read_usb_string(handle, desc.iSerialNumber);
+  }
+  if (opened != nullptr) {
+    libusb_close(opened);
+  }
+  resolve_device_identity(bridge, identity);
+}
+
+bool is_device_blocked(DMBridge *bridge, const std::string &device_id) {
+  if (bridge == nullptr || device_id.empty()) {
+    return false;
+  }
+  std::lock_guard lock(bridge->device_policy_mutex);
+  return bridge->blocked_device_ids.count(device_id) > 0;
+}
+
+void merge_expected_identity(UsbDeviceIdentity &target,
+                             const UsbDeviceIdentity &expected) {
+  if (expected.id.empty()) {
+    return;
+  }
+  if (target.serial.empty() && !expected.serial.empty()) {
+    target.id = expected.id;
+    target.serial = expected.serial;
+  }
+  if (is_generic_device_name(target.name) && !expected.name.empty()) {
+    target.name = expected.name;
+  }
+  if (target.manufacturer.empty() && !expected.manufacturer.empty()) {
+    target.manufacturer = expected.manufacturer;
+  }
+}
+
+ConnectOutcome switch_to_accessory(DMBridge *bridge,
+                                   UsbDeviceIdentity &expected_identity,
+                                   std::string &error) {
+  libusb_device **devices = nullptr;
+  const ssize_t count = libusb_get_device_list(bridge->context, &devices);
+  if (count < 0) {
+    error.clear();
+    return ConnectOutcome::NoDevice;
+  }
+
+  libusb_device *allowed_accessory = nullptr;
+  UsbDeviceIdentity allowed_accessory_identity;
+  libusb_device *allowed_hdc = nullptr;
+  UsbDeviceIdentity allowed_hdc_identity;
+  bool blocked_found = false;
+  std::string blocked_name;
+
+  for (ssize_t index = 0; index < count; ++index) {
+    libusb_device_descriptor desc{};
+    if (libusb_get_device_descriptor(devices[index], &desc) != LIBUSB_SUCCESS) {
+      continue;
+    }
+    const bool hdc = is_hdc_device(desc.idVendor, desc.idProduct);
+    const bool accessory = is_accessory(desc.idVendor, desc.idProduct);
+    if (!hdc && !accessory) {
+      continue;
+    }
+    UsbDeviceIdentity identity;
+    inspect_usb_device(bridge, devices[index], desc, nullptr, true, identity);
+    if (is_device_blocked(bridge, identity.id)) {
+      blocked_found = true;
+      if (blocked_name.empty()) {
+        blocked_name = identity.name;
+      }
+      continue;
+    }
+    if (accessory && allowed_accessory == nullptr) {
+      allowed_accessory = devices[index];
+      allowed_accessory_identity = identity;
+      libusb_ref_device(allowed_accessory);
+    } else if (hdc && allowed_hdc == nullptr) {
+      allowed_hdc = devices[index];
+      allowed_hdc_identity = identity;
+      libusb_ref_device(allowed_hdc);
+    }
+  }
+  libusb_free_device_list(devices, 1);
+
+  if (allowed_accessory != nullptr) {
+    libusb_unref_device(allowed_accessory);
+    if (allowed_hdc != nullptr) {
+      libusb_unref_device(allowed_hdc);
+    }
+    {
+      std::lock_guard snap_lock(bridge->snapshot_mutex);
+      bridge->blocked_device_present = false;
+      bridge->blocked_device_name.clear();
+    }
+    expected_identity = allowed_accessory_identity;
+    error.clear();
+    return ConnectOutcome::Connected;
+  }
+
+  if (allowed_hdc == nullptr) {
+    {
+      std::lock_guard snap_lock(bridge->snapshot_mutex);
+      bridge->blocked_device_present = blocked_found;
+      bridge->blocked_device_name = blocked_found ? blocked_name : "";
+    }
+    error.clear();
+    return ConnectOutcome::NoDevice;
+  }
+
+  {
+    std::lock_guard snap_lock(bridge->snapshot_mutex);
+    bridge->blocked_device_present = false;
+    bridge->blocked_device_name.clear();
+  }
+
+  libusb_device_handle *handle = nullptr;
+  const int open_rc = libusb_open(allowed_hdc, &handle);
+  libusb_unref_device(allowed_hdc);
+  if (open_rc != LIBUSB_SUCCESS || handle == nullptr) {
+    error = "libusb_open failed: " + libusb_text(open_rc);
+    return ConnectOutcome::Error;
+  }
+
+  std::uint8_t protocol_bytes[2] = {0, 0};
+  const int protocol_rc = libusb_control_transfer(
+      handle,
+      LIBUSB_REQUEST_TYPE_VENDOR | LIBUSB_RECIPIENT_DEVICE |
+          LIBUSB_ENDPOINT_IN,
+      51, 0, 0, protocol_bytes, sizeof(protocol_bytes), kControlTimeoutMs);
+  if (protocol_rc < 0) {
+    error = "AOA GET_PROTOCOL failed: " + libusb_text(protocol_rc) +
+            " (device may not implement AOA)";
+    libusb_close(handle);
+    return ConnectOutcome::Error;
+  }
+  const std::uint16_t protocol = static_cast<std::uint16_t>(protocol_bytes[0]) |
+                                 static_cast<std::uint16_t>(protocol_bytes[1])
+                                     << 8;
+  if (protocol < 1) {
+    error = "AOA GET_PROTOCOL returned version 0";
+    libusb_close(handle);
+    return ConnectOutcome::Error;
+  }
+
+  const char *strings[4] = {"DeskMate", "DeskMate Extended Display",
+                            "Wired extended display for HarmonyOS tablets",
+                            "1.0"};
+  for (std::uint16_t index = 0; index < 4; ++index) {
+    if (!send_aoa_string(handle, index, strings[index], error)) {
+      libusb_close(handle);
+      return ConnectOutcome::Error;
+    }
+  }
+  std::uint8_t no_data = 0;
+  const int start_rc = libusb_control_transfer(
+      handle,
+      LIBUSB_REQUEST_TYPE_VENDOR | LIBUSB_RECIPIENT_DEVICE |
+          LIBUSB_ENDPOINT_OUT,
+      53, 0, 0, &no_data, 0, kControlTimeoutMs);
+  libusb_close(handle);
+  if (start_rc < 0) {
+    error = "AOA START failed: " + libusb_text(start_rc);
+    return ConnectOutcome::Error;
+  }
+  expected_identity = allowed_hdc_identity;
+  return ConnectOutcome::Connected;
+}
+
 /* Builds a fresh HostSession over an already-claimed accessory link. */
 void start_session(DMBridge *bridge) {
   deskmate::protocol::HostSessionConfig session_config;
@@ -736,8 +1001,9 @@ ConnectOutcome connect_once(DMBridge *bridge) {
     return ConnectOutcome::Error;
   }
   std::string error;
-  const ConnectOutcome switch_outcome = switch_to_accessory(
-      bridge->context, kHdcVendorId, kHdcProductId, error);
+  UsbDeviceIdentity expected_identity;
+  const ConnectOutcome switch_outcome =
+      switch_to_accessory(bridge, expected_identity, error);
   if (switch_outcome == ConnectOutcome::NoDevice) {
     bridge->clear_error();
     return ConnectOutcome::NoDevice;
@@ -750,11 +1016,35 @@ ConnectOutcome connect_once(DMBridge *bridge) {
   }
 
   libusb_device *device = nullptr;
+  UsbDeviceIdentity accessory_identity;
   const auto deadline = std::chrono::steady_clock::now() +
                         std::chrono::seconds(15);
   while (std::chrono::steady_clock::now() < deadline &&
          !bridge->stop_requested.load()) {
-    device = find_device(bridge->context, 0, 0, true);
+    libusb_device **devices = nullptr;
+    const ssize_t count = libusb_get_device_list(bridge->context, &devices);
+    if (count >= 0) {
+      for (ssize_t index = 0; index < count; ++index) {
+        libusb_device_descriptor desc{};
+        if (libusb_get_device_descriptor(devices[index], &desc) !=
+                LIBUSB_SUCCESS ||
+            !is_accessory(desc.idVendor, desc.idProduct)) {
+          continue;
+        }
+        UsbDeviceIdentity candidate;
+        inspect_usb_device(bridge, devices[index], desc, nullptr, true,
+                           candidate);
+        merge_expected_identity(candidate, expected_identity);
+        if (is_device_blocked(bridge, candidate.id)) {
+          continue;
+        }
+        device = devices[index];
+        accessory_identity = std::move(candidate);
+        libusb_ref_device(device);
+        break;
+      }
+      libusb_free_device_list(devices, 1);
+    }
     if (device != nullptr) {
       break;
     }
@@ -787,6 +1077,14 @@ ConnectOutcome connect_once(DMBridge *bridge) {
     bridge->set_error(error);
     return ConnectOutcome::Error;
   }
+  libusb_device_descriptor connected_desc{};
+  if (libusb_get_device_descriptor(device, &connected_desc) == LIBUSB_SUCCESS) {
+    UsbDeviceIdentity refreshed;
+    inspect_usb_device(bridge, device, connected_desc, bridge->handle, false,
+                       refreshed);
+    merge_expected_identity(refreshed, accessory_identity);
+    accessory_identity = std::move(refreshed);
+  }
   libusb_unref_device(device);
 
   bridge->interface_number = endpoints.interface_number;
@@ -799,6 +1097,17 @@ ConnectOutcome connect_once(DMBridge *bridge) {
     return ConnectOutcome::Error;
   }
   bridge->interface_claimed = true;
+
+  {
+    std::lock_guard snap_lock(bridge->snapshot_mutex);
+    bridge->active_device = accessory_identity;
+    bridge->active_device_valid = true;
+    bridge->active_bus = accessory_identity.bus;
+    bridge->active_address = accessory_identity.address;
+    bridge->blocked_device_present = false;
+    bridge->blocked_device_name.clear();
+  }
+  bridge->disconnect_requested.store(false);
 
   bridge->io = std::make_unique<UsbByteIo>(
       bridge->handle, endpoints.endpoint_in, endpoints.endpoint_out,
@@ -851,6 +1160,10 @@ void teardown_link(DMBridge *bridge) {
     bridge->cached_state = "idle";
     bridge->cached_negotiated = "none";
     bridge->cached_input_enabled = false;
+    bridge->active_device_valid = false;
+    bridge->active_bus = 0;
+    bridge->active_address = 0;
+    bridge->active_device = {};
   }
   bridge->io.reset();
   bridge->clock.reset();
@@ -905,11 +1218,16 @@ void worker_main(DMBridge *bridge) {
        make the tablet re-authorize, which never converges. */
     std::string failure;
     bool stopped = false;
+    bool disconnected_by_policy = false;
     auto next_status_log = std::chrono::steady_clock::now();
     auto next_perf_log = next_status_log;
     for (;;) {
       if (bridge->stop_requested.load()) {
         stopped = true;
+        break;
+      }
+      if (bridge->disconnect_requested.exchange(false)) {
+        disconnected_by_policy = true;
         break;
       }
       bool terminal = false;
@@ -1116,6 +1434,7 @@ void worker_main(DMBridge *bridge) {
         std::unique_lock video_lock(bridge->video_mutex);
         bridge->wake_cv.wait_for(video_lock, wait_duration, [bridge] {
           return bridge->stop_requested.load() ||
+                 bridge->disconnect_requested.load() ||
                  !bridge->video_queue.empty() || bridge->rx_wakeup;
         });
       }
@@ -1124,6 +1443,13 @@ void worker_main(DMBridge *bridge) {
     bridge->running.store(false);
     if (stopped) {
       break;
+    }
+    if (disconnected_by_policy) {
+      bridge->clear_error();
+      bridge->log("disconnected device by host policy");
+      teardown_link(bridge);
+      wait_stop_or(bridge, std::chrono::milliseconds(400));
+      continue;
     }
 
     const bool device_answered = bridge->rx_bytes.load() > link_rx_start;
@@ -1334,11 +1660,19 @@ char *dm_bridge_snapshot(DMBridge *bridge) {
   std::string state = "idle";
   std::string negotiated = "none";
   bool input_enabled = false;
+  UsbDeviceIdentity device;
+  bool has_device = false;
+  bool device_blocked = false;
+  std::string blocked_name;
   {
     std::lock_guard lock(bridge->snapshot_mutex);
     state = bridge->cached_state;
     negotiated = bridge->cached_negotiated;
     input_enabled = bridge->cached_input_enabled;
+    device = bridge->active_device;
+    has_device = bridge->active_device_valid;
+    device_blocked = bridge->blocked_device_present;
+    blocked_name = bridge->blocked_device_name;
   }
   std::string error;
   {
@@ -1359,7 +1693,134 @@ char *dm_bridge_snapshot(DMBridge *bridge) {
        << ",\"rxBytes\":" << bridge->rx_bytes.load()
        << ",\"txBytes\":" << bridge->tx_bytes.load()
        << ",\"bulkErrors\":" << bridge->bulk_errors.load()
+       << ",\"deviceId\":\"" << json_escape(has_device ? device.id : "") << "\""
+       << ",\"deviceName\":\"" << json_escape(has_device ? device.name : "") << "\""
+       << ",\"deviceManufacturer\":\""
+       << json_escape(has_device ? device.manufacturer : "") << "\""
+       << ",\"deviceSerial\":\"" << json_escape(has_device ? device.serial : "") << "\""
+       << ",\"deviceBlocked\":" << (device_blocked ? "true" : "false")
+       << ",\"blockedDeviceName\":\"" << json_escape(blocked_name) << "\""
        << ",\"error\":\"" << json_escape(error) << "\"}";
+  const std::string text = json.str();
+  auto *buffer = static_cast<char *>(std::malloc(text.size() + 1));
+  if (buffer == nullptr) {
+    return nullptr;
+  }
+  std::memcpy(buffer, text.c_str(), text.size() + 1);
+  return buffer;
+}
+
+void dm_bridge_set_blocked_devices(DMBridge *bridge,
+                                   const char *const *device_ids,
+                                   int32_t count) {
+  if (bridge == nullptr) {
+    return;
+  }
+  std::unordered_set<std::string> next_blocked;
+  if (device_ids != nullptr && count > 0) {
+    for (int32_t index = 0; index < count; ++index) {
+      if (device_ids[index] != nullptr && device_ids[index][0] != '\0') {
+        next_blocked.emplace(device_ids[index]);
+      }
+    }
+  }
+  {
+    std::lock_guard lock(bridge->device_policy_mutex);
+    bridge->blocked_device_ids = std::move(next_blocked);
+  }
+  bool should_disconnect = false;
+  {
+    std::lock_guard snap_lock(bridge->snapshot_mutex);
+    if (bridge->active_device_valid) {
+      std::lock_guard lock(bridge->device_policy_mutex);
+      should_disconnect =
+          bridge->blocked_device_ids.count(bridge->active_device.id) > 0;
+    }
+  }
+  if (should_disconnect) {
+    bridge->disconnect_requested.store(true);
+    bridge->wake_cv.notify_all();
+  }
+}
+
+void dm_bridge_disconnect_device(DMBridge *bridge, const char *device_id) {
+  if (bridge == nullptr) {
+    return;
+  }
+  bool matches = false;
+  {
+    std::lock_guard snap_lock(bridge->snapshot_mutex);
+    if (bridge->active_device_valid) {
+      matches = (device_id == nullptr || device_id[0] == '\0' ||
+                 bridge->active_device.id == device_id);
+    }
+  }
+  if (matches) {
+    bridge->disconnect_requested.store(true);
+    bridge->wake_cv.notify_all();
+  }
+}
+
+char *dm_bridge_scan_devices(DMBridge *bridge) {
+  libusb_context *ctx = bridge != nullptr ? bridge->context : nullptr;
+  libusb_context *temp_ctx = nullptr;
+  if (ctx == nullptr) {
+    if (libusb_init(&temp_ctx) != LIBUSB_SUCCESS) {
+      temp_ctx = nullptr;
+    }
+    ctx = temp_ctx;
+  }
+
+  std::vector<UsbDeviceIdentity> found;
+  if (ctx != nullptr) {
+    libusb_device **devices = nullptr;
+    const ssize_t count = libusb_get_device_list(ctx, &devices);
+    if (count >= 0) {
+      for (ssize_t index = 0; index < count; ++index) {
+        libusb_device_descriptor desc{};
+        if (libusb_get_device_descriptor(devices[index], &desc) !=
+            LIBUSB_SUCCESS) {
+          continue;
+        }
+        if (!is_hdc_device(desc.idVendor, desc.idProduct) &&
+            !is_accessory(desc.idVendor, desc.idProduct)) {
+          continue;
+        }
+        UsbDeviceIdentity identity;
+        inspect_usb_device(bridge, devices[index], desc, nullptr, true,
+                           identity);
+        if (!identity.id.empty()) {
+          found.push_back(std::move(identity));
+        }
+      }
+      libusb_free_device_list(devices, 1);
+    }
+  } else if (bridge != nullptr) {
+    std::lock_guard snap_lock(bridge->snapshot_mutex);
+    if (bridge->active_device_valid && !bridge->active_device.id.empty()) {
+      found.push_back(bridge->active_device);
+    }
+  }
+
+  if (temp_ctx != nullptr) {
+    libusb_exit(temp_ctx);
+  }
+
+  std::ostringstream json;
+  json << "[";
+  for (std::size_t index = 0; index < found.size(); ++index) {
+    if (index > 0) {
+      json << ",";
+    }
+    const auto &item = found[index];
+    json << "{\"id\":\"" << json_escape(item.id) << "\""
+         << ",\"name\":\"" << json_escape(item.name) << "\""
+         << ",\"manufacturer\":\"" << json_escape(item.manufacturer) << "\""
+         << ",\"serial\":\"" << json_escape(item.serial) << "\""
+         << ",\"inAccessoryMode\":" << (item.in_accessory_mode ? "true" : "false")
+         << "}";
+  }
+  json << "]";
   const std::string text = json.str();
   auto *buffer = static_cast<char *>(std::malloc(text.size() + 1));
   if (buffer == nullptr) {
