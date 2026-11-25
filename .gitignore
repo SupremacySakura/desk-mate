@@ -11,3 +11,7 @@ apps/android-client/.idea/
 apps/android-client/captures/
 *.apk
 *.aab
+
+# Local release staging / Windows portable zips
+dist/
+DeskMate-Windows-Host-*.zip

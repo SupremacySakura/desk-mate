@@ -69,8 +69,12 @@ void test_aoa_ids_and_endpoint_selection() {
   CHECK(pair.endpoint_out == 0x02);
 
   const auto encoded = encode_aoa_string("DM");
-  const std::vector<std::uint8_t> expected{0x44, 0x00, 0x4D, 0x00, 0x00, 0x00};
+  const std::vector<std::uint8_t> expected{0x44, 0x4D, 0x00};
   CHECK(encoded == expected);
+  const auto encoded_dm = encode_aoa_string("DeskMate");
+  const std::vector<std::uint8_t> expected_dm{
+      'D', 'e', 's', 'k', 'M', 'a', 't', 'e', 0x00};
+  CHECK(encoded_dm == expected_dm);
 }
 
 void test_host_profile_keeps_12k_fragment_budget() {

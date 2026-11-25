@@ -57,7 +57,7 @@ struct EndpointDescriptorView {
 [[nodiscard]] bool select_bulk_endpoints(
     std::span<const EndpointDescriptorView> endpoints, EndpointPair& out);
 
-// AOA control requests are vendor/device, little-endian UTF-16LE strings.
+// AOA control requests (SEND_STRING 52) are vendor/device, null-terminated UTF-8 strings.
 [[nodiscard]] std::vector<std::uint8_t> encode_aoa_string(std::string_view text);
 
 }  // namespace deskmate::platform

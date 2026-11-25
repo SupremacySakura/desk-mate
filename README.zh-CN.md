@@ -2,14 +2,15 @@
 
 # DeskMate
 
-**将鸿蒙（HarmonyOS）与 Android 平板/手机通过 USB 有线连接变成 macOS 的低延迟、高刷新率扩展副屏 —— 支持多设备同时接入与四模式反向触控。**
+**将鸿蒙（HarmonyOS）与 Android 平板/手机通过 USB 有线连接变成 macOS / Windows 的低延迟、高刷新率扩展副屏 —— 支持多设备同时接入与四模式反向触控。**
 
 [![macOS](https://img.shields.io/badge/macOS-15%2B-111111?style=flat-square&logo=apple&logoColor=white)](./apps/macos-host)
+[![Windows](https://img.shields.io/badge/Windows-10%2F11%20x64-0078D6?style=flat-square&logo=windows&logoColor=white)](./apps/windows-host)
 [![HarmonyOS NEXT](https://img.shields.io/badge/HarmonyOS-NEXT%206.1%2B-0A59F7?style=flat-square)](./apps/harmonyos-client)
 [![Android](https://img.shields.io/badge/Android-8.0%2B-3DDC84?style=flat-square&logo=android&logoColor=white)](./apps/android-client)
 [![USB AOA](https://img.shields.io/badge/传输协议-USB--C%20AOA-9D193D?style=flat-square)](#系统架构)
 [![Codec](https://img.shields.io/badge/视频编码-HEVC%20%2F%20H.264%20最高%20120Hz-2D7D5B?style=flat-square)](#核心特性)
-[![Stack](https://img.shields.io/badge/技术栈-C%2B%2B20%20%C2%B7%20Swift%20%C2%B7%20ArkTS%20%C2%B7%20Android-5A545E?style=flat-square)](#仓库结构)
+[![Stack](https://img.shields.io/badge/技术栈-C%2B%2B20%20%C2%B7%20Swift%20%C2%B7%20Win32%2FD2D%20%C2%B7%20ArkTS%20%C2%B7%20Android-5A545E?style=flat-square)](#仓库结构)
 [![License](https://img.shields.io/badge/开源协议-PolyForm%20Noncommercial%201.0.0-B9975B?style=flat-square)](./LICENSE)
 
 [English](./README.md) | 简体中文
@@ -19,7 +20,7 @@
 ---
 
 <div align="center">
-  <img src="./docs/assets/screenshot-multi-display.jpg" alt="DeskMate 同时连接两台鸿蒙设备作为 macOS 扩展副屏的实拍截图" width="880" />
+  <img src="./docs/assets/screenshot-multi-display.jpg" alt="DeskMate 同时连接两台鸿蒙设备作为扩展副屏的实拍截图" width="880" />
   <br />
   <sub>
     <i>双设备并发运行实拍：<b>HUAWEI MatePad Pro 12.2</b>（主屏左侧，2800×1840 @ 120 Hz）与 <b>HUAWEI Mate 80 Pro Max</b>（主屏下方，2848×1320 @ 120 Hz）通过 USB-C AOA 同时接入，开启硬件加速 HEVC 并发推流。</i>
@@ -30,9 +31,9 @@
 
 ## 为什么做 DeskMate？
 
-DeskMate 只需一根 USB 数据线，即可把闲置或手边的鸿蒙平板、手机变成 Mac 的原生级扩展显示器 —— **不依赖 Wi-Fi、无无线波动、无需外部虚拟屏插件，即插即用 HiDPI 扩展屏。**
+DeskMate 只需一根 USB 数据线，即可把闲置或手边的鸿蒙 / Android 平板与手机变成 **macOS 与 Windows** 电脑的原生级扩展显示器 —— **不依赖 Wi-Fi、无无线波动、即插即用独立扩展副屏**。
 
-与常见的无线投屏方案不同，DeskMate 在 **USB Accessory (AOA)** 双向 Bulk 通道上构建了自研低延迟二进制流式协议，结合 macOS 原生 **ScreenCaptureKit + VideoToolbox** 硬件编码与鸿蒙端 **C++ / AVCodec** 硬件解码，实现高帧率画面传输与跟手的反向触控体验。
+与常见的无线投屏方案不同，DeskMate 在 **USB Accessory (AOA)** 双向 Bulk 通道上构建了自研低延迟二进制流式协议，结合 **macOS（ScreenCaptureKit + VideoToolbox + CGVirtualDisplay）**、**Windows（DXGI Desktop Duplication + Media Foundation + Parsec VDD 虚拟屏）** 与移动端 **C++ / AVCodec / MediaCodec** 硬件解码，实现高帧率画面传输与跟手的反向触控体验。
 
 ---
 
@@ -40,13 +41,12 @@ DeskMate 只需一根 USB 数据线，即可把闲置或手边的鸿蒙平板、
 
 | 特性 | 说明 |
 | --- | --- |
-| **USB-C AOA 有线直连** | 全双工 USB Bulk 传输（`UsbByteIo` + `FdByteIo`），零无线干扰、无网络环境也能随时开双屏甚至多屏办公。 |
-| **多设备同时作为副屏** | 支持 **2 台及以上鸿蒙平板 / 手机同时接入**。每台设备拥有独立的 `CGVirtualDisplay`、独立编码推流管线、独立触控状态机，并在主屏四周自动无重叠排布。 |
-| **最高 120 Hz 硬件编解码** | 基于 Apple `VideoToolbox` 与 HarmonyOS `OH_VideoDecoder`（`AVCodec`）硬解硬编 **HEVC / H.264**，自动匹配设备原始宽高比与刷新率（`60 / 90 / 120 Hz`）。 |
-| **四模式反向触控输入** | 直接在平板 / 手机屏幕上操作 macOS：支持 **兼容手势映射**、**仅单点触控**、**虚拟妙控板（实验性）**、**原生屏幕触控（实验性）**，支持一键弹窗授权辅助功能。 |
-| **平板 & 手机全端适配** | 两端采用统一 **Alabaster Studio** 视觉设计；鸿蒙手机端在连接前自动保持**竖屏**浏览，进入副屏画面后自动切换为**横屏自适应**并兼容挖孔屏安全区。 |
-| **已配对设备与方位记忆** | 支持连接权限开关（允许/拦截）、设备重命名、为每台设备单独记住默认副屏方位（左 / 右 / 上 / 下）、在线独立断开。 |
-| **菜单栏浮窗与自启控制** | 菜单栏实时查看总 FPS / 码率 / 触控次数、快速切换当前控制设备、支持开机自启（`ServiceManagement`）与自动开启串流服务。 |
+| **USB-C AOA 有线直连** | 全双工 USB Bulk 传输（`usb_byte_io` + `fd_byte_io`），零无线干扰、无网络环境也能随时开双屏甚至多屏办公。 |
+| **macOS & Windows 双主控支持** | 提供原生 SwiftUI 工作台（`apps/macos-host`）与轻量单文件 Direct2D 工作台（`apps/windows-host`），共享统一 **Alabaster Studio** 体验与核心协议栈。 |
+| **多设备独立虚拟扩展屏** | 支持 **2 台及以上平板 / 手机同时接入**：macOS 自动创建独立 `CGVirtualDisplay`，Windows 结合 **Parsec VDD** 自动创建独立虚拟扩展屏（不占用电脑已有物理副屏），在主屏四周无重叠排布。 |
+| **最高 120 Hz 硬件编解码** | 基于 `VideoToolbox` / `Media Foundation` 硬编与 `AVCodec` / `MediaCodec` 硬解 **HEVC / H.264**，自动匹配设备原始分辨率与刷新率（`60 / 90 / 120 Hz`）。 |
+| **四模式反向触控输入** | 直接在平板 / 手机屏幕上操作电脑：支持 **兼容手势映射**、**仅单点触控**、**虚拟妙控板 / 触控板**、**原生屏幕触控**，并适配桌面端四向拓扑映射。 |
+| **平板 & 手机全端适配** | 手机端在连接前自动保持**竖屏**浏览，进入副屏画面后自动切换为**横屏自适应**并兼容挖孔屏安全区；支持设备授权控制、自定义备注名、方位记忆与系统托盘/菜单栏控制。 |
 
 ---
 
@@ -56,10 +56,11 @@ DeskMate 将与操作系统无关的协议状态机、调度器和恢复逻辑�
 
 ```text
 ┌────────────────────────────────────────────────────────────────────────────┐
-│                          macOS Host (apps/macos-host)                      │
-│  SwiftUI 工作台  ·  CGVirtualDisplay  ·  ScreenCaptureKit + VideoToolbox    │
-│  InputInjector（4 模式 CGEvent / Virtual HID） ·  libusb 多链路 AOA 调度中心  │
-└───────────────────────────────────────┬────────────────────────────────────┘
+│    macOS Host (apps/macos-host)    │   Windows Host (apps/windows-host)    │
+│  SwiftUI · CGVirtualDisplay        │ Direct2D UI · Parsec VDD / MttVDD     │
+│  ScreenCaptureKit + VideoToolbox   │ DXGI Duplication + Media Foundation   │
+│  CGEvent / Virtual HID             │ WinUSB AOA + SendInput / TouchInject  │
+└────────────────────────────────────┴───────────────────────────────────────┘
                                         │  共享 C++20 核心 (core/)
                                         │  32B 协议头 · HostSession · 发送调度器
                                         │  IDR 恢复门控 · 跨端校时
@@ -79,12 +80,12 @@ DeskMate 将与操作系统无关的协议状态机、调度器和恢复逻辑�
 
 ## 快速上手（使用指南）
 
-> **💡 觉得手动安装太复杂？直接交给 AI Agent！**
-> 只需要把本仓库地址（`https://github.com/SupremacySakura/desk-mate`）直接丢给你常用的 AI 编程助手（如 **Antigravity**、**Claude Code**、**Cursor**、**Codex** 等），让它帮你自动拉取仓库、安装依赖、编译 `DeskMate.app` 并引导完成端侧部署即可！
+> **💡 觉得手动编译太复杂？**
+> 推荐直接下载下方对应平台的预编译安装包；若需从源码定制，也可以把本仓库地址（`https://github.com/SupremacySakura/desk-mate`）交给你的 AI 编程助手（如 **Antigravity**、**Claude Code**、**Cursor**、**Codex**）协助拉取构建。
 
 ### 方式一：直接下载预编译安装包（推荐）
 
-前往 [**GitHub Releases**](https://github.com/SupremacySakura/desk-mate/releases/latest) 下载对应安装包：
+前往 [**GitHub Releases**](https://github.com/SupremacySakura/desk-mate/releases/latest) 下载对应平台安装包：
 
 1. **macOS 端（`DeskMate-v*-macos-arm64.dmg`）**
    - 双击打开 `.dmg`，将 **DeskMate.app** 拖入 **Applications（应用程序）**（已内置 `libusb`，**无需安装 Xcode 或 Homebrew**）。
@@ -92,40 +93,89 @@ DeskMate 将与操作系统无关的协议状态机、调度器和恢复逻辑�
      ```bash
      xattr -dr com.apple.quarantine /Applications/DeskMate.app
      ```
-2. **Android 端（`DeskMate-v*-android.apk`）** *（下载即装）*
+2. **Windows 端（`DeskMate-v*-windows-x64.zip`）**
+   - 解压后直接双击运行静态链接的单文件 **`DeskMateHost.exe`**（无需安装 VC++ 运行库或额外 DLL）。
+   - ⚠️ **Windows 首次使用必看**：必须先按下方 **[Windows 端首次配置指南（Zadig + Parsec VDD）](#windows-端首次配置指南必读)** 完成 **Zadig 安装 WinUSB 驱动** 与 **Parsec VDD 虚拟屏驱动安装**，否则无法识别 USB AOA 通道或扩展出独立副屏。
+3. **Android 端（`DeskMate-v*-android.apk`）** *（下载即装）*
    - 直接下载 `.apk` 到 Android 8.0+ 平板或手机安装即可使用（内置 `arm64-v8a` 真机与 `x86_64` 架构，无需配置 Android Studio 或开启 USB 调试）。
-3. **鸿蒙端（`DeskMate-v*-harmonyos-unsigned.hap`）**
+4. **鸿蒙端（`DeskMate-v*-harmonyos-unsigned.hap`）**
    - HarmonyOS NEXT 系统**不支持直接安装未签名的 `.hap`**；提供未签名包是为了省去安装 DevEco Studio 与编译 C++ 原生代码的步骤。
    - 下载后请使用你自己的华为调试证书（绑定设备 UDID），通过 `hap-sign-tool` 或常用鸿蒙重签工具重签后 `hdc install` 安装，或直接按下方「方式二」在 DevEco Studio 中一键运行安装。
+
+---
+
+## Windows 端首次配置指南（必读）
+
+Windows 系统与 macOS 的底层机制不同，首次使用 `DeskMateHost.exe` 前请务必完成以下 **两步驱动安装**（只需配置一次）：
+
+### 步骤 1：使用 Zadig 安装 USB AOA（WinUSB）驱动
+
+Windows 默认不会为手机切换至 Android Open Accessory（AOA）配件模式后的接口绑定 `WinUSB` 驱动，导致 `libusb` 无法读取 USB Bulk 通道（常见症状：手机端点击「允许访问 USB 配件」后，Windows 端仍一直停在「等待 USB 接入」或卡在协商）。
+
+1. 前往 [**Zadig 官网**](https://zadig.akeo.ie/) 下载 Zadig，并**以管理员身份运行**。
+2. 用 USB-C 数据线连接手机/平板，打开 Windows 版 `DeskMateHost.exe` 与手机端 `DeskMate`，触发一次 AOA 切换（手机弹出配件权限时点**允许**）。
+3. 在 Zadig 顶部菜单勾选 **`Options` → `List All Devices`**。
+4. 在设备下拉列表中找到并选中手机切换后的 **USB AOA / Android Accessory 接口**（USB ID 为 **`18D1:2D00`** 或 **`18D1:2D01`**，通常为 **`Interface 0`**）。
+   > ⚠️ **注意**：切勿误选 `12D1:5000`（HDC）或 MTP 接口，请确认左下角 USB ID 显示为 `18D1` 开头后再替换驱动。
+5. 将目标驱动选框保持为 **`WinUSB`**，点击 **`Install Driver`**（或 **`Replace Driver`**）等待安装完成。
+6. **补充提示**：
+   - （可选替代）如果你不想逐台设备绑定 WinUSB，也可以安装 [**UsbDk**](https://github.com/daynix/UsbDk/releases) 过滤驱动。
+   - 使用 DeskMate 期间，请退出电脑后台可能抢占手机 USB 接口的 **`hdc.exe`**、**`adb.exe`** 或 **华为手机助手** 进程。
+7. 安装完毕后打开 DeskMate **「设置 → 系统环境与驱动」**，确认 **USB / WinUSB 驱动**状态显示为绿色就绪。
+
+### 步骤 2：安装 Parsec VDD 创建独立虚拟扩展屏
+
+Windows 没有像 macOS `CGVirtualDisplay` 那样的系统级用户态虚拟显示器接口；若系统缺少虚拟显示器驱动，DeskMate 无法“凭空变出”新屏幕（在双屏物理显示器电脑上只能复用或镜像已有屏幕）。
+
+1. 前往 [**Parsec VDD Releases**](https://github.com/nomi-san/parsec-vdd/releases) 下载并安装最新版 **Parsec Virtual Display Driver**（具备微软 WHQL 正式签名，**无需开启 Windows 测试模式**；同时也兼容 **MttVDD / Virtual Display Driver**）。
+2. 安装完成后，**不需要手动打开或常驻 `ParsecVDisplay` 界面程序**（请关闭手动打开的 ParsecVDisplay 托盘，避免与 DeskMate 争抢虚拟屏索引）。
+3. **全自动生命周期管理**：
+   - 当手机/平板接入并完成握手后，`DeskMateHost.exe` 会直接通过驱动 IOCTL 通知 Parsec VDD **自动创建**一块独立虚拟扩展屏，并匹配手机/平板分辨率与刷新率；
+   - 自动将虚拟屏错开排布在你已有物理显示器的指定方位（**绝不抢占你电脑原有的真实显示器**）；
+   - 当设备断开或退出 DeskMate 时，自动移除该虚拟显示器并保持桌面干净。
+4. 打开 DeskMate **「设置 → 系统环境与驱动」**，确认 **「虚拟显示器驱动」** 一栏显示为 **「Parsec VDD 已就绪」**（绿色）。
+
+---
 
 ### 方式二：从源码编译安装
 
 #### 环境要求
 
 - **Mac 端**：macOS 15.0+、Xcode 命令行工具（`xcode-select --install`）、Homebrew 安装 [`libusb`](https://formulae.brew.sh/formula/libusb)
+- **Windows 端**：Windows 10/11 (x64)、Visual Studio 2022（Desktop C++ & Windows SDK 10.0.22621+）+ CMake 3.20+ + `vcpkg install libusb:x64-windows`（或无 VS 环境直接使用 `apps/windows-host/build-portable.ps1` + `llvm-mingw` + `libusb-1.0.30`）
 - **Android 设备端**：Android SDK 35 与 NDK 27+（离线脚本不依赖 Gradle / Maven 网络），支持数据传输的 USB-C 数据线
-- **鸿蒙设备端**：HarmonyOS NEXT（`compatibleSdkVersion 6.1.1(24)` / `targetSdkVersion 26.0.0`）、**DevEco Studio**（用于签名安装客户端 `.hap`）、支持数据传输的 USB-C 数据线（或供电充足的 USB Hub）
+- **鸿蒙设备端**：HarmonyOS NEXT（`compatibleSdkVersion 6.1.1(24)` / `targetSdkVersion 26.0.0`）、**DevEco Studio**（用于签名安装客户端 `.hap`）、支持数据传输的 USB-C 数据线
 
-#### 第一步：克隆仓库并构建 macOS Host 客户端
+#### 第一步：克隆仓库并构建桌面主控端
 
-```bash
-git clone https://github.com/SupremacySakura/desk-mate.git
-cd desk-mate
+- **macOS Host（`apps/macos-host`）**：
+  ```bash
+  git clone https://github.com/SupremacySakura/desk-mate.git
+  cd desk-mate
 
-# 安装 libusb 依赖
-brew install libusb
+  brew install libusb
+  cd apps/macos-host
+  make app        # 或 `make dmg` 打出内置 libusb 的离线 .dmg
+  open build/DeskMate.app
+  ```
+  > 若在 Intel Mac 等环境将 `libusb` 安装在其他路径（如 `/usr/local`），可传 `LIBUSB_PREFIX=/usr/local make app`。
 
-# 编译生成 DeskMate.app（也可执行 `make dmg` 打出内置 libusb 的离线 .dmg）
-cd apps/macos-host
-make app
+- **Windows Host（`apps/windows-host`）**：
+  ```powershell
+  # 方式 1：Visual Studio 2022 + CMake + vcpkg
+  cmake -S . -B build -G "Visual Studio 17 2022" -A x64 `
+    -DCMAKE_TOOLCHAIN_FILE=C:\vcpkg\scripts\buildsystems\vcpkg.cmake `
+    -DDESKMATE_BUILD_WINDOWS_HOST=ON
+  cmake --build build --config Release
 
-# 启动 macOS 端
-open build/DeskMate.app
-```
+  # 方式 2：无 VS/CMake，用便携 llvm-mingw + libusb 源码直接产出单文件 exe
+  powershell -ExecutionPolicy Bypass -File apps/windows-host/build-portable.ps1 `
+    -ToolchainDir C:\dm\llvm-mingw-20261117-ucrt-x86_64 `
+    -LibusbSource C:\dm\libusb-1.0.30 `
+    -OutputDir    C:\dm\build
+  ```
 
-> **提示**：如果你在 Intel Mac 等环境中将 `libusb` 安装在其他路径（如 `/usr/local`），可通过 `LIBUSB_PREFIX=/usr/local make app` 指定路径。
-
-#### 第二步：构建并安装客户端
+#### 第二步：构建并安装移动客户端
 
 - **Android 客户端（`apps/android-client`）**：
   ```bash
@@ -135,45 +185,43 @@ open build/DeskMate.app
   adb install -r apps/android-client/app/build/outputs/apk/debug/app-debug.apk
   ```
 - **HarmonyOS NEXT 客户端（`apps/harmonyos-client`）**：
-  1. 使用 **DevEco Studio** 打开项目目录下的 [`apps/harmonyos-client`](./apps/harmonyos-client)。
+  1. 使用 **DevEco Studio** 打开 [`apps/harmonyos-client`](./apps/harmonyos-client)。
   2. 用 USB 数据线连接你的鸿蒙平板或手机（确保设备已开启开发者模式 / USB 调试）。
-  3. 在 DevEco Studio 中为当前设备配置个人调试签名（**File → Project Structure → Signing Configs**）。
-     > **注意**：如果你计划 Fork 本项目或提交 PR，请勿将个人的 `signingConfigs` 提交进 `apps/harmonyos-client/build-profile.json5`。
+  3. 在 DevEco Studio 中配置个人调试签名（**File → Project Structure → Signing Configs**）。
+     > **注意**：请勿将个人的 `signingConfigs` 提交进 `apps/harmonyos-client/build-profile.json5`。
   4. 点击 **Run (`entry`)**，将 DeskMate 安装到你想作为副屏使用的每台鸿蒙设备上。
 
-#### 第三步：授予 macOS 系统权限
+#### 第三步：完成系统权限与驱动准备
 
-首次打开 `DeskMate.app` 时，请按界面引导完成两项权限授权：
-
-- **屏幕录制权限** *（必需）*：用于允许 `ScreenCaptureKit` 采集虚拟扩展屏幕画面。前往 **系统设置 → 隐私与安全性 → 屏幕录制与系统音频录制** 勾选 `DeskMate`，返回后重启应用或点击重试即可。
-- **辅助功能权限** *（开启反向触控时需要）*：用于将设备上的点击、拖动、滚动和多指手势注入回 Mac。点击主窗口或菜单栏中的 **「一键获取」** 即可自动弹出系统注册提示并直达设置页（如重新编译覆盖了 `.app` 导致旧授权失效，可点击 **「重置旧授权」**）。
+- **macOS**：按界面引导授予 **屏幕录制权限**（用于 `ScreenCaptureKit`）与 **辅助功能权限**（用于反向触控；点主窗口或菜单栏 **「一键获取」**，覆写重编后如失效点 **「重置旧授权」**）。
+- **Windows**：完成上方 **[Windows 端首次配置指南](#windows-端首次配置指南必读)** 中的 **Zadig WinUSB 绑定** 与 **Parsec VDD 安装**，并在 DeskMate **「设置 → 系统环境与驱动」** 确认全绿就绪。
 
 #### 第四步：连接一台或多台设备作为副屏
 
-1. 在鸿蒙平板或手机上打开 **DeskMate** 应用。
-2. 用 USB 数据线将一台或多台设备接入 Mac。
+1. 在平板或手机上打开 **DeskMate** 应用。
+2. 用 USB 数据线将一台或多台设备接入电脑。
 3. 当设备屏幕弹出 **「是否允许访问 USB 配件」** 时点击 **允许**。
-4. macOS 端会自动为每台设备创建匹配其分辨率与刷新率的 **独立 HiDPI 虚拟显示器**，并按空闲方向自动排列（右 / 左 / 下 / 上，同侧多设备会自动错开不重叠）。
-5. 你可以把任意窗口拖到副屏上使用；点击左侧 **拓扑布局图** 或设备卡片上的 **「右侧 / 左侧 / 上方 / 下方」** 按钮可随时调整每块屏幕的位置。
+4. 桌面端会自动为每台设备创建匹配其分辨率与刷新率的 **独立虚拟显示器**，并按空闲方向无重叠排布（右 / 左 / 下 / 上）。
+5. 将窗口拖入副屏即可开始使用；点击左侧 **拓扑布局图** 或设备卡片上的 **「右侧 / 左侧 / 上方 / 下方」** 按钮可随时调整屏幕位置。
 
 ---
 
 ## 反向触控输入模式说明
 
-可在 Mac 端 **「设置 → 触控输入」** 或 **菜单栏浮窗** 中随时切换：
+可在桌面端 **「设置 → 触控输入」** 或 **菜单栏/托盘** 中随时切换：
 
 | 模式 | 说明 |
 | --- | --- |
-| **兼容手势映射** *（默认）* | 单指点击 / 拖动 / 移动指针；双指滚动 / 右键轻点 / 捏合缩放（`⌘+` / `⌘-`）；三指或四指滑动切换桌面空间、打开调度中心与 App Exposé（`⌃←/→/↑/↓`）。 |
+| **兼容手势映射** *（默认）* | 单指点击 / 拖动 / 移动指针；双指滚动 / 右键轻点 / 捏合缩放；macOS 支持三指/四指调度中心与空间切换（`⌃←/→/↑/↓`），Windows 通过 `SendInput` 映射快捷键与滚轮。 |
 | **仅单点触控** | 只保留单指点击与长按拖动，屏蔽多指手势，适合手写或单一控件操作，避免误触系统快捷键。 |
-| **虚拟妙控板（实验性）** | 将设备屏幕作为相对移动触控板使用，支持长按后拖动锁存；具备虚拟 HID 签名权限时直通 `IOHIDUserDevice`，否则自动使用相对手势回退实现。 |
-| **原生屏幕触控（实验性）** | 当应用具备系统级 Virtual HID 权限时直接透传最多 10 个独立触点，否则自动回退至兼容手势映射。 |
+| **虚拟触控板（实验性）** | 将设备屏幕作为相对移动触控板使用，支持长按后拖动锁存；macOS 在具备 Virtual HID 权限时直通 `IOHIDUserDevice`。 |
+| **原生屏幕触控（实验性）** | 直接透传多点触控坐标：macOS 通过 `IOHIDUserDevice`（未签名时自动回退兼容手势），Windows 通过 Win32 `InitializeTouchInjection` 原生注入。 |
 
 ---
 
 ## 命令行参数与自动化测试
 
-### Host 命令行参数（`apps/macos-host/build/DeskMate.app/Contents/MacOS/DeskMate`）
+### macOS Host CLI（`apps/macos-host/build/DeskMate.app/Contents/MacOS/DeskMate`）
 
 ```bash
 ./build/DeskMate.app/Contents/MacOS/DeskMate --list-displays
@@ -192,57 +240,26 @@ open build/DeskMate.app
 | `--list-displays` | — | 打印当前在线显示器列表后退出 |
 | `--dry-run` | 关 | 仅本地采集编码测试，不连接 USB |
 
+### Windows Host CLI（`DeskMateHost.exe`）
+
+```powershell
+.\DeskMateHost.exe --list-monitors
+.\DeskMateHost.exe --codec hevc --fps 60
+.\DeskMateHost.exe --headless
+```
+
 ### 运行自动化测试
 
 ```bash
 # 1. 运行共享 C++20 核心测试（协议编解码、Session 状态机、调度器）
 make test
 
-# 2. 编译 macOS Host 并运行打包契约与多设备 USB 桥接单元测试
+# 2. 运行跨平台通用层、Windows 契约测试与 Android fd I/O 测试
+bash apps/common/tests/run_platform_tests.sh
+
+# 3. 编译 macOS Host 并运行打包契约与多设备 USB 桥接单元测试
 make -C apps/macos-host test
-
-# 3. Android 配件 fd 契约测试（宿主机工具链，无需 NDK / USB 设备）
-bash apps/common/tests/run_android_io_test.sh
 ```
-
----
-
-## 需要 Windows 版？交给 AI Agent 参照本项目开发！
-
-目前 DeskMate 仓库已内置提供 **macOS 主控端（[`apps/macos-host`](./apps/macos-host)）**、**HarmonyOS NEXT 副屏端（[`apps/harmonyos-client`](./apps/harmonyos-client)）** 与 **Android 副屏端（[`apps/android-client`](./apps/android-client)）**。
-
-如果你需要在 **Windows 电脑** 上做主控端，完全不需要从零摸索 —— **你可以直接让 AI 编程助手（如 Antigravity、Claude Code、Cursor、Codex 等）以本仓库为蓝本进行跨平台移植开发！**
-
-本项目的代码结构天生非常适合 AI Agent 迁移扩展：
-1. **核心协议层 [`core/`](./core) 100% 跨平台可复用**：采用纯标准 C++20 编写，零第三方依赖，包含 32 字节显式小端线缆格式、握手状态机、拥塞丢帧调度器、IDR 恢复门控、时钟同步及 100+ 项单元测试，可直接通过 CMake 在 **Windows（MSVC/Clang）** 与 **Android（NDK）** 编译复用。
-2. **平台边界极度清晰（`ByteIo` / `HostBoundary` / `DeviceBoundary`）**：所有 OS 相关逻辑（USB AOA、虚拟显示器、屏幕采集、硬件编解码、触控注入）都清晰隔离在 [`apps/macos-host`](./apps/macos-host)、[`apps/harmonyos-client`](./apps/harmonyos-client) 和 [`apps/android-client`](./apps/android-client) 中，AI 可以直接对照各端实现一一映射。
-
-### Windows 移植对照表（供开发者与 AI Agent 参考）
-
-| 模块层 | 本仓库现有实现 | Windows Host 对应方案 | Android 端（已内置） |
-| --- | --- | --- | --- |
-| **协议与会话核心** | [`core/`](./core)（C++20） | CMake / MSVC 直接编译接入 [`core/`](./core) | [`apps/android-client`](./apps/android-client)（NDK C++20） |
-| **USB AOA 传输** | [`Bridge.cpp`](./apps/macos-host/Sources/Bridge.cpp)（`libusb`）· [`fd_byte_io.cpp`](./apps/harmonyos-client/entry/src/main/cpp/fd_byte_io.cpp) | `libusb` / WinUSB 多设备 AOA 切换与并发会话（`PID 0x2D00–0x2D05`） | [`accessory_io.cpp`](./apps/android-client/app/src/main/cpp/accessory_io.cpp)（`POLLIN` + 无锁统计） |
-| **虚拟扩展显示器** | [`DMVirtualDisplay.m`](./apps/macos-host/Sources/DMVirtualDisplay.m) | Windows IddCx 虚拟显示器驱动（如 Virtual-Display-Driver 思路） | 无需虚拟屏（Android 端全屏渲染到 `SurfaceView`） |
-| **画面采集与硬件编解码** | `ScreenCaptureKit` + `VideoToolbox` · [`video_decoder.cpp`](./apps/harmonyos-client/entry/src/main/cpp/video_decoder.cpp)（`AVCodec`） | `Windows.Graphics.Capture` / DXGI 抓屏 + Media Foundation / NVENC 硬件编码 | [`video_decoder.cpp`](./apps/android-client/app/src/main/cpp/video_decoder.cpp)（双线程 `AMediaCodec`） |
-| **反向触控注入与采集** | [`InputInjector.swift`](./apps/macos-host/Sources/InputInjector.swift) · [`napi_init.cpp`](./apps/harmonyos-client/entry/src/main/cpp/napi_init.cpp) | Win32 `SendInput` / `InitializeTouchInjection` | [`MainActivity.java`](./apps/android-client/app/src/main/java/dev/deskmate/client/MainActivity.java)（`MotionEvent` → JNI） |
-
-<details>
-<summary><b>📋 可直接复制给 AI Agent 的参考开发提示词（Prompt）</b></summary>
-
-```text
-请先通读当前 DeskMate 仓库，重点关注 `core/`、`docs/protocol.md`、`apps/macos-host/Sources/Bridge.cpp` 以及 `apps/harmonyos-client/entry/src/main/cpp/`。
-
-目标：参照现有代码架构，为本项目开发一个兼容的 Windows Host，要求能够通过 USB AOA 与现有 HarmonyOS 和 Android 客户端原生互通。
-
-要求：
-1. 直接复用 `core/`（通过 CMake 引入），不要修改既有的 32 字节协议头、控制 opcode 与 InputEvent 载荷格式。
-2. 按照 `core/` 中的 `ByteIo` 与 `HostBoundary` 接口实现 Windows 平台适配层（libusb/WinUSB 多设备 AOA + WGC/DXGI 采集 + Media Foundation 硬件编码 + IddCx 虚拟屏 + SendInput）。
-3. 保留多设备并发连接、12 KiB 视频分片上限与全双工非阻塞 USB I/O 设计。
-4. 编写构建脚本与协议兼容测试并确保编译通过。
-```
-
-</details>
 
 ---
 
@@ -254,6 +271,7 @@ desk-mate/
 ├── apps/
 │   ├── common/                # 跨端共用适配层（AOA ID、Session 配置、12 KiB 策略、Annex-B）
 │   ├── macos-host/            # macOS 主控端（SwiftUI 界面、ScreenCaptureKit、VideoToolbox、CGVirtualDisplay、libusb）
+│   ├── windows-host/          # Windows 主控端（Direct2D 工作台、Parsec VDD 虚拟屏、DXGI、Media Foundation、WinUSB、SendInput）
 │   ├── harmonyos-client/      # HarmonyOS NEXT 客户端（ArkTS 自适应界面 + C++ N-API AOA 通信与 AVCodec 硬解）
 │   └── android-client/        # Android 客户端（UsbManager 配件 fd、MediaCodec Surface、MotionEvent 触控）
 ├── docs/
@@ -264,6 +282,7 @@ desk-mate/
 │   └── adr/                   # 架构决策记录（ADR）
 ├── testdata/golden/           # 独立生成的二进制协议 Golden 测试向量
 ├── GLOSSARY.md                # 项目领域术语表
+├── CMakeLists.txt             # 跨平台 CMake 构建入口（Windows Host / Common Tests）
 └── Makefile                   # C++20 核心库编译与测试入口
 ```
 
@@ -271,14 +290,18 @@ desk-mate/
 
 ## 常见问题排查
 
+- **Windows：手机点允许后仍显示等待接入，或一直卡在协商 / 没出画面**
+  请按 **[步骤 1：Zadig 驱动安装](#步骤-1使用-zadig-安装-usb-aoawinusb-驱动)** 为设备的 `18D1:2D00` / `18D1:2D01`（Interface 0）绑定 **WinUSB** 驱动（或安装 **UsbDk**），并彻底退出后台占用 USB 的 `hdc`、`adb` 或手机助手程序。
+- **Windows：连接后手机只显示电脑已有屏幕或全黑，没有扩展出新屏幕**
+  请确认已安装 **[Parsec VDD](#步骤-2安装-parsec-vdd-创建独立虚拟扩展屏)** 并在 DeskMate **「设置 → 系统环境与驱动」** 显示为绿色；若手动开启了 `ParsecVDisplay` 窗口，请关闭它后重新插拔设备让 DeskMate 自动创建虚拟屏。
 - **连接后一直停在「等待设备确认」（`awaiting_client_hello`）**
-  请确认鸿蒙平板/手机上已打开 **DeskMate** 并停留在前台，且在系统弹出的「允许访问 USB 配件」提示框中点击了 **允许**。
-- **已显示「正在发送画面」，但设备侧无画面或黑屏**
+  请确认手机/平板上已打开 **DeskMate** 并停留在前台，且在系统弹出的「允许访问 USB 配件」提示框中点击了 **允许**。
+- **macOS：已显示「正在发送画面」，但设备侧无画面或黑屏**
   检查 Mac **系统设置 → 隐私与安全性 → 屏幕录制与系统音频录制** 中是否勾选了 `DeskMate`；若刚重新授权或重编应用，请重启 DeskMate 再试。
-- **诊断中显示收到触控事件，但 Mac 光标无响应**
+- **macOS：诊断中显示收到触控事件，但 Mac 光标无响应**
   检查是否开启了 **「平板触控回传」** 开关，并点击 **「一键获取」**（若重新编译覆盖过 `.app`，建议点 **「重置旧授权」** 后重新勾选辅助功能）。
 - **强制退出 Host 后设备停留在 USB 配件模式**
-  拔下 USB 数据线重新插一次即可恢复为常规 HDC / 传输模式。
+  拔下 USB 数据线重新插一次即可恢复为常规 HDC / MTP 传输模式。
 
 ---
 
@@ -288,11 +311,12 @@ desk-mate/
 - 协议与线缆格式规范：[docs/protocol.md](./docs/protocol.md)
 - 自动化测试与真机排障总结：[docs/verification-notes.md](./docs/verification-notes.md)
 - macOS Host 开发与调试说明：[apps/macos-host/README.md](./apps/macos-host/README.md)
+- Windows Host 驱动、构建与设计说明：[apps/windows-host/README.md](./apps/windows-host/README.md)
 - HarmonyOS 客户端说明：[apps/harmonyos-client/README.md](./apps/harmonyos-client/README.md)
 - Android 客户端说明：[apps/android-client/README.md](./apps/android-client/README.md)
 - 领域术语表：[GLOSSARY.md](./GLOSSARY.md)
 
-欢迎提交 Issue 与 Pull Request！如果你基于本仓库的 [`core/`](./core) 完成了 **Windows Host** 或 **Android 客户端** 的适配，也欢迎分享链接或提交 PR 一起完善多平台生态。
+欢迎提交 Issue 与 Pull Request，一起完善 **macOS / Windows / HarmonyOS / Android** 全平台有线副屏体验！
 
 ---
 

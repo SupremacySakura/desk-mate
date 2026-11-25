@@ -107,12 +107,10 @@ bool select_bulk_endpoints(std::span<const EndpointDescriptorView> endpoints,
 
 std::vector<std::uint8_t> encode_aoa_string(std::string_view text) {
   std::vector<std::uint8_t> bytes;
-  bytes.reserve((text.size() + 1) * 2);
+  bytes.reserve(text.size() + 1);
   for (const char ch : text) {
     bytes.push_back(static_cast<std::uint8_t>(ch));
-    bytes.push_back(0);
   }
-  bytes.push_back(0);
   bytes.push_back(0);
   return bytes;
 }
