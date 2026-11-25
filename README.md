@@ -80,12 +80,27 @@ DeskMate splits transport-agnostic protocol state from platform-native I/O, enco
 
 > **💡 Zero-effort setup with an AI Agent**: Think the manual build & setup steps look too complicated? Just copy this repository URL (`https://github.com/SupremacySakura/desk-mate`) and hand it to an AI coding agent (such as **Antigravity**, **Claude Code**, **Cursor**, or **Codex**) — ask it to clone the repo, install dependencies, build `DeskMate.app`, and walk you through installing & trusting it on your devices!
 
-### Prerequisites
+### Option A: Download Prebuilt Releases (Fastest)
+
+Download the latest artifacts from [**GitHub Releases**](https://github.com/SupremacySakura/desk-mate/releases/latest):
+
+1. **macOS Host (`DeskMate-v*-macos-arm64.dmg`)**
+   - Open the `.dmg` and drag **DeskMate.app** into **Applications** (`libusb` is bundled inside the app — no Homebrew or Xcode required).
+   - Because the build is ad-hoc signed without Apple notarization, if macOS Gatekeeper blocks the first launch, clear the quarantine attribute once:
+     ```bash
+     xattr -dr com.apple.quarantine /Applications/DeskMate.app
+     ```
+2. **HarmonyOS Client (`DeskMate-v*-harmonyos-unsigned.hap`)**
+   - HarmonyOS NEXT does **not** allow installing unsigned `.hap` packages directly. Download the `-unsigned.hap` to skip installing DevEco Studio and compiling C++ code, then **re-sign it with your own Huawei debug certificate** bound to your device UDID (using `hap-sign-tool` or community HarmonyOS re-signing tools) and install via `hdc install`, or use Option B below in DevEco Studio.
+
+### Option B: Build from Source
+
+#### Prerequisites
 
 - **Mac Host**: macOS 15.0+, Xcode Command Line Tools (`xcode-select --install`), Homebrew [`libusb`](https://formulae.brew.sh/formula/libusb)
 - **HarmonyOS Device**: HarmonyOS NEXT (`compatibleSdkVersion 6.1.1(24)` / `targetSdkVersion 26.0.0`), **DevEco Studio** (for building & signing the `.hap`), USB-C data cable
 
-### 1. Clone & Build the macOS Host
+#### 1. Clone & Build the macOS Host
 
 ```bash
 git clone https://github.com/SupremacySakura/desk-mate.git
@@ -94,7 +109,7 @@ cd desk-mate
 # Install libusb if you haven't already
 brew install libusb
 
-# Build DeskMate.app
+# Build DeskMate.app (or `make dmg` to create a self-contained .dmg)
 cd apps/host
 make app
 
@@ -104,7 +119,7 @@ open build/DeskMate.app
 
 > **Note**: If your `libusb` is installed outside `/opt/homebrew` (e.g., `/usr/local` on Intel Macs), pass `LIBUSB_PREFIX=/usr/local make app`.
 
-### 2. Build & Install the HarmonyOS Client
+#### 2. Build & Install the HarmonyOS Client
 
 1. Open `./apps/device` in **DevEco Studio**.
 2. Connect your HarmonyOS tablet or phone via USB with Developer Mode / USB Debugging enabled.
@@ -112,14 +127,14 @@ open build/DeskMate.app
    > **Security tip**: Never commit your personal `signingConfigs` inside `apps/device/build-profile.json5` if you fork or open a PR.
 4. Click **Run (`entry`)** to install DeskMate onto each HarmonyOS device you want to use as a secondary monitor.
 
-### 3. Grant macOS Permissions
+#### 3. Grant macOS Permissions
 
 On first launch, DeskMate guides you through two macOS permissions:
 
 - **Screen Recording** *(Required)* — Needed by `ScreenCaptureKit` to capture your virtual or extended displays. Grant in **System Settings → Privacy & Security → Screen & System Audio Recording**, then reopen or click Retry.
 - **Accessibility** *(Required for reverse touch)* — Needed to inject clicks, drags, scrolls, and multi-finger gestures back into macOS. Click **一键获取 (One-Click Grant)** in DeskMate Overview/Settings to register and open Accessibility settings (if you rebuilt the `.app` and macOS caches an old signature, click **重置旧授权 (Reset Stale Permission)**).
 
-### 4. Connect One or Multiple Devices
+#### 4. Connect One or Multiple Devices
 
 1. Open **DeskMate** on your HarmonyOS tablet(s) / phone(s).
 2. Connect them to your Mac with USB-C cables (directly or through a powered USB hub).

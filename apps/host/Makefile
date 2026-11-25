@@ -6,6 +6,9 @@ BUILD_DIR := $(ROOT)/build
 MODULE_CACHE := $(BUILD_DIR)/module-cache
 APP := $(BUILD_DIR)/DeskMate.app
 BIN := $(APP)/Contents/MacOS/DeskMate
+VERSION ?= 1.0.0
+ARCH := $(shell uname -m)
+DMG := $(BUILD_DIR)/DeskMate-v$(VERSION)-macos-$(ARCH).dmg
 
 CORE_SOURCES := $(wildcard $(REPO)/core/src/*.cpp)
 CORE_OBJECTS := $(patsubst $(REPO)/core/src/%.cpp,$(BUILD_DIR)/core/%.o,$(CORE_SOURCES))
@@ -38,13 +41,14 @@ CORE_INCLUDES := -I$(REPO)/core/include -I$(ROOT)/include -I$(ROOT)/Sources/incl
 CORE_FLAGS := -std=c++20 -Wall -Wextra -Wpedantic -Wno-deprecated-enum-enum-conversion \
 	-O2 -mmacosx-version-min=15.0 -isysroot $(SDK) $(CORE_INCLUDES)
 
-.PHONY: all build app test clean list-displays help
+.PHONY: all build app dmg test clean list-displays help
 
 all: app
 
 help:
 	@printf '%s\n' \
 		'make app           Build build/DeskMate.app' \
+		'make dmg           Bundle libusb and package DeskMate.dmg' \
 		'make test          Build and run host contract checks' \
 		'make list-displays Print the online display inventory' \
 		'make device-foreground HDC=... Push and start the AOA foreground helper' \
@@ -120,6 +124,9 @@ build: $(CORE_OBJECTS) $(BRIDGE_OBJECT) $(OBJC_OBJECT) $(HID_OBJC_OBJECT) $(ROOT
 		$(HID_OBJC_OBJECT)
 
 app: build
+
+dmg: app
+	@bash "$(ROOT)/scripts/package-dmg.sh" "$(APP)" "$(DMG)" "$(LIBUSB_PREFIX)"
 
 $(USB_BYTE_IO_TEST): $(ROOT)/tests/usb_byte_io_test.cpp $(ROOT)/Sources/Bridge.cpp $(ROOT)/include/DMBridge.h $(CORE_OBJECTS) | $(BUILD_DIR)
 	@xcrun --sdk macosx clang++ $(CORE_FLAGS) "$<" $(CORE_OBJECTS) \

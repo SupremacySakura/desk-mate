@@ -1,0 +1,59 @@
+name: Release macOS DMG
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag to build and upload (e.g. v1.0.0)'
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  build-macos-dmg:
+    runs-on: macos-15
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install libusb
+        run: brew install libusb
+
+      - name: Run shared C++20 core tests
+        run: make test
+
+      - name: Run macOS host tests
+        run: make -C apps/host test
+
+      - name: Build self-contained macOS DMG
+        env:
+          INPUT_TAG: ${{ inputs.tag }}
+        run: |
+          TAG="${INPUT_TAG:-${GITHUB_REF_NAME}}"
+          VERSION="${TAG#v}"
+          echo "RELEASE_TAG=${TAG}" >> "$GITHUB_ENV"
+          echo "RELEASE_VERSION=${VERSION}" >> "$GITHUB_ENV"
+          make -C apps/host dmg VERSION="$VERSION"
+
+      - name: Generate SHA256 checksum
+        run: |
+          cd apps/host/build
+          DMG_FILE="DeskMate-v${RELEASE_VERSION}-macos-arm64.dmg"
+          shasum -a 256 "$DMG_FILE" > "${DMG_FILE}.sha256"
+
+      - name: Upload DMG to GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          DMG_PATH="apps/host/build/DeskMate-v${RELEASE_VERSION}-macos-arm64.dmg"
+          SHA_PATH="${DMG_PATH}.sha256"
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            gh release upload "$RELEASE_TAG" "$DMG_PATH" "$SHA_PATH" --clobber
+          else
+            gh release create "$RELEASE_TAG" "$DMG_PATH" "$SHA_PATH" --title "DeskMate ${RELEASE_TAG}" --generate-notes
+          fi

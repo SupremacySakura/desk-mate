@@ -81,12 +81,28 @@ DeskMate 将与操作系统无关的协议状态机、调度器和恢复逻辑�
 > **💡 觉得手动安装太复杂？直接交给 AI Agent！**
 > 只需要把本仓库地址（`https://github.com/SupremacySakura/desk-mate`）直接丢给你常用的 AI 编程助手（如 **Antigravity**、**Claude Code**、**Cursor**、**Codex** 等），让它帮你自动拉取仓库、安装依赖、编译 `DeskMate.app` 并引导完成端侧部署即可！
 
-### 环境要求
+### 方式一：直接下载预编译安装包（推荐）
+
+前往 [**GitHub Releases**](https://github.com/SupremacySakura/desk-mate/releases/latest) 下载对应安装包：
+
+1. **macOS 端（`DeskMate-v*-macos-arm64.dmg`）**
+   - 双击打开 `.dmg`，将 **DeskMate.app** 拖入 **Applications（应用程序）**（已内置 `libusb`，**无需安装 Xcode 或 Homebrew**）。
+   - 由于安装包使用本地临时签名（未经 Apple 公证），首次启动如遇「已损坏 / 无法验证开发者」提示，在终端运行一次下方命令解除隔离即可：
+     ```bash
+     xattr -dr com.apple.quarantine /Applications/DeskMate.app
+     ```
+2. **鸿蒙端（`DeskMate-v*-harmonyos-unsigned.hap`）**
+   - HarmonyOS NEXT 系统**不支持直接安装未签名的 `.hap`**；提供未签名包是为了省去安装 DevEco Studio 与编译 C++ 原生代码的步骤。
+   - 下载后请使用你自己的华为调试证书（绑定设备 UDID），通过 `hap-sign-tool` 或常用鸿蒙重签工具重签后 `hdc install` 安装，或直接按下方「方式二」在 DevEco Studio 中一键运行安装。
+
+### 方式二：从源码编译安装
+
+#### 环境要求
 
 - **Mac 端**：macOS 15.0+、Xcode 命令行工具（`xcode-select --install`）、Homebrew 安装 [`libusb`](https://formulae.brew.sh/formula/libusb)
 - **鸿蒙设备端**：HarmonyOS NEXT（`compatibleSdkVersion 6.1.1(24)` / `targetSdkVersion 26.0.0`）、**DevEco Studio**（用于签名安装客户端 `.hap`）、支持数据传输的 USB-C 数据线（或供电充足的 USB Hub）
 
-### 第一步：克隆仓库并构建 macOS Host 客户端
+#### 第一步：克隆仓库并构建 macOS Host 客户端
 
 ```bash
 git clone https://github.com/SupremacySakura/desk-mate.git
@@ -95,7 +111,7 @@ cd desk-mate
 # 安装 libusb 依赖
 brew install libusb
 
-# 编译生成 DeskMate.app
+# 编译生成 DeskMate.app（也可执行 `make dmg` 打出内置 libusb 的离线 .dmg）
 cd apps/host
 make app
 
@@ -105,7 +121,7 @@ open build/DeskMate.app
 
 > **提示**：如果你在 Intel Mac 等环境中将 `libusb` 安装在其他路径（如 `/usr/local`），可通过 `LIBUSB_PREFIX=/usr/local make app` 指定路径。
 
-### 第二步：构建并安装鸿蒙客户端
+#### 第二步：构建并安装鸿蒙客户端
 
 1. 使用 **DevEco Studio** 打开项目目录下的 [`apps/device`](./apps/device)。
 2. 用 USB 数据线连接你的鸿蒙平板或手机（确保设备已开启开发者模式 / USB 调试）。
@@ -113,14 +129,14 @@ open build/DeskMate.app
    > **注意**：如果你计划 Fork 本项目或提交 PR，请勿将个人的 `signingConfigs` 提交进 `apps/device/build-profile.json5`。
 4. 点击 **Run (`entry`)**，将 DeskMate 安装到你想作为副屏使用的每台鸿蒙设备上。
 
-### 第三步：授予 macOS 系统权限
+#### 第三步：授予 macOS 系统权限
 
 首次打开 `DeskMate.app` 时，请按界面引导完成两项权限授权：
 
 - **屏幕录制权限** *（必需）*：用于允许 `ScreenCaptureKit` 采集虚拟扩展屏幕画面。前往 **系统设置 → 隐私与安全性 → 屏幕录制与系统音频录制** 勾选 `DeskMate`，返回后重启应用或点击重试即可。
 - **辅助功能权限** *（开启反向触控时需要）*：用于将设备上的点击、拖动、滚动和多指手势注入回 Mac。点击主窗口或菜单栏中的 **「一键获取」** 即可自动弹出系统注册提示并直达设置页（如重新编译覆盖了 `.app` 导致旧授权失效，可点击 **「重置旧授权」**）。
 
-### 第四步：连接一台或多台设备作为副屏
+#### 第四步：连接一台或多台设备作为副屏
 
 1. 在鸿蒙平板或手机上打开 **DeskMate** 应用。
 2. 用 USB 数据线将一台或多台设备接入 Mac。
