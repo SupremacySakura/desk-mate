@@ -62,13 +62,13 @@ if not match:
 body = match.group(0).strip()
 repo = os.environ.get("GITHUB_REPOSITORY", "")
 readme_url = (
-    f"https://github.com/{repo}/blob/{tag}/README.zh-CN.md"
+    f"https://github.com/{repo}/blob/{tag}/README.md"
     if repo
-    else "README.zh-CN.md"
+    else "README.md"
 )
 body += (
     "\n\n---\n"
-    f"> 安装步骤、驱动配置与常见问题请查阅 [README.zh-CN.md]({readme_url})。\n"
+    f"> 安装步骤、驱动配置与常见问题请查阅 [README.md]({readme_url})。\n"
 )
 pathlib.Path(out_path).write_text(body, encoding="utf-8")
 PYEOF

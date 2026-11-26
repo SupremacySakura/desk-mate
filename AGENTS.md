@@ -4,7 +4,7 @@ DeskMate 是 macOS / Windows Host 与 HarmonyOS NEXT / Android Client 之间的�
 
 ## Key Documentation
 
-- 项目总览与使用指南：[README.md](./README.md) · [README.zh-CN.md](./README.zh-CN.md)
+- 项目总览与使用指南：[README.md](./README.md)（简体中文）· [README.en.md](./README.en.md)（English）
 - 工程架构与双端约束：[docs/architecture.md](./docs/architecture.md)
 - 线缆协议与 Session API 规范：[docs/protocol.md](./docs/protocol.md)
 - 测试与真机排障记录：[docs/verification-notes.md](./docs/verification-notes.md)
@@ -38,7 +38,7 @@ DeskMate 是 macOS / Windows Host 与 HarmonyOS NEXT / Android Client 之间的�
 
 - **以简体中文为主**：Release 标题、分类与条目统一采用简洁清晰的中文。
 - **仅写与上个版本的变更差异**：每个版本只记录相对上一版本的**新增功能**、**性能与体验优化**、**问题修复**与**破坏性变更/迁移说明**，写清改动内容与解决的问题。
-- **禁止重复安装说明**：严禁在每次 Release 描述中重复粘贴软件安装、WinUSB / Zadig 驱动、Parsec VDD 虚拟屏、macOS 签名/权限或通用排障教程；所有安装注意事项统一维护在 [README.zh-CN.md](./README.zh-CN.md) / [README.md](./README.md)，Release 正文末尾仅保留一行指引链接即可。
+- **禁止重复安装说明**：严禁在每次 Release 描述中重复粘贴软件安装、WinUSB / Zadig 驱动、Parsec VDD 虚拟屏、macOS 签名/权限或通用排障教程；所有安装注意事项统一维护在 [README.md](./README.md) / [README.en.md](./README.en.md)，Release 正文末尾仅保留一行指引链接即可。
 - **维护流程**：发布新版本前先更新 [CHANGELOG.md](./CHANGELOG.md)，GitHub Release 正文直接复用对应版本的 `CHANGELOG.md` 段落。
 
 ## Conventions
