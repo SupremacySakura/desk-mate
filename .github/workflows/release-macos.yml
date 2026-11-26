@@ -76,43 +76,8 @@ jobs:
       - name: Upload macOS assets to GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
+        # RELEASE_TAG / RELEASE_VERSION come from $GITHUB_ENV set by the build
+        # step, so they are inherited from the step environment (not the
+        # `env` expression context, which only sees workflow-level values).
         run: |
-          DMG_FILE="DeskMate-v${RELEASE_VERSION}-macos-arm64.dmg"
-          ZIP_FILE="DeskMate-v${RELEASE_VERSION}-macos-arm64.zip"
-          DMG_PATH="apps/macos-host/build/${DMG_FILE}"
-          ZIP_PATH="apps/macos-host/build/${ZIP_FILE}"
-          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
-            if gh release view "$RELEASE_TAG" --json assets --jq '.assets[].name' | grep -qx "$ZIP_FILE"; then
-              echo "Release $RELEASE_TAG already contains signed updater asset $ZIP_FILE; skipping CI upload to preserve manifest hashes."
-              exit 0
-            fi
-            gh release upload "$RELEASE_TAG" "$DMG_PATH" "${DMG_PATH}.sha256" "$ZIP_PATH" "${ZIP_PATH}.sha256" --clobber
-          else
-            NOTES_FILE="$RUNNER_TEMP/release-notes.md"
-            python3 - "$RELEASE_TAG" "$RELEASE_VERSION" "$NOTES_FILE" << 'PYEOF'
-            import pathlib, re, sys
-            tag, ver, out_path = sys.argv[1], sys.argv[2], sys.argv[3]
-            changelog = pathlib.Path("CHANGELOG.md")
-            if changelog.exists():
-                text = changelog.read_text(encoding="utf-8")
-                pattern = re.compile(
-                    rf"^## \[(?:{re.escape(tag)}|{re.escape(ver)})\]\b.*?(?=\n## \[|\Z)",
-                    re.M | re.S,
-                )
-                m = pattern.search(text)
-                if m:
-                    body = m.group(0).strip()
-                    repo = __import__("os").environ.get("GITHUB_REPOSITORY", "")
-                    readme_url = f"https://github.com/{repo}/blob/{tag}/README.zh-CN.md" if repo else "README.zh-CN.md"
-                    body += f"\n\n---\n> 安装步骤、驱动配置与常见问题请查阅 [README.zh-CN.md]({readme_url})。\n"
-                    pathlib.Path(out_path).write_text(body, encoding="utf-8")
-                    sys.exit(0)
-            sys.exit(1)
-            PYEOF
-            if [ -s "$NOTES_FILE" ]; then
-              gh release create "$RELEASE_TAG" "$DMG_PATH" "${DMG_PATH}.sha256" "$ZIP_PATH" "${ZIP_PATH}.sha256" --title "DeskMate ${RELEASE_TAG}" --notes-file "$NOTES_FILE"
-            else
-              gh release create "$RELEASE_TAG" "$DMG_PATH" "${DMG_PATH}.sha256" "$ZIP_PATH" "${ZIP_PATH}.sha256" --title "DeskMate ${RELEASE_TAG}" --generate-notes
-            fi
-          fi
-          fi
+          bash scripts/ci-release-macos-assets.sh
