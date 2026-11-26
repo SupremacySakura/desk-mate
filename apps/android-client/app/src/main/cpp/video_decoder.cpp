@@ -33,6 +33,7 @@ AMediaFormat* build_format(const DecoderConfig& config,
   if (low_latency_hints) {
     AMediaFormat_setInt32(format, "low-latency", 1);
     AMediaFormat_setInt32(format, "priority", 0);
+    AMediaFormat_setInt32(format, "operating-rate", config.frame_rate);
   }
   return format;
 }

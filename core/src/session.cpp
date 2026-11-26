@@ -1140,7 +1140,7 @@ struct HostSession::Impl final : EndpointCore {
     if (config_id == 0 || video_stream_id == 0 ||
         config_id <= highest_config_id_ ||
         video_stream_id == negotiated_stream()->video_stream_id ||
-        !supports_profile(config_.capabilities, profile)) {
+        !host_allows_profile(profile)) {
       return SessionCommandStatus::InvalidArgument;
     }
 
@@ -1324,7 +1324,7 @@ struct HostSession::Impl final : EndpointCore {
     if (config_id == 0 || video_stream_id == 0 ||
         config_id <= highest_config_id_ ||
         video_stream_id == negotiated_stream()->video_stream_id ||
-        !supports_profile(config_.capabilities, profile)) {
+        !host_allows_profile(profile)) {
       return SessionCommandStatus::InvalidArgument;
     }
 
@@ -1402,6 +1402,7 @@ struct HostSession::Impl final : EndpointCore {
       fail_with(SessionFailure::MalformedControlMessage, true);
       return;
     }
+    peer_capabilities_ = device_capabilities.value();
     const auto selected = intersect_capabilities(
         config_.capabilities, device_capabilities.value(),
         config_.accept_device_resolution);
@@ -1811,8 +1812,31 @@ struct HostSession::Impl final : EndpointCore {
     }
   }
 
+  [[nodiscard]] const std::optional<CapabilitySet>& peer_capabilities() const {
+    return peer_capabilities_;
+  }
+
+ private:
+  [[nodiscard]] bool host_allows_profile(const StreamProfile& profile) const {
+    if (!config_.accept_device_resolution) {
+      return supports_profile(config_.capabilities, profile);
+    }
+    if (!contains_value(config_.capabilities.encoders, profile.encoder) ||
+        !contains_value(config_.capabilities.pixel_formats,
+                        profile.pixel_format) ||
+        profile.resolution.width == 0 || profile.resolution.height == 0 ||
+        profile.resolution.refresh_hz == 0) {
+      return false;
+    }
+    if (peer_capabilities_.has_value()) {
+      return supports_profile(*peer_capabilities_, profile);
+    }
+    return true;
+  }
+
   HostSessionConfig config_;
   HostBoundary* boundary_;
+  std::optional<CapabilitySet> peer_capabilities_;
   std::optional<StreamProfile> prepared_profile_;
   std::optional<StreamProfile> pending_profile_;
   std::optional<std::uint32_t> pending_config_id_;
@@ -2717,6 +2741,9 @@ std::string_view HostSession::failure_detail() const { return impl_->failure_det
 std::uint32_t HostSession::session_nonce() const { return impl_->session_nonce(); }
 const std::optional<NegotiatedStream>& HostSession::negotiated_stream() const {
   return impl_->negotiated_stream();
+}
+const std::optional<CapabilitySet>& HostSession::peer_capabilities() const {
+  return impl_->peer_capabilities();
 }
 const std::optional<SchedulerIdrRequest>& HostSession::pending_idr_request()
     const {

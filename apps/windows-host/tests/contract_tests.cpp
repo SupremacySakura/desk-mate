@@ -403,7 +403,8 @@ void test_virtual_display_adapter_matching_and_mode_selection() {
 
   const auto closest_hz = pick_best_display_mode(modes, 2560, 1440, 90);
   CHECK(closest_hz.has_value());
-  CHECK(closest_hz->width == 2560 && closest_hz->height == 1440);
+  CHECK(closest_hz->width == 2560 && closest_hz->height == 1440 &&
+        closest_hz->refresh_hz == 120);
 
   const std::vector<DisplayModeCandidate> limited{
       {1920, 1080, 60},
@@ -556,24 +557,26 @@ void test_frame_rate_and_bitrate_policy() {
 
   CHECK(resolve_effective_refresh_hz(0, 120, 60) == 120);
   CHECK(resolve_effective_refresh_hz(0, 0, 60) == 60);
-  CHECK(resolve_advertised_refresh_hz(0, false, 60) == 60);
-  CHECK(resolve_advertised_refresh_hz(90, false, 60) == 90);
+  CHECK(resolve_advertised_refresh_hz(0, false, 60) == 120);
+  CHECK(resolve_advertised_refresh_hz(90, false, 60) == 120);
   CHECK(resolve_advertised_refresh_hz(0, true, 120) == 120);
-  CHECK(async_input_wait_budget_ms(30) == 0);
-  CHECK(async_input_wait_budget_ms(60) == 0);
-  CHECK(async_input_wait_budget_ms(120) == 0);
-  CHECK(resolve_effective_refresh_hz(90, 60, 60) == 90);
-  CHECK(resolve_effective_refresh_hz(120, 60, 60) == 120);
+  CHECK(resolve_advertised_refresh_hz(0, true, 60) == 60);
+  // Effective FPS must always be clamped to negotiated_hz when negotiated.
+  CHECK(resolve_effective_refresh_hz(90, 60, 60) == 60);
+  CHECK(resolve_effective_refresh_hz(120, 60, 60) == 60);
+  CHECK(resolve_effective_refresh_hz(60, 120, 60) == 60);
   CHECK(resolve_effective_refresh_hz(45, 90, 60) == 90);
+  CHECK(resolve_effective_refresh_hz(120, 0, 60) == 120);
 
   const auto bps_hevc_60 = compute_target_bitrate_bps(2800, 1840, 60, true);
   const auto bps_hevc_120 = compute_target_bitrate_bps(2800, 1840, 120, true);
   const auto bps_h264_60 = compute_target_bitrate_bps(1920, 1200, 60, false);
   const auto bps_low = compute_target_bitrate_bps(640, 480, 30, true);
-  CHECK(bps_low == 4'000'000U);
-  CHECK(bps_hevc_60 >= 4'000'000U && bps_hevc_60 <= 18'000'000U);
-  CHECK(bps_hevc_120 >= bps_hevc_60 && bps_hevc_120 <= 18'000'000U);
-  CHECK(bps_h264_60 >= 4'000'000U && bps_h264_60 <= 18'000'000U);
+  // Bitrate policy mirrors macOS VideoEncoder: clamp to [8M, 45M].
+  CHECK(bps_low == 8'000'000U);
+  CHECK(bps_hevc_60 >= 8'000'000U && bps_hevc_60 <= 45'000'000U);
+  CHECK(bps_hevc_120 >= bps_hevc_60 && bps_hevc_120 <= 45'000'000U);
+  CHECK(bps_h264_60 >= 8'000'000U && bps_h264_60 <= 45'000'000U);
 
   // SettingsStore must sanitize unknown refresh values back to 0 (Auto).
 #ifdef _WIN32
@@ -593,6 +596,41 @@ void test_frame_rate_and_bitrate_policy() {
   std::filesystem::remove(tmp, ec);
 }
 
+void test_high_fps_pacing_uses_absolute_deadlines() {
+  using deskmate::windows::FramePacer;
+  FramePacer pacer_120(120);
+  CHECK(pacer_120.next_deadline_us(0) == 8333);
+  CHECK(pacer_120.next_deadline_us(1000) == 16666);
+  CHECK(pacer_120.next_deadline_us(2000) == 24999);
+  CHECK(pacer_120.next_deadline_us(100000) == 108333);
+  CHECK(pacer_120.next_deadline_us(100000) == 116666);
+
+  FramePacer pacer_90(90);
+  CHECK(pacer_90.next_deadline_us(0) == 11111);
+  CHECK(pacer_90.next_deadline_us(1000) == 22222);
+  CHECK(pacer_90.next_deadline_us(2000) == 33333);
+}
+
+void test_encoder_queue_retries_and_counts_only_replaced_frames() {
+  deskmate::windows::LatestFrameQueue<int> queue;
+  CHECK(!queue.peek().has_value());
+  CHECK(!queue.push(7));
+  CHECK(queue.peek() == 7);
+  CHECK(queue.peek() == 7);
+  queue.discard();
+  CHECK(!queue.peek().has_value());
+  CHECK(!queue.push(8));
+  CHECK(queue.take() == 8);
+  CHECK(!queue.peek().has_value());
+  CHECK(queue.restore_if_empty(8));
+  CHECK(!queue.restore_if_empty(7));
+  CHECK(queue.peek() == 8);
+  CHECK(queue.push(9));
+  CHECK(queue.peek() == 9);
+  CHECK(queue.push(10));
+  CHECK(queue.peek() == 10);
+}
+
 }  // namespace
 
 int main() {
@@ -609,6 +647,8 @@ int main() {
   test_display_topology_snap_swap_and_normalize();
   test_legacy_update_artifact_scan_and_cleanup();
   test_frame_rate_and_bitrate_policy();
+  test_high_fps_pacing_uses_absolute_deadlines();
+  test_encoder_queue_retries_and_counts_only_replaced_frames();
   if (failures != 0) {
     return 1;
   }

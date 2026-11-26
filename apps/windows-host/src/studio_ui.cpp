@@ -23,6 +23,7 @@ int run_studio_ui(HostController&) { return 0; }
 #include <shellapi.h>  // must follow windows.h
 
 #include <algorithm>
+#include <cstring>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
@@ -964,6 +965,7 @@ class StudioWindowController {
     }
     ShowWindow(main_hwnd_, SW_SHOWNORMAL);
     SetForegroundWindow(main_hwnd_);
+    update_refresh_timer();
   }
 
   void toggle_tray_popover() {
@@ -972,6 +974,7 @@ class StudioWindowController {
     }
     if (IsWindowVisible(popover_hwnd_)) {
       ShowWindow(popover_hwnd_, SW_HIDE);
+      update_refresh_timer();
       return;
     }
     state_ = controller_.snapshot_ui_state();
@@ -997,6 +1000,17 @@ class StudioWindowController {
     SetWindowPos(popover_hwnd_, HWND_TOPMOST, x, y, pw, ph, SWP_SHOWWINDOW);
     SetForegroundWindow(popover_hwnd_);
     InvalidateRect(popover_hwnd_, nullptr, FALSE);
+    update_refresh_timer();
+  }
+
+  void update_refresh_timer() {
+    if (main_hwnd_ == nullptr) {
+      return;
+    }
+    const bool visible = IsWindowVisible(main_hwnd_) ||
+                         (popover_hwnd_ != nullptr &&
+                          IsWindowVisible(popover_hwnd_));
+    SetTimer(main_hwnd_, kTimerRefreshId, visible ? 250U : 1000U, nullptr);
   }
 
   void show_tray_context_menu() {
@@ -3263,10 +3277,11 @@ class StudioWindowController {
       }
       return "默认跟随设备协商帧率";
     }
-    if (preferred_hz >= 90) {
-      return "实验性高帧率（部分设备可能卡顿，建议 60 Hz）";
-    }
     if (negotiated_hz > 0) {
+      if (preferred_hz > negotiated_hz) {
+        return "已按协商上限 " + std::to_string(negotiated_hz) +
+               " Hz 输出（请求 " + std::to_string(preferred_hz) + " Hz）";
+      }
       return "手动锁定 " + std::to_string(preferred_hz) + " Hz（协商 " +
              std::to_string(negotiated_hz) + " Hz）";
     }
@@ -3283,8 +3298,8 @@ class StudioWindowController {
         {0, "自动"},
         {30, "30Hz"},
         {60, "60Hz"},
-        {90, "90Hz 实验"},
-        {120, "120Hz 实验"},
+        {90, "90Hz"},
+        {120, "120Hz"},
     };
     const float gap = 6.0F;
     const float seg_w = (w - gap * 4.0F) / 5.0F;
@@ -3833,6 +3848,7 @@ class StudioWindowController {
       case WM_CLOSE:
         if (!quitting_ && tray_added_) {
           ShowWindow(hwnd, SW_HIDE);
+          update_refresh_timer();
           return 0;
         }
         request_quit();
@@ -3853,6 +3869,7 @@ class StudioWindowController {
       case WM_ACTIVATE:
         if (LOWORD(wp) == WA_INACTIVE) {
           ShowWindow(hwnd, SW_HIDE);
+          update_refresh_timer();
         }
         return 0;
       case WM_SIZE:

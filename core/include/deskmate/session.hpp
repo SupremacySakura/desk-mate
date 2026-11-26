@@ -408,6 +408,7 @@ class HostSession {
   [[nodiscard]] std::string_view failure_detail() const;
   [[nodiscard]] std::uint32_t session_nonce() const;
   [[nodiscard]] const std::optional<NegotiatedStream>& negotiated_stream() const;
+  [[nodiscard]] const std::optional<CapabilitySet>& peer_capabilities() const;
   [[nodiscard]] const std::optional<SchedulerIdrRequest>& pending_idr_request()
       const;
   [[nodiscard]] bool has_pending_output() const;

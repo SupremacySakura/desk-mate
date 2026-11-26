@@ -16,6 +16,7 @@
 #include <mutex>
 #include <span>
 #include <string>
+#include <thread>
 #include <vector>
 
 namespace {
@@ -216,6 +217,31 @@ void test_video_backlog_drops_new_p_frames_instead_of_breaking_a_gop() {
   link.submit_video(std::vector<std::uint8_t>{0x65}, 17U, true);
   CHECK(link.stats().frames_dropped == 17U);
 
+  // Losing a P-frame breaks the reference chain: every following P-frame must
+  // be suppressed and the capture side must be asked for a fresh IDR, instead
+  // of pushing an undecodable GOP to the device.
+  deskmate::windows::SessionLink gated(
+      std::make_unique<FakeTransport>(std::make_shared<SharedPipe>()), identity,
+      15U, 0x01020308U, 2U, 1920, 1200, 60, false);
+  gated.submit_video(std::vector<std::uint8_t>{0x65}, 0U, true);
+  for (std::uint64_t pts = 1; pts <= 15; ++pts) {
+    gated.submit_video(std::vector<std::uint8_t>{0x41}, pts, false);
+  }
+  gated.submit_video(std::vector<std::uint8_t>{0x42}, 16U, false);
+  CHECK(gated.stats().frames_dropped == 1U);
+  CHECK(gated.consume_local_keyframe_request());
+  CHECK(!gated.consume_local_keyframe_request());
+  for (std::uint64_t pts = 17; pts <= 20; ++pts) {
+    gated.submit_video(std::vector<std::uint8_t>{0x41}, pts, false);
+  }
+  CHECK(gated.stats().frames_dropped == 5U);
+  // The next IDR reopens the gate and is admitted (replacing the backlog).
+  gated.submit_video(std::vector<std::uint8_t>{0x65}, 21U, true);
+  CHECK(!gated.consume_local_keyframe_request());
+  gated.submit_video(std::vector<std::uint8_t>{0x41}, 22U, false);
+  CHECK(gated.stats().frames_dropped == 21U);
+  gated.stop();
+
   // A live session exposes which encoded frames actually enter the wire
   // scheduler. Negotiate a real session first, then inspect the output bytes.
   auto host_to_device = std::make_shared<SharedPipe>();
@@ -261,6 +287,65 @@ void test_video_backlog_drops_new_p_frames_instead_of_breaking_a_gop() {
   device.stop();
 }
 
+void test_session_link_refresh_reconfigure_and_idr_retry() {
+  auto host_to_device = std::make_shared<SharedPipe>();
+  auto device_to_host = std::make_shared<SharedPipe>();
+  deskmate::platform::AoaIdentity identity;
+  identity.port_path = "6.1";
+
+  deskmate::windows::SessionLink link(
+      std::make_unique<FakeTransport>(device_to_host, host_to_device), identity,
+      14U, 0x01020307U, 2U, 1920, 1200, 120, false, true);
+  deskmate::protocol::SteadyClock clock;
+  FakeTransport device_transport(host_to_device, device_to_host);
+  auto dev_cfg = deskmate::platform::make_device_session_config(
+      0xB1C2D3E4U, 1920, 1200, 120, false);
+  // Put 60 Hz first so initial negotiation picks 60 Hz while 120 Hz remains supported.
+  dev_cfg.capabilities.resolutions = {
+      {2800, 1840, 60},
+      {2800, 1840, 120},
+  };
+  deskmate::protocol::DeviceSession device(device_transport, clock, dev_cfg,
+                                           nullptr);
+  device.start();
+  for (int i = 0; i < 6; ++i) {
+    device.pump();
+    link.pump();
+  }
+  CHECK(link.state() == deskmate::protocol::SessionState::Streaming);
+  CHECK(link.negotiated_profile().has_value());
+  CHECK(link.negotiated_profile()->resolution.refresh_hz == 60);
+  CHECK(link.max_supported_refresh_hz() == 120);
+
+  // Unsupported 90 Hz must return 0 without disturbing the session.
+  CHECK(link.request_refresh_hz_reconfigure(90) == 0);
+  CHECK(link.state() == deskmate::protocol::SessionState::Streaming);
+
+  // Supported 120 Hz initiates live reconfiguration and requests an IDR.
+  CHECK(link.request_refresh_hz_reconfigure(120) == 120);
+  for (int i = 0; i < 4; ++i) {
+    link.pump();
+    device.pump();
+  }
+  CHECK(link.state() == deskmate::protocol::SessionState::Reconfiguring);
+  const std::uint32_t first_idr_req = link.take_keyframe_request();
+  CHECK(first_idr_req != 0U);
+  // Immediately polling again is debounced, then retries after 120 ms.
+  CHECK(link.take_keyframe_request() == 0U);
+  std::this_thread::sleep_for(std::chrono::milliseconds(130));
+  CHECK(link.take_keyframe_request() == first_idr_req);
+
+  link.submit_video(std::vector<std::uint8_t>{0x65}, 100U, true);
+  link.pump();
+  device.pump();
+  link.pump();
+  CHECK(link.state() == deskmate::protocol::SessionState::Streaming);
+  CHECK(link.negotiated_profile()->resolution.refresh_hz == 120);
+
+  link.stop();
+  device.stop();
+}
+
 }  // namespace
 
 int main() {
@@ -269,6 +354,7 @@ int main() {
   test_video_is_routed_to_a_single_link();
   test_submit_video_does_not_touch_the_session_directly();
   test_video_backlog_drops_new_p_frames_instead_of_breaking_a_gop();
+  test_session_link_refresh_reconfigure_and_idr_retry();
   if (failures != 0) {
     std::fprintf(stderr, "%d AOA session test(s) failed\n", failures);
     return 1;

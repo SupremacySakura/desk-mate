@@ -42,6 +42,9 @@ class LinkTransport : public deskmate::protocol::ByteIo {
   [[nodiscard]] virtual std::string last_error() const { return {}; }
   virtual void set_rx_callback(std::function<void()>) {}
   [[nodiscard]] virtual bool consume_write_blocked() noexcept { return false; }
+  // Hint the transport about the active video stream frame rate so write
+  // timeout and back-off can scale with the per-frame budget. Default no-op.
+  virtual void set_stream_fps(int fps) { (void)fps; }
 };
 
 struct PendingVideo {
@@ -66,6 +69,9 @@ class LinkSession {
   [[nodiscard]] virtual std::vector<deskmate::protocol::InputEvent>
   take_input() = 0;
   [[nodiscard]] virtual std::uint32_t take_keyframe_request() = 0;
+  // True when a frame was dropped mid-GOP and the capture side must emit a
+  // fresh IDR before any further P-frame can be decoded by the device.
+  [[nodiscard]] virtual bool consume_local_keyframe_request() { return false; }
   // True once the session negotiated STREAM_COMMITTED and the Host state
   // permits capture/encoding. The capture pipeline starts only then, so it
   // encodes at the negotiated codec and resolution instead of the CLI default.
@@ -73,6 +79,11 @@ class LinkSession {
   [[nodiscard]] virtual bool input_requested() const = 0;
   [[nodiscard]] virtual std::optional<deskmate::protocol::StreamProfile>
   negotiated_profile() const = 0;
+  [[nodiscard]] virtual int max_supported_refresh_hz() const { return 0; }
+  [[nodiscard]] virtual int request_refresh_hz_reconfigure(int target_hz) {
+    (void)target_hz;
+    return 0;
+  }
 
   [[nodiscard]] virtual bool has_pending_output() const { return false; }
   [[nodiscard]] virtual bool is_terminal() const { return false; }
@@ -83,6 +94,9 @@ class LinkSession {
   [[nodiscard]] virtual std::uint64_t tx_bytes() const { return stats().tx_bytes; }
   [[nodiscard]] virtual bool transport_alive() const { return true; }
   [[nodiscard]] virtual bool consume_write_blocked() { return false; }
+  // Forward a stream fps hint to the underlying transport so it can tune
+  // USB write timeout / back-off for the per-frame budget. Default no-op.
+  virtual void set_stream_fps(int fps) { (void)fps; }
   virtual void set_rx_callback(std::function<void()>) {}
   virtual void set_accept_device_resolution(bool) {}
   virtual void restart_session() {}

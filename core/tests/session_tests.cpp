@@ -3707,6 +3707,49 @@ void test_host_accepts_device_native_resolution_and_codec_preference() {
   CHECK_EQ(negotiated->profile.resolution, (DisplayResolution{3120, 2080, 120}));
 }
 
+void test_host_reconfigures_device_native_refresh_rate_using_peer_capabilities() {
+  HostSessionConfig host_config = default_host_config();
+  host_config.accept_device_resolution = true;
+  host_config.capabilities = CapabilitySet{
+      {VideoEncoder::Hevc, VideoEncoder::H264},
+      {PixelFormat::Nv12},
+      {{1920, 1200, 120}, {1920, 1200, 60}},
+  };
+
+  DeviceSessionConfig device_config = default_device_config();
+  device_config.capabilities = CapabilitySet{
+      {VideoEncoder::Hevc, VideoEncoder::H264},
+      {PixelFormat::Nv12},
+      {{2800, 1840, 60}, {2800, 1840, 120}},
+  };
+
+  SessionPair pair(host_config, device_config);
+  drive_to_streaming_with_first_idr(pair);
+  CHECK(pair.host.peer_capabilities().has_value());
+  CHECK_EQ(pair.host.negotiated_stream()->profile.resolution,
+           (DisplayResolution{2800, 1840, 60}));
+
+  // Refresh rates not advertised by the peer must still be rejected.
+  const StreamProfile unsupported_rate{
+      VideoEncoder::Hevc, PixelFormat::Nv12, DisplayResolution{2800, 1840, 90}};
+  CHECK_EQ(pair.host.reconfigure(unsupported_rate, 2, 0x33330001),
+           SessionCommandStatus::InvalidArgument);
+
+  // Upgrading the device-native resolution to a peer-supported 120 Hz succeeds.
+  const StreamProfile upgraded_rate{
+      VideoEncoder::Hevc, PixelFormat::Nv12, DisplayResolution{2800, 1840, 120}};
+  drive_to_reconfiguration_pending_idr(pair, upgraded_rate, 2, 0x33330002);
+  CHECK_EQ(pair.host.send_video_frame(std::vector<std::uint8_t>{0xAA}, 2, true),
+           VideoSendStatus::Sent);
+  pair.host.pump();
+  pair.device.pump();
+  pair.host.pump();
+  CHECK_EQ(static_cast<int>(pair.host.state()),
+           static_cast<int>(SessionState::Streaming));
+  CHECK_EQ(pair.host.negotiated_stream()->profile.resolution,
+           (DisplayResolution{2800, 1840, 120}));
+}
+
 void test_custom_initial_idr_timeout_outlives_stage_timeout() {
   {
     DeviceSessionConfig device_config = default_device_config();
@@ -3923,6 +3966,8 @@ int main() {
        test_resume_failure_returns_to_paused_and_preserves_grace_and_old_stream},
       {"host accepts device native resolution and codec preference",
        test_host_accepts_device_native_resolution_and_codec_preference},
+      {"host reconfigures device native refresh rate using peer capabilities",
+       test_host_reconfigures_device_native_refresh_rate_using_peer_capabilities},
       {"custom initial idr timeout outlives stage timeout",
        test_custom_initial_idr_timeout_outlives_stage_timeout},
   };

@@ -131,7 +131,7 @@ $Exe = Join-Path $OutputDir "DeskMateHost.exe"
     -ld2d1 -ldwrite -ldwmapi `
     -ld3d11 -ldxgi -ld3dcompiler -ldxguid `
     -lmfplat -lmfreadwrite -lmfuuid -lwmcodecdspuuid `
-    -lshcore -lshell32 -ladvapi32 -lwtsapi32 -lwinmm -lwinhttp `
+    -lshcore -lshell32 -ladvapi32 -lwtsapi32 -lwinmm -lavrt -lwinhttp `
     -lole32 -loleaut32 -luuid -luser32 -lgdi32 -lsetupapi -lcfgmgr32 -static
 if ($LASTEXITCODE -ne 0) { throw "link failed" }
 

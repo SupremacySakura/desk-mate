@@ -44,6 +44,7 @@ class SessionLink final : public LinkSession {
   [[nodiscard]] std::vector<deskmate::protocol::InputEvent> take_input()
       override;
   [[nodiscard]] std::uint32_t take_keyframe_request() override;
+  [[nodiscard]] bool consume_local_keyframe_request() override;
   [[nodiscard]] bool capture_requested() const override {
     return capture_intent_.load(std::memory_order_acquire);
   }
@@ -52,6 +53,8 @@ class SessionLink final : public LinkSession {
   }
   [[nodiscard]] std::optional<deskmate::protocol::StreamProfile>
   negotiated_profile() const override;
+  [[nodiscard]] int max_supported_refresh_hz() const override;
+  [[nodiscard]] int request_refresh_hz_reconfigure(int target_hz) override;
 
   [[nodiscard]] bool has_pending_output() const override;
   [[nodiscard]] bool is_terminal() const override;
@@ -64,6 +67,7 @@ class SessionLink final : public LinkSession {
   [[nodiscard]] std::uint64_t tx_bytes() const override;
   [[nodiscard]] bool transport_alive() const override;
   [[nodiscard]] bool consume_write_blocked() override;
+  void set_stream_fps(int fps) override;
   void set_rx_callback(std::function<void()> callback) override;
   void set_accept_device_resolution(bool enabled) override;
   void restart_session() override;
@@ -107,6 +111,10 @@ class SessionLink final : public LinkSession {
   std::atomic<std::uint64_t> input_events_{0};
   std::atomic<std::uint64_t> reconnects_{0};
   std::atomic<std::uint32_t> requested_idr_{0};
+  std::atomic<std::uint64_t> last_idr_request_ns_{0};
+  std::atomic<bool> drop_until_keyframe_{false};
+  std::atomic<bool> local_keyframe_pending_{false};
+  std::uint32_t next_config_id_{1};
 };
 
 }  // namespace deskmate::windows

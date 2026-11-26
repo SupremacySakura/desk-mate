@@ -65,6 +65,7 @@ final class DeviceChannel {
     var manualDisplayID: UInt32? = nil
     var displaySession: DisplaySession? = nil
     var capture: CapturePipeline? = nil
+    var activeCaptureFrameRate: Int = 0
     var destroyDisplayTask: Task<Void, Never>? = nil
 
     let inputEngine: TouchInputEngine

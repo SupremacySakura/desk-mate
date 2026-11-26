@@ -123,25 +123,49 @@ bool parsec_vdd_ioctl(HANDLE handle, DWORD code, const void* data,
   return ok != FALSE;
 }
 
-void register_parsec_custom_resolution(int width, int height, int refresh_hz) {
-  // Best-effort write into Parsec VDD registry resolution table (requires
-  // admin rights when HKLM is protected; silently skipped otherwise).
-  HKEY key = nullptr;
-  const LONG rc = RegCreateKeyExW(
-      HKEY_LOCAL_MACHINE, L"SOFTWARE\\Parsec\\vdd\\0", 0, nullptr,
-      REG_OPTION_NON_VOLATILE, KEY_SET_VALUE, nullptr, &key, nullptr);
-  if (rc == ERROR_SUCCESS && key != nullptr) {
-    const DWORD w = static_cast<DWORD>(width);
-    const DWORD h = static_cast<DWORD>(height);
-    const DWORD hz = static_cast<DWORD>(refresh_hz);
-    RegSetValueExW(key, L"width", 0, REG_DWORD,
-                   reinterpret_cast<const BYTE*>(&w), sizeof(w));
-    RegSetValueExW(key, L"height", 0, REG_DWORD,
-                   reinterpret_cast<const BYTE*>(&h), sizeof(h));
-    RegSetValueExW(key, L"hz", 0, REG_DWORD,
-                   reinterpret_cast<const BYTE*>(&hz), sizeof(hz));
-    RegCloseKey(key);
+// Writes one entry of the driver's custom-mode table. HKLM\SOFTWARE\Parsec\vdd
+// holds a small fixed set of *global* mode slots (0..4); the keys are not
+// per-instance indexes, so slot 0 is always the right place to register the
+// mode we want the next created display to expose. The driver only reads this
+// table at load time and on VDD_IOCTL_ADD, which is why the write has to
+// happen before the add rather than after it.
+// HKLM needs administrator rights; report that instead of failing quietly.
+bool register_parsec_custom_resolution(int width, int height, int refresh_hz,
+                                       std::string& error) {
+  error.clear();
+  if (width <= 0 || height <= 0 || refresh_hz <= 0) {
+    error = "Parsec VDD 自定义分辨率参数无效";
+    return false;
   }
+  const std::wstring path = L"SOFTWARE\\Parsec\\vdd\\0";
+  HKEY key = nullptr;
+  const LONG rc = RegCreateKeyExW(HKEY_LOCAL_MACHINE, path.c_str(), 0, nullptr,
+                                  REG_OPTION_NON_VOLATILE, KEY_SET_VALUE,
+                                  nullptr, &key, nullptr);
+  if (rc != ERROR_SUCCESS || key == nullptr) {
+    error =
+        "无法写入 HKLM\\SOFTWARE\\Parsec\\vdd\\0（需要管理员权限），"
+        "当前刷新率可能未被虚拟屏驱动接受";
+    return false;
+  }
+  const DWORD w = static_cast<DWORD>(width);
+  const DWORD h = static_cast<DWORD>(height);
+  const DWORD hz = static_cast<DWORD>(refresh_hz);
+  const LONG w_rc = RegSetValueExW(key, L"width", 0, REG_DWORD,
+                                   reinterpret_cast<const BYTE*>(&w), sizeof(w));
+  const LONG h_rc =
+      RegSetValueExW(key, L"height", 0, REG_DWORD,
+                     reinterpret_cast<const BYTE*>(&h), sizeof(h));
+  const LONG hz_rc =
+      RegSetValueExW(key, L"hz", 0, REG_DWORD,
+                     reinterpret_cast<const BYTE*>(&hz), sizeof(hz));
+  RegCloseKey(key);
+  if (w_rc != ERROR_SUCCESS || h_rc != ERROR_SUCCESS ||
+      hz_rc != ERROR_SUCCESS) {
+    error = "写入 Parsec VDD 自定义分辨率失败（需要管理员权限）";
+    return false;
+  }
+  return true;
 }
 
 bool send_mtt_vdd_command(const std::string& command, std::string& response) {
@@ -174,16 +198,17 @@ bool mtt_vdd_pipe_available() {
   return WaitNamedPipeW(kMttVddPipeName, 50) != FALSE;
 }
 
-void apply_best_mode_for_monitor(std::uintptr_t monitor_handle, int target_w,
-                                 int target_h, int target_hz,
-                                 std::string& log_out) {
+// Returns the refresh rate actually applied, or 0 when nothing changed.
+int apply_best_mode_for_monitor(std::uintptr_t monitor_handle, int target_w,
+                                int target_h, int target_hz,
+                                std::string& log_out) {
   if (monitor_handle == 0) {
-    return;
+    return 0;
   }
   MONITORINFOEXW mi{};
   mi.cbSize = sizeof(mi);
   if (!GetMonitorInfoW(reinterpret_cast<HMONITOR>(monitor_handle), &mi)) {
-    return;
+    return 0;
   }
   std::vector<DisplayModeCandidate> candidates;
   DEVMODEW dm{};
@@ -201,7 +226,7 @@ void apply_best_mode_for_monitor(std::uintptr_t monitor_handle, int target_w,
   const auto picked =
       pick_best_display_mode(candidates, target_w, target_h, target_hz);
   if (!picked.has_value()) {
-    return;
+    return 0;
   }
   DEVMODEW cur{};
   cur.dmSize = sizeof(cur);
@@ -209,7 +234,7 @@ void apply_best_mode_for_monitor(std::uintptr_t monitor_handle, int target_w,
       static_cast<int>(cur.dmPelsWidth) == picked->width &&
       static_cast<int>(cur.dmPelsHeight) == picked->height &&
       static_cast<int>(cur.dmDisplayFrequency) == picked->refresh_hz) {
-    return;
+    return picked->refresh_hz;
   }
   DEVMODEW apply{};
   apply.dmSize = sizeof(apply);
@@ -224,6 +249,15 @@ void apply_best_mode_for_monitor(std::uintptr_t monitor_handle, int target_w,
              std::to_string(picked->height) + "@" +
              std::to_string(picked->refresh_hz) + " (rc=" +
              std::to_string(chg) + ")";
+  if (chg != DISP_CHANGE_SUCCESSFUL) {
+    log_out += " [模式切换失败]";
+    return 0;
+  }
+  if (picked->refresh_hz < target_hz) {
+    log_out += " [驱动不支持 " + std::to_string(target_hz) + "Hz，实际 " +
+               std::to_string(picked->refresh_hz) + "Hz]";
+  }
+  return picked->refresh_hz;
 }
 #endif
 
@@ -269,7 +303,8 @@ std::optional<DisplayModeCandidate> pick_best_display_mode(
     const int hz = std::max(1, m.refresh_hz);
     double score = 0.0;
     if (m.width == target_w && m.height == target_h) {
-      score = static_cast<double>(std::abs(hz - want_hz)) * 0.001;
+      score = static_cast<double>(std::abs(hz - want_hz)) * 0.001 +
+              (hz < want_hz ? 0.0005 : 0.0);
     } else {
       const double aspect =
           static_cast<double>(m.width) / static_cast<double>(m.height);
@@ -453,7 +488,13 @@ std::uintptr_t VirtualDisplayManager::create_display(std::uint64_t link_id,
                                 : open_parsec_vdd_handle();
   if (parsec != INVALID_HANDLE_VALUE) {
     parsec_handle_ = parsec;
-    register_parsec_custom_resolution(width, height, refresh_hz);
+    // The driver snapshots the global custom-mode table when a display is
+    // added, so the entry has to exist before VDD_IOCTL_ADD. Writing it after
+    // the add only took effect on the next plug, which is why 90/120 Hz used
+    // to fall back to the driver's default 60 Hz on the first attach.
+    std::string reg_error;
+    const bool registered =
+        register_parsec_custom_resolution(width, height, refresh_hz, reg_error);
     int vdd_index = -1;
     if (!parsec_vdd_ioctl(parsec, kVddIoctlAdd, nullptr, 0, &vdd_index) ||
         vdd_index < 0) {
@@ -463,6 +504,9 @@ std::uintptr_t VirtualDisplayManager::create_display(std::uint64_t link_id,
         parsec_handle_ = nullptr;
       }
       return 0;
+    }
+    if (!registered) {
+      log_out += reg_error + "；";
     }
     (void)parsec_vdd_ioctl(parsec, kVddIoctlUpdate, nullptr, 0, nullptr);
     ManagedDisplay md;
@@ -497,11 +541,15 @@ std::uintptr_t VirtualDisplayManager::create_display(std::uint64_t link_id,
       }
     }
 
-    log_out = "已通过 Parsec VDD 创建虚拟显示器 (idx=" +
-              std::to_string(vdd_index) + ")";
+    log_out += "已通过 Parsec VDD 创建虚拟显示器 (idx=" +
+               std::to_string(vdd_index) + ")";
     if (new_handle != 0) {
-      apply_best_mode_for_monitor(new_handle, width, height, refresh_hz,
-                                  log_out);
+      const int applied_hz = apply_best_mode_for_monitor(
+          new_handle, width, height, refresh_hz, log_out);
+      if (applied_hz == 0) {
+        log_out += " [警告：虚拟屏未能应用 " + std::to_string(refresh_hz) +
+                   "Hz 模式]";
+      }
       if (!new_name.empty()) {
         for (const auto& m : enumerate_monitors()) {
           if (m.name == new_name) {
@@ -561,8 +609,12 @@ std::uintptr_t VirtualDisplayManager::create_display(std::uint64_t link_id,
     log_out = "已通过 MttVDD 创建虚拟显示器 (count=" +
               std::to_string(target_count) + ")";
     if (new_handle != 0) {
-      apply_best_mode_for_monitor(new_handle, width, height, refresh_hz,
-                                  log_out);
+      const int applied_hz = apply_best_mode_for_monitor(
+          new_handle, width, height, refresh_hz, log_out);
+      if (applied_hz == 0) {
+        log_out += " [警告：虚拟屏未能应用 " + std::to_string(refresh_hz) +
+                   "Hz 模式]";
+      }
       if (!new_name.empty()) {
         for (const auto& m : enumerate_monitors()) {
           if (m.name == new_name) {
@@ -606,12 +658,35 @@ bool VirtualDisplayManager::apply_display_mode(std::uintptr_t monitor_handle,
     return false;
   }
   if (parsec_handle_ != nullptr) {
-    register_parsec_custom_resolution(width, height, refresh_hz);
-    (void)parsec_vdd_ioctl(static_cast<HANDLE>(parsec_handle_),
-                           kVddIoctlUpdate, nullptr, 0, nullptr);
+    int vdd_index = -1;
+    {
+      std::lock_guard lock(mutex_);
+      for (const auto& [id, md] : managed_) {
+        (void)id;
+        if (md.backend == VirtualDisplayBackend::ParsecVdd &&
+            md.monitor_handle == monitor_handle) {
+          vdd_index = md.parsec_index;
+          break;
+        }
+      }
+    }
+    if (vdd_index >= 0) {
+      std::string reg_error;
+      if (!register_parsec_custom_resolution(width, height, refresh_hz,
+                                             reg_error)) {
+        log_out = reg_error + "；";
+      }
+      // The driver only re-reads the registry custom-mode table on
+      // VDD_IOCTL_UPDATE, so a hot refresh change needs both calls.
+      (void)parsec_vdd_ioctl(static_cast<HANDLE>(parsec_handle_),
+                             kVddIoctlUpdate, nullptr, 0, nullptr);
+    }
   }
-  apply_best_mode_for_monitor(monitor_handle, width, height, refresh_hz,
-                              log_out);
+  const int applied_hz = apply_best_mode_for_monitor(
+      monitor_handle, width, height, refresh_hz, log_out);
+  if (applied_hz == 0) {
+    return false;
+  }
   return !log_out.empty();
 #else
   (void)monitor_handle;

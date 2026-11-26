@@ -492,6 +492,8 @@ struct DeviceLink : public std::enable_shared_from_this<DeviceLink> {
   std::atomic<std::int32_t> negotiated_height{0};
   std::atomic<std::int32_t> negotiated_refresh_hz{0};
   std::atomic<std::int32_t> negotiated_codec{0};
+  std::atomic<std::int32_t> max_supported_refresh_hz{0};
+  std::uint32_t next_config_id{0};
 
   std::atomic<int32_t> last_dispatched_capture_intent{0};
   int32_t pending_capture_intent = -1;
@@ -974,8 +976,9 @@ void start_session(const std::shared_ptr<DeviceLink> &link) {
   deskmate::protocol::HostSessionConfig session_config;
   session_config.video_stream_id = random_nonzero_u32();
   /* A fresh config id per session: reusing 1 makes a stale device session
-     answer with the previous attempt's StreamReady/StreamCommitted. */
-  session_config.initial_config_id = (random_nonzero_u32() & 0x7FFFFFFFU) | 1U;
+     answer with the previous attempt's StreamReady/StreamCommitted. Keep bit 30
+     clear so subsequent live reconfigurations can increment monotonically. */
+  session_config.initial_config_id = (random_nonzero_u32() & 0x3FFFFFFFU) | 1U;
   session_config.limits.stage_timeout_ns = kHandshakeStageTimeoutNs;
   session_config.scheduler.max_video_urbs = kHostSchedulerMaxVideoUrbs;
   session_config.scheduler.max_pending_video_bytes =
@@ -1009,9 +1012,8 @@ void start_session(const std::shared_ptr<DeviceLink> &link) {
       deskmate::protocol::PixelFormat::Nv12};
   const auto width = static_cast<std::uint16_t>(bridge->config.width);
   const auto height = static_cast<std::uint16_t>(bridge->config.height);
-  const int32_t pref_hz = bridge->preferred_refresh_hz.load();
   const auto target_hz = static_cast<std::uint16_t>(
-      pref_hz > 0 ? pref_hz : bridge->config.refresh_hz);
+      bridge->config.refresh_hz > 0 ? bridge->config.refresh_hz : 120);
   session_config.capabilities.resolutions.push_back(
       deskmate::protocol::DisplayResolution{width, height, target_hz});
   if (target_hz > 90) {
@@ -1033,6 +1035,8 @@ void start_session(const std::shared_ptr<DeviceLink> &link) {
   link->negotiated_height.store(0);
   link->negotiated_refresh_hz.store(0);
   link->negotiated_codec.store(0);
+  link->max_supported_refresh_hz.store(0);
+  link->next_config_id = session_config.initial_config_id;
   link->keyframe_request_id.store(0);
   link->needs_keyframe.store(false);
   link->pending_capture_intent = -1;
@@ -1058,6 +1062,7 @@ void teardown_link(const std::shared_ptr<DeviceLink> &link) {
     link->negotiated_height.store(0);
     link->negotiated_refresh_hz.store(0);
     link->negotiated_codec.store(0);
+    link->max_supported_refresh_hz.store(0);
     link->pending_capture_intent = -1;
     link->pending_input_intent = -1;
     link->session.reset();
@@ -1181,10 +1186,22 @@ void link_worker(std::shared_ptr<DeviceLink> link) {
             got_new_input = true;
           }
           if (!terminal) {
+            std::uint32_t keyframe_id = 0;
             if (const auto &idr = link->session->pending_idr_request();
                 idr.has_value()) {
+              keyframe_id = idr->recovery_id;
+            } else if (link->session->state() ==
+                       deskmate::protocol::SessionState::Reconfiguring) {
+              if (const auto &reconf = link->session->reconfiguration();
+                  reconf.has_value() &&
+                  reconf->phase == deskmate::protocol::ReconfigurationPhase::
+                                       AwaitingFirstIdr) {
+                keyframe_id = reconf->config_id;
+              }
+            }
+            if (keyframe_id != 0) {
               link->needs_keyframe.store(true);
-              link->keyframe_request_id.store(idr->recovery_id);
+              link->keyframe_request_id.store(keyframe_id);
             } else {
               link->needs_keyframe.store(false);
               link->keyframe_request_id.store(0);
@@ -1203,6 +1220,19 @@ void link_worker(std::shared_ptr<DeviceLink> link) {
                   stream->profile.encoder == deskmate::protocol::VideoEncoder::Hevc
                       ? 2
                       : 1);
+              std::int32_t max_hz = static_cast<std::int32_t>(
+                  stream->profile.resolution.refresh_hz);
+              if (const auto &peer = link->session->peer_capabilities();
+                  peer.has_value()) {
+                for (const auto &res : peer->resolutions) {
+                  if (res.width == stream->profile.resolution.width &&
+                      res.height == stream->profile.resolution.height) {
+                    max_hz = std::max(max_hz,
+                                      static_cast<std::int32_t>(res.refresh_hz));
+                  }
+                }
+              }
+              link->max_supported_refresh_hz.store(max_hz);
               std::ostringstream summary;
               summary << (stream->profile.encoder ==
                                   deskmate::protocol::VideoEncoder::Hevc
@@ -1958,6 +1988,66 @@ int32_t dm_bridge_negotiated_refresh_hz_for_link(DMBridge *bridge,
 int32_t dm_bridge_negotiated_codec_for_link(DMBridge *bridge, uint64_t link_id) {
   auto link = find_link(bridge, link_id);
   return link != nullptr ? link->negotiated_codec.load() : 0;
+}
+
+int32_t dm_bridge_max_refresh_hz_for_link(DMBridge *bridge, uint64_t link_id) {
+  auto link = find_link(bridge, link_id);
+  return link != nullptr ? link->max_supported_refresh_hz.load() : 0;
+}
+
+int32_t dm_bridge_request_refresh_hz_for_link(DMBridge *bridge,
+                                              uint64_t link_id,
+                                              int32_t target_hz) {
+  auto link = find_link(bridge, link_id);
+  if (link == nullptr || target_hz <= 0) {
+    return 0;
+  }
+  int32_t initiated_hz = 0;
+  {
+    std::lock_guard lock(link->session_mutex);
+    if (link->session == nullptr ||
+        link->session->state() != deskmate::protocol::SessionState::Streaming) {
+      return 0;
+    }
+    const auto &negotiated = link->session->negotiated_stream();
+    const auto &peer = link->session->peer_capabilities();
+    if (!negotiated.has_value() || !peer.has_value()) {
+      return 0;
+    }
+    const auto &cur = negotiated->profile;
+    if (target_hz <= static_cast<int32_t>(cur.resolution.refresh_hz)) {
+      return 0;
+    }
+    std::uint16_t best_hz = 0;
+    for (const auto &res : peer->resolutions) {
+      if (res.width == cur.resolution.width &&
+          res.height == cur.resolution.height &&
+          res.refresh_hz > cur.resolution.refresh_hz &&
+          static_cast<int32_t>(res.refresh_hz) <= target_hz &&
+          res.refresh_hz > best_hz) {
+        best_hz = res.refresh_hz;
+      }
+    }
+    if (best_hz == 0) {
+      return 0;
+    }
+    deskmate::protocol::StreamProfile next_profile = cur;
+    next_profile.resolution.refresh_hz = best_hz;
+    std::uint32_t next_stream_id = random_nonzero_u32();
+    if (next_stream_id == negotiated->video_stream_id) {
+      next_stream_id = (next_stream_id ^ 0x5A5A5A5AU) | 1U;
+    }
+    const std::uint32_t next_config_id = ++link->next_config_id;
+    if (link->session->reconfigure(next_profile, next_config_id,
+                                   next_stream_id) ==
+        deskmate::protocol::SessionCommandStatus::Ok) {
+      initiated_hz = static_cast<int32_t>(best_hz);
+    }
+  }
+  if (initiated_hz > 0) {
+    link->wake_cv.notify_one();
+  }
+  return initiated_hz;
 }
 
 int32_t dm_bridge_negotiated_width(DMBridge *bridge) {

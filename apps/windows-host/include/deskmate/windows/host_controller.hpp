@@ -119,7 +119,12 @@ class HostController {
     std::thread worker;
     std::mutex wake_mutex;
     std::condition_variable wake_cv;
-    bool wakeup{false};
+#ifdef _WIN32
+    void* wake_event{nullptr};
+#endif
+    // Written under wake_mutex and also polled by the link worker; keeping it
+    // atomic removes the unlocked store that used to swallow a fresh wake.
+    std::atomic<bool> wakeup{false};
     std::atomic<bool> stop_requested{false};
     std::atomic<bool> disconnect_requested{false};
     std::atomic<bool> finished{false};
@@ -136,12 +141,19 @@ class HostController {
   void rearrange_monitors();
   void refresh_monitors_locked();
   void refresh_environment_if_stale(bool force = false);
+  // probe_status() enumerates monitors and opens the VDD device interface, so
+  // the 250 ms UI timer must not call it directly. Cache it and invalidate on
+  // service start/stop, retry, display change and virtual-display mutations.
+  [[nodiscard]] VirtualDisplayStatus vdd_status_cached(bool force_refresh);
+  void invalidate_vdd_status();
   const MonitorInfo* pick_monitor_locked(
       const std::shared_ptr<LinkChannel>& target) const;
   DisplayPosition default_position_for_new_channel_locked(
       const std::string& device_id) const;
   void update_channel_metrics(const std::shared_ptr<LinkChannel>& ch);
   void update_power_assertion();
+  void wake_channel(const std::shared_ptr<LinkChannel>& ch);
+  static void signal_channel(const std::shared_ptr<LinkChannel>& ch);
   void append_log(const std::string& line);
   std::string build_diagnostic_locked() const;
 
@@ -176,6 +188,9 @@ class HostController {
   std::uint64_t next_link_id_{1};
 
   VirtualDisplayStatus cached_vdd_status_;
+  mutable std::mutex vdd_status_mutex_;
+  bool vdd_status_valid_{false};
+  std::chrono::steady_clock::time_point vdd_status_fetched_at_{};
   std::chrono::steady_clock::time_point last_env_refresh_{};
   std::vector<MonitorInfo> monitors_;
   std::unordered_map<std::uint64_t, std::shared_ptr<LinkChannel>> channels_;

@@ -373,6 +373,185 @@ bool test_multi_device_links_and_policy() {
   return true;
 }
 
+class MemoryPipeIo final : public deskmate::protocol::ByteIo {
+ public:
+  struct Buffer {
+    std::mutex mutex;
+    std::deque<std::uint8_t> bytes;
+  };
+
+  MemoryPipeIo(std::shared_ptr<Buffer> rx, std::shared_ptr<Buffer> tx)
+      : rx_(std::move(rx)), tx_(std::move(tx)) {}
+
+  deskmate::protocol::IoResult read(
+      std::span<std::uint8_t> destination) override {
+    std::lock_guard lock(rx_->mutex);
+    if (rx_->bytes.empty()) {
+      return {deskmate::protocol::IoStatus::WouldBlock, 0};
+    }
+    const std::size_t take = std::min(destination.size(), rx_->bytes.size());
+    for (std::size_t i = 0; i < take; ++i) {
+      destination[i] = rx_->bytes.front();
+      rx_->bytes.pop_front();
+    }
+    return {deskmate::protocol::IoStatus::Ok, take};
+  }
+
+  deskmate::protocol::IoResult write(
+      std::span<const std::uint8_t> source) override {
+    std::lock_guard lock(tx_->mutex);
+    tx_->bytes.insert(tx_->bytes.end(), source.begin(), source.end());
+    return {deskmate::protocol::IoStatus::Ok, source.size()};
+  }
+
+ private:
+  std::shared_ptr<Buffer> rx_;
+  std::shared_ptr<Buffer> tx_;
+};
+
+bool test_refresh_rate_reconfigure_and_advertisement() {
+  using namespace deskmate::protocol;
+
+  DMBridgeConfig cfg{};
+  cfg.width = 1920;
+  cfg.height = 1200;
+  cfg.refresh_hz = 120;
+  cfg.prefer_hevc = 1;
+  cfg.auto_match_device_resolution = 1;
+  DMBridge *bridge = dm_bridge_create(&cfg);
+  if (bridge == nullptr) {
+    return false;
+  }
+  // Setting preferred_refresh_hz to 30 must NOT restrict handshake advertisement.
+  dm_bridge_set_preferred_refresh_hz(bridge, 30);
+
+  auto h2d = std::make_shared<MemoryPipeIo::Buffer>();
+  auto d2h = std::make_shared<MemoryPipeIo::Buffer>();
+  MemoryPipeIo host_pipe(d2h, h2d);
+  MemoryPipeIo dev_pipe(h2d, d2h);
+  ManualClock clock;
+
+  DeviceSessionConfig dev_cfg;
+  dev_cfg.session_nonce = 0x11223344U;
+  dev_cfg.capabilities = CapabilitySet{
+      {VideoEncoder::Hevc, VideoEncoder::H264},
+      {PixelFormat::Nv12},
+      {{2800, 1840, 60}, {2800, 1840, 120}},
+  };
+  DeviceSession device(dev_pipe, clock, dev_cfg, nullptr);
+  device.start();
+  device.pump();  // queues ClientHello into d2h
+
+  // Verify start_session advertises up to 120 Hz even when preferred is 30 Hz.
+  auto adv_link = std::make_shared<DeviceLink>();
+  adv_link->bridge = bridge;
+  adv_link->link_id = 2;
+  adv_link->boundary = std::make_unique<HostBoundaryImpl>(adv_link.get());
+  std::atomic<std::uint64_t> adv_rx{}, adv_tx{}, adv_err{};
+  adv_link->io = std::make_unique<UsbByteIo>(
+      nullptr, 0x81, 0x01, &adv_rx, &adv_tx, &adv_err, nullptr, nullptr);
+  adv_link->clock = std::make_unique<SteadyClock>();
+  start_session(adv_link);
+  const auto &adv_stream = adv_link->session;
+  if (adv_stream == nullptr) {
+    dm_bridge_destroy(bridge);
+    return false;
+  }
+  // Tear down adv_link's session before exercising live reconfigure on link 1.
+  adv_link->session.reset();
+  adv_link->io.reset();
+
+  // Exercise live refresh upgrade via dm_bridge_request_refresh_hz_for_link.
+  HostSessionConfig host_cfg;
+  host_cfg.video_stream_id = 0x20000001U;
+  host_cfg.initial_config_id = 10U;
+  host_cfg.accept_device_resolution = true;
+  host_cfg.capabilities = CapabilitySet{
+      {VideoEncoder::Hevc, VideoEncoder::H264},
+      {PixelFormat::Nv12},
+      {{1920, 1200, 120}, {1920, 1200, 90}, {1920, 1200, 60}},
+  };
+
+  auto link = std::make_shared<DeviceLink>();
+  link->bridge = bridge;
+  link->link_id = 1;
+  link->next_config_id = host_cfg.initial_config_id;
+  link->session = std::make_unique<HostSession>(host_pipe, clock, host_cfg, nullptr);
+  link->session->start();
+  {
+    std::lock_guard lock(bridge->links_mutex);
+    bridge->links.emplace(1, link);
+  }
+
+  for (int step = 0; step < 6; ++step) {
+    link->session->pump();
+    device.pump();
+  }
+  const std::array<std::uint8_t, 4> idr{0x00, 0x00, 0x00, 0x01};
+  if (link->session->send_video_frame(idr, 1000, true) != VideoSendStatus::Sent) {
+    std::fprintf(stderr, "FAIL initial IDR rejected\n");
+    dm_bridge_destroy(bridge);
+    return false;
+  }
+  link->session->pump();
+  device.pump();
+  if (device.state() != SessionState::Streaming ||
+      link->session->negotiated_stream()->profile.resolution.refresh_hz != 60) {
+    std::fprintf(stderr, "FAIL initial streaming state mismatch\n");
+    dm_bridge_destroy(bridge);
+    return false;
+  }
+
+  // Unsupported 90 Hz must return 0 and keep session streaming at 60 Hz.
+  if (dm_bridge_request_refresh_hz_for_link(bridge, 1, 90) != 0) {
+    std::fprintf(stderr, "FAIL unsupported 90 Hz unexpectedly triggered reconfigure\n");
+    dm_bridge_destroy(bridge);
+    return false;
+  }
+
+  // Supported 120 Hz must initiate live reconfiguration.
+  if (dm_bridge_request_refresh_hz_for_link(bridge, 1, 120) != 120) {
+    std::fprintf(stderr, "FAIL 120 Hz reconfigure not initiated\n");
+    dm_bridge_destroy(bridge);
+    return false;
+  }
+  for (int step = 0; step < 4; ++step) {
+    link->session->pump();
+    device.pump();
+  }
+  if (link->session->state() != SessionState::Reconfiguring ||
+      !link->session->reconfiguration().has_value() ||
+      link->session->reconfiguration()->phase != ReconfigurationPhase::AwaitingFirstIdr) {
+    std::fprintf(stderr, "FAIL reconfigure did not reach AwaitingFirstIdr\n");
+    dm_bridge_destroy(bridge);
+    return false;
+  }
+  if (link->session->send_video_frame(idr, 2000, true) != VideoSendStatus::Sent) {
+    std::fprintf(stderr, "FAIL reconfigure IDR rejected\n");
+    dm_bridge_destroy(bridge);
+    return false;
+  }
+  link->session->pump();
+  device.pump();
+  link->session->pump();
+
+  if (link->session->state() != SessionState::Streaming ||
+      link->session->negotiated_stream()->profile.resolution.refresh_hz != 120) {
+    std::fprintf(stderr, "FAIL reconfigure did not upgrade to 120 Hz\n");
+    dm_bridge_destroy(bridge);
+    return false;
+  }
+
+  {
+    std::lock_guard lock(bridge->links_mutex);
+    bridge->links.clear();
+  }
+  link->session.reset();
+  dm_bridge_destroy(bridge);
+  std::puts("PASS live refresh-rate reconfiguration and handshake advertisement");
+  return true;
+}
+
 int main() {
   using deskmate::protocol::IoStatus;
   std::atomic<std::uint64_t> rx{}, tx{}, errors{};
@@ -400,5 +579,6 @@ int main() {
   const bool high_fps = test_sustained_120fps_video_with_keyframes_and_tuned_host_scheduler();
   const bool policy = test_device_blocklist_and_disconnect();
   const bool multi = test_multi_device_links_and_policy();
-  return partial_read && streaming && high_fps && policy && multi ? 0 : 1;
+  const bool refresh_reconf = test_refresh_rate_reconfigure_and_advertisement();
+  return partial_read && streaming && high_fps && policy && multi && refresh_reconf ? 0 : 1;
 }

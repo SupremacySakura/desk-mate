@@ -85,6 +85,7 @@ struct HostWindowState: Equatable {
     var position: DisplayPosition = .right
     var preferredFrameRateHz = 0
     var negotiatedRefreshHz = 0
+    var maxSupportedRefreshHz = 0
     var liveFps = 0
     var liveBitrateMbps = 0.0
     var inputEventCount = 0
@@ -786,6 +787,9 @@ struct HostWindow: View {
             return "默认跟随设备协商帧率"
         }
         if state.negotiatedRefreshHz > 0 {
+            if state.preferredFrameRateHz > state.negotiatedRefreshHz {
+                return "已按协商上限 \(state.negotiatedRefreshHz) Hz 输出（请求 \(state.preferredFrameRateHz) Hz）"
+            }
             return "手动锁定 \(state.preferredFrameRateHz) Hz（协商 \(state.negotiatedRefreshHz) Hz）"
         }
         return "手动锁定 \(state.preferredFrameRateHz) Hz"

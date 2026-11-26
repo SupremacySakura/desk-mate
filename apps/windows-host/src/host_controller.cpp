@@ -2,6 +2,7 @@
 #include "deskmate/windows/host_session.hpp"
 
 #include <algorithm>
+#include <cmath>
 #include <cstdio>
 #include <sstream>
 #include <unordered_set>
@@ -9,12 +10,25 @@
 #ifdef _WIN32
 #include <windows.h>
 #include <mmsystem.h>  // must follow windows.h for DWORD/DECLARE_HANDLE
+#include <avrt.h>
 #endif
 
 namespace deskmate::windows {
 namespace {
 
 constexpr std::size_t kMaxLogLines = 200;
+
+#ifdef _WIN32
+void configure_realtime_process() {
+  PROCESS_POWER_THROTTLING_STATE throttle{};
+  throttle.Version = PROCESS_POWER_THROTTLING_CURRENT_VERSION;
+  throttle.ControlMask = PROCESS_POWER_THROTTLING_IGNORE_TIMER_RESOLUTION |
+                         PROCESS_POWER_THROTTLING_EXECUTION_SPEED;
+  throttle.StateMask = 0;
+  (void)SetProcessInformation(GetCurrentProcess(), ProcessPowerThrottling,
+                              &throttle, sizeof(throttle));
+}
+#endif
 
 std::string state_badge_for(const std::string& state, bool streaming,
                             const std::string& err) {
@@ -38,6 +52,9 @@ std::string state_badge_for(const std::string& state, bool streaming,
 
 HostController::HostController(HostOptions options, std::string settings_path)
     : options_(options), store_(std::move(settings_path)) {
+#ifdef _WIN32
+  configure_realtime_process();
+#endif
   const auto& prefs = store_.prefs();
   auto_virtual_display_ =
       options_.auto_match ? prefs.auto_virtual_display : false;
@@ -128,6 +145,7 @@ void HostController::stop() {
 }
 
 void HostController::start_service_internal() {
+  invalidate_vdd_status();
   {
     std::lock_guard lock(mutex_);
     if (service_running_) {
@@ -186,6 +204,7 @@ void HostController::start_service_internal() {
 }
 
 void HostController::stop_service_internal() {
+  invalidate_vdd_status();
   discovery_stop_.store(true, std::memory_order_release);
   {
     std::lock_guard lock(discovery_mutex_);
@@ -220,7 +239,7 @@ void HostController::stop_service_internal() {
 
   for (auto& ch : all) {
     ch->stop_requested.store(true, std::memory_order_release);
-    ch->wake_cv.notify_all();
+    wake_channel(ch);
     if (ch->session != nullptr) {
       ch->session->stop();
     }
@@ -232,6 +251,7 @@ void HostController::stop_service_internal() {
     stop_capture_for_channel(ch);
     if (ch->owns_virtual_display) {
       vdd_.destroy_display(ch->link_id);
+      invalidate_vdd_status();
       ch->owns_virtual_display = false;
     }
     if (ch->session != nullptr) {
@@ -242,6 +262,7 @@ void HostController::stop_service_internal() {
     }
   }
   vdd_.destroy_all();
+  invalidate_vdd_status();
   discovery_.reset();
   update_power_assertion();
   append_log("[service] USB AOA 服务已停止");
@@ -454,7 +475,7 @@ void HostController::discovery_loop() {
                   options_.refresh_hz));
           ch->session = std::make_unique<SessionLink>(
               std::move(transport), dev.identity, ch->link_id,
-              random_nonzero_u32(), (random_nonzero_u32() & 0x7FFFFFFFU) | 1U,
+              random_nonzero_u32(), (random_nonzero_u32() & 0x3FFFFFFFU) | 1U,
               options_.width, options_.height, advertise_hz,
               hevc_available_, accept_res);
           std::weak_ptr<LinkChannel> weak_ch = ch;
@@ -464,7 +485,7 @@ void HostController::discovery_loop() {
                 std::lock_guard wlock(locked->wake_mutex);
                 locked->wakeup = true;
               }
-              locked->wake_cv.notify_one();
+              signal_channel(locked);
             }
           });
           channels_.emplace(ch->link_id, ch);
@@ -534,10 +555,26 @@ void HostController::discovery_loop() {
 void HostController::link_worker_loop(const std::shared_ptr<LinkChannel>& ch) {
 #ifdef _WIN32
   SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_ABOVE_NORMAL);
+  DWORD task_index = 0;
+  const HANDLE mmcs = AvSetMmThreadCharacteristicsW(L"Capture", &task_index);
+  if (mmcs != nullptr) {
+    (void)AvSetMmThreadPriority(mmcs, AVRT_PRIORITY_HIGH);
+  }
+  {
+    std::lock_guard lock(ch->wake_mutex);
+    // Auto-reset: a producer that calls SetEvent() between our wakeup check
+    // and WaitForSingleObject() leaves the event signaled, so the wait returns
+    // immediately instead of sleeping through a queued frame. A manual-reset
+    // event had to be cleared with ResetEvent(), which could swallow a wake
+    // that arrived in exactly that window.
+    ch->wake_event = CreateEventW(nullptr, FALSE, FALSE, nullptr);
+  }
+  const HANDLE wait_event = ch->wake_event;
 #endif
   auto next_poll_30hz = std::chrono::steady_clock::now();
   auto next_metric_tick = std::chrono::steady_clock::now();
   std::uint64_t handshake_rx_baseline = ch->session->rx_bytes();
+  std::optional<deskmate::protocol::SessionState> last_logged_session_state;
   std::string last_logged_state;
   bool logged_first_rx = false;
   bool logged_first_frame = false;
@@ -551,9 +588,14 @@ void HostController::link_worker_loop(const std::shared_ptr<LinkChannel>& ch) {
 
     ch->session->pump();
 
-    const std::string cur_state(
-        deskmate::protocol::session_state_name(ch->session->state()));
-    if (cur_state != last_logged_state) {
+    const auto cur_session_state = ch->session->state();
+    const bool state_changed =
+        !last_logged_session_state.has_value() ||
+        *last_logged_session_state != cur_session_state;
+    if (state_changed) {
+      last_logged_session_state = cur_session_state;
+      const std::string cur_state(
+          deskmate::protocol::session_state_name(cur_session_state));
       std::string note = "[link " + std::to_string(ch->link_id) + "] 状态: " +
                          (last_logged_state.empty() ? std::string("init")
                                                     : last_logged_state) +
@@ -590,6 +632,7 @@ void HostController::link_worker_loop(const std::shared_ptr<LinkChannel>& ch) {
           ch->last_error = "等待设备授权（" + fail_reason + "，自动重试中）";
         }
         handshake_rx_baseline = ch->session->rx_bytes();
+        last_logged_session_state.reset();
         last_logged_state.clear();
         ch->session->restart_session();
         std::unique_lock wlock(ch->wake_mutex);
@@ -615,12 +658,19 @@ void HostController::link_worker_loop(const std::shared_ptr<LinkChannel>& ch) {
     }
 
     // Clear transient handshake error once streaming or device answers.
-    if (ch->session->state() == deskmate::protocol::SessionState::Streaming) {
+    if (cur_session_state == deskmate::protocol::SessionState::Streaming &&
+        state_changed) {
       std::lock_guard lock(mutex_);
       ch->last_error.clear();
     }
 
-    ensure_capture_for_channel(ch);
+    const auto now = std::chrono::steady_clock::now();
+    if (state_changed ||
+        ch->capture_dirty.exchange(false, std::memory_order_acq_rel) ||
+        !ch->capture_active.load(std::memory_order_acquire) ||
+        now >= next_poll_30hz) {
+      ensure_capture_for_channel(ch);
+    }
     if (!logged_first_frame && ch->session->stats().frames_sent > 0) {
       logged_first_frame = true;
       append_log("[link " + std::to_string(ch->link_id) +
@@ -642,14 +692,18 @@ void HostController::link_worker_loop(const std::shared_ptr<LinkChannel>& ch) {
       }
     }
 
-    if (ch->session->take_keyframe_request() != 0U) {
+    // The link reports both device-requested IDRs and its own local recovery
+    // requests (after a mid-GOP drop). Both must force a fresh keyframe, or
+    // the device keeps decoding P-frames with a broken reference chain.
+    const bool peer_idr = ch->session->take_keyframe_request() != 0U;
+    const bool local_idr = ch->session->consume_local_keyframe_request();
+    if (peer_idr || local_idr) {
       std::lock_guard lock(mutex_);
       if (ch->capture != nullptr) {
         ch->capture->request_keyframe();
       }
     }
 
-    const auto now = std::chrono::steady_clock::now();
     if (now >= next_poll_30hz) {
       next_poll_30hz = now + std::chrono::milliseconds(33);
       bool tick_input = false;
@@ -667,21 +721,48 @@ void HostController::link_worker_loop(const std::shared_ptr<LinkChannel>& ch) {
       update_channel_metrics(ch);
     }
 
-    const bool has_out = ch->session->has_pending_output();
+    const bool pending_out = ch->session->has_pending_output();
     const bool write_blocked = ch->session->consume_write_blocked();
-    if (!has_out || write_blocked) {
-      const auto wait_ms = has_out ? std::chrono::milliseconds(1)
-                                   : std::chrono::milliseconds(5);
+    // A blocked transport still has data to push, so retry on the short
+    // timeout instead of idling a full 5 ms (half a 120 Hz frame).
+    const bool retry_soon = pending_out || write_blocked;
+    if (!pending_out || write_blocked) {
       std::unique_lock wlock(ch->wake_mutex);
+#ifdef _WIN32
+      // Consume the pending wake under the lock. A wake that arrived while we
+      // were pumping must not be erased by an unconditional ResetEvent, or the
+      // worker sleeps a full timeout with a video frame already queued.
+      if (ch->wakeup.exchange(false, std::memory_order_acq_rel)) {
+        wlock.unlock();
+        continue;
+      }
+      wlock.unlock();
+      (void)WaitForSingleObject(wait_event, retry_soon ? 1U : 5U);
+#else
+      const auto wait_ms = retry_soon ? std::chrono::milliseconds(1)
+                                      : std::chrono::milliseconds(5);
       ch->wake_cv.wait_for(wlock, wait_ms, [&ch] {
         return ch->stop_requested.load(std::memory_order_acquire) ||
                ch->disconnect_requested.load(std::memory_order_acquire) ||
-               ch->wakeup;
+               ch->wakeup.load(std::memory_order_acquire);
       });
-      ch->wakeup = false;
+      ch->wakeup.store(false, std::memory_order_release);
+#endif
     }
   }
 
+#ifdef _WIN32
+  if (mmcs != nullptr) {
+    (void)AvRevertMmThreadCharacteristics(mmcs);
+  }
+  {
+    std::lock_guard lock(ch->wake_mutex);
+    ch->wake_event = nullptr;
+  }
+  if (wait_event != nullptr) {
+    (void)CloseHandle(wait_event);
+  }
+#endif
   ch->finished.store(true, std::memory_order_release);
   {
     std::lock_guard dlock(discovery_mutex_);
@@ -774,6 +855,7 @@ void HostController::ensure_capture_for_channel(
     const std::uintptr_t created = vdd_.create_display(
         ch->link_id, cap_opts.width, cap_opts.height, cap_opts.refresh_hz,
         vdd_log);
+    invalidate_vdd_status();
     if (!vdd_log.empty()) {
       append_log("[link " + std::to_string(ch->link_id) + "] " + vdd_log);
     }
@@ -858,7 +940,7 @@ void HostController::ensure_capture_for_channel(
             std::lock_guard wlock(locked->wake_mutex);
             locked->wakeup = true;
           }
-          locked->wake_cv.notify_one();
+          signal_channel(locked);
         }
       },
       [this, weak_ch](std::string msg) {
@@ -890,14 +972,31 @@ void HostController::ensure_capture_for_channel(
   {
     std::lock_guard lock(mutex_);
     ch->capture = std::move(capture);
+    ch->capture_active.store(true, std::memory_order_release);
     ch->capture_error.clear();
     const std::string res_text = ch->session->negotiated_summary();
     store_.record_seen_device(ch->device_id, ch->device_name,
                               ch->identity.manufacturer, ch->identity.serial,
                               res_text, true);
   }
+  // try_configure_mft_types silently steps the encoder down (120 -> 90 -> 60
+  // -> 30) when the hardware MFT rejects a mode. Surface the effective rate so
+  // a "90/120 Hz feels slow" report is not misdiagnosed as a transport bug.
+  const std::string encoder_summary = ch->capture->status_summary();
+  const std::string expected_hz = "@" + std::to_string(cap_opts.refresh_hz) + "Hz";
+  if (!encoder_summary.empty() &&
+      encoder_summary.find(expected_hz) == std::string::npos) {
+    append_log("[link " + std::to_string(ch->link_id) +
+               "] 警告：硬件编码器未接受 " +
+               std::to_string(cap_opts.refresh_hz) + "Hz，实际为 " +
+               encoder_summary);
+  }
   rearrange_monitors();
   update_power_assertion();
+  // Tell the transport the negotiated rate so it can size its back-off. The
+  // async URB timeout itself stays fixed: scaling it by frame rate made every
+  // queued URB race the timer, and one expiry aborts the whole WinUSB pipe.
+  ch->session->set_stream_fps(cap_opts.refresh_hz);
   append_log("[link " + std::to_string(ch->link_id) + "] 开始采集与编码 " +
              std::to_string(cap_opts.width) + "x" +
              std::to_string(cap_opts.height) + "@" +
@@ -910,6 +1009,7 @@ void HostController::stop_capture_for_channel(
   {
     std::lock_guard lock(mutex_);
     cap = std::move(ch->capture);
+    ch->capture_active.store(false, std::memory_order_release);
     ch->live_fps = 0;
     ch->live_bitrate_mbps = 0.0;
   }
@@ -939,7 +1039,7 @@ void HostController::restart_all_captures() {
       std::lock_guard wlock(ch->wake_mutex);
       ch->wakeup = true;
     }
-    ch->wake_cv.notify_one();
+    wake_channel(ch);
   }
 }
 
@@ -1105,6 +1205,20 @@ void HostController::update_power_assertion() {
 #endif
 }
 
+void HostController::wake_channel(const std::shared_ptr<LinkChannel>& ch) {
+  signal_channel(ch);
+}
+
+void HostController::signal_channel(const std::shared_ptr<LinkChannel>& ch) {
+  std::lock_guard lock(ch->wake_mutex);
+#ifdef _WIN32
+  if (ch->wake_event != nullptr) {
+    (void)SetEvent(ch->wake_event);
+  }
+#endif
+  ch->wake_cv.notify_all();
+}
+
 void HostController::set_service_running(bool enabled) {
   if (enabled) {
     start_service_internal();
@@ -1123,7 +1237,7 @@ void HostController::set_video_enabled(bool enabled) {
         std::lock_guard wlock(ch->wake_mutex);
         ch->wakeup = true;
       }
-      ch->wake_cv.notify_one();
+      wake_channel(ch);
     }
   }
 }
@@ -1173,6 +1287,7 @@ void HostController::set_auto_virtual_display(bool enabled) {
 
 void HostController::set_preferred_refresh_hz(int hz) {
   const int normalized = normalize_preferred_refresh_hz(hz);
+  std::vector<std::shared_ptr<LinkChannel>> channels_copy;
   {
     std::lock_guard lock(mutex_);
     if (preferred_refresh_hz_ == normalized) {
@@ -1181,12 +1296,53 @@ void HostController::set_preferred_refresh_hz(int hz) {
     preferred_refresh_hz_ = normalized;
     store_.prefs().preferred_refresh_hz = normalized;
     store_.save();
+    for (auto& [id, ch] : channels_) {
+      (void)id;
+      channels_copy.push_back(ch);
+    }
   }
   append_log(normalized > 0
                  ? ("[fps] 已手动切换目标帧率: " +
                     std::to_string(normalized) + " Hz")
                  : "[fps] 已恢复目标帧率: 自动（跟随设备协商）");
-  restart_all_captures();
+
+  const int desired_cap = normalized > 0 ? normalized : 120;
+  for (auto& ch : channels_copy) {
+    const auto neg = ch->session->negotiated_profile();
+    const int neg_hz = neg.has_value() ? neg->resolution.refresh_hz : 0;
+    const int max_hz = ch->session->max_supported_refresh_hz();
+    bool reconf_initiated = false;
+    if (neg_hz > 0 &&
+        ((normalized > 0 && normalized > neg_hz) ||
+         (normalized == 0 && max_hz > neg_hz))) {
+      if (ch->session->request_refresh_hz_reconfigure(desired_cap) > 0) {
+        reconf_initiated = true;
+      }
+    }
+    if (!reconf_initiated) {
+      const int effective_hz = resolve_effective_refresh_hz(
+          normalized, neg_hz, options_.refresh_hz);
+      bool rate_changed = false;
+      {
+        std::lock_guard lock(mutex_);
+        rate_changed = (ch->capture_refresh_hz != effective_hz);
+      }
+      if (rate_changed) {
+        stop_capture_for_channel(ch);
+        {
+          std::lock_guard lock(mutex_);
+          ch->capture_profile.reset();
+          ch->retry_after = {};
+        }
+        ch->capture_dirty.store(true, std::memory_order_release);
+      }
+    }
+    {
+      std::lock_guard wlock(ch->wake_mutex);
+      ch->wakeup = true;
+    }
+    wake_channel(ch);
+  }
 }
 
 void HostController::choose_monitor(std::uintptr_t handle) {
@@ -1310,8 +1466,10 @@ void HostController::apply_display_layout(
 }
 
 void HostController::refresh_displays() {
+  invalidate_vdd_status();
+  auto monitors = enumerate_monitors();
   std::lock_guard lock(mutex_);
-  refresh_monitors_locked();
+  monitors_ = std::move(monitors);
 }
 
 void HostController::disconnect_link(std::uint64_t link_id) {
@@ -1319,7 +1477,7 @@ void HostController::disconnect_link(std::uint64_t link_id) {
   auto it = channels_.find(link_id);
   if (it != channels_.end()) {
     it->second->disconnect_requested.store(true, std::memory_order_release);
-    it->second->wake_cv.notify_all();
+    wake_channel(it->second);
   }
 }
 
@@ -1432,7 +1590,7 @@ void HostController::set_device_allowed(const std::string& device_id,
   }
   for (auto& ch : to_disconnect) {
     ch->disconnect_requested.store(true, std::memory_order_release);
-    ch->wake_cv.notify_all();
+    wake_channel(ch);
   }
   {
     std::lock_guard lock(discovery_mutex_);
@@ -1489,11 +1647,12 @@ void HostController::remove_device(const std::string& device_id) {
   }
   for (auto& ch : to_disconnect) {
     ch->disconnect_requested.store(true, std::memory_order_release);
-    ch->wake_cv.notify_all();
+    wake_channel(ch);
   }
 }
 
 void HostController::retry() {
+  invalidate_vdd_status();
   bool running_now = false;
   {
     std::lock_guard lock(mutex_);
@@ -1538,16 +1697,43 @@ void HostController::handle_host_event(deskmate::protocol::HostEvent event) {
       std::lock_guard wlock(ch->wake_mutex);
       ch->wakeup = true;
     }
-    ch->wake_cv.notify_one();
+    wake_channel(ch);
   }
 }
 
+VirtualDisplayStatus HostController::vdd_status_cached(bool force_refresh) {
+  constexpr auto kTtl = std::chrono::seconds(30);
+  {
+    std::lock_guard lock(vdd_status_mutex_);
+    const auto now = std::chrono::steady_clock::now();
+    if (!force_refresh && vdd_status_valid_ &&
+        now - vdd_status_fetched_at_ < kTtl) {
+      return cached_vdd_status_;
+    }
+  }
+  // Probe outside the cache lock: it enumerates monitors and opens the VDD
+  // device interface, which can block for tens of milliseconds.
+  VirtualDisplayStatus status = vdd_.probe_status();
+  {
+    std::lock_guard lock(vdd_status_mutex_);
+    cached_vdd_status_ = status;
+    vdd_status_valid_ = true;
+    vdd_status_fetched_at_ = std::chrono::steady_clock::now();
+  }
+  return status;
+}
+
+void HostController::invalidate_vdd_status() {
+  std::lock_guard lock(vdd_status_mutex_);
+  vdd_status_valid_ = false;
+}
+
 HostUiState HostController::snapshot_ui_state() {
-  const VirtualDisplayStatus vdd_status = vdd_.probe_status();
+  const VirtualDisplayStatus vdd_status = vdd_status_cached(false);
+  const StartupStatus startup_status = startup_manager_.current_status();
   HostUiState view;
   std::lock_guard lock(mutex_);
-  refresh_monitors_locked();
-  startup_status_ = startup_manager_.current_status();
+  startup_status_ = startup_status;
 
   view.vdd_installed = vdd_status.driver_installed;
   view.vdd_backend_name = vdd_status.backend_name;
@@ -1965,6 +2151,15 @@ std::string HostController::build_diagnostic_locked() const {
        << st.frames_submitted << " dropped=" << st.frames_dropped
        << " inputs=" << st.input_events << " rx=" << st.rx_bytes
        << " tx=" << st.tx_bytes << " bulkErr=" << st.bulk_errors;
+    if (ch->capture != nullptr) {
+      ss << " captured=" << ch->capture->received_frame_count()
+         << " encoded=" << ch->capture->encoded_frame_count()
+         << " captureDropped=" << ch->capture->dropped_frame_count();
+      const std::string enc = ch->capture->status_summary();
+      if (!enc.empty()) {
+        ss << " enc=\"" << enc << "\"";
+      }
+    }
     if (!ch->capture_error.empty()) {
       ss << " captureErr=" << ch->capture_error;
     }

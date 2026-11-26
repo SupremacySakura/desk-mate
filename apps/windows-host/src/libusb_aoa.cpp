@@ -44,8 +44,6 @@ namespace deskmate::windows {
 namespace {
 
 constexpr unsigned kControlTimeoutMs = 3000;
-constexpr unsigned kReaderTimeoutMs = 25;
-constexpr unsigned kWriteTimeoutMs = 50;
 constexpr std::size_t kMaxRxBufferBytes = 256U * 1024U;
 constexpr auto kAoaSwitchCooldown = std::chrono::seconds(5);
 constexpr auto kExpectedIdentityTtl = std::chrono::seconds(20);
@@ -593,21 +591,35 @@ LibusbBulkTransport::LibusbBulkTransport(libusb_device_handle* handle,
                                          std::uint8_t endpoint_in,
                                          std::uint8_t endpoint_out,
                                          std::string device_id,
-                                         int interface_number)
+                                         int interface_number,
+                                         libusb_context* context)
     : handle_(handle),
       endpoint_in_(endpoint_in),
       endpoint_out_(endpoint_out),
       interface_number_(interface_number),
+      context_(context),
       device_id_(std::move(device_id)) {
-  reader_ = std::thread([this] { reader_loop(); });
+  for (std::size_t i = 0; i < kInTransferCount; ++i) {
+    in_transfers_[i] = libusb_alloc_transfer(0);
+  }
+  for (auto& slot : out_slots_) {
+    slot.transfer = libusb_alloc_transfer(0);
+    slot.buffer.resize(kMaxOutTransferBytes);
+  }
+  events_ = std::thread([this] { event_loop(); });
+  // Pre-post every IN URB so the device's replies never wait for a new
+  // submit() round trip; the completion handler re-arms them immediately.
+  for (std::size_t i = 0; i < kInTransferCount; ++i) {
+    submit_in_transfer(i);
+  }
 }
 
 LibusbBulkTransport::~LibusbBulkTransport() {
-  stop_.store(true, std::memory_order_release);
-  wake_reader();
-  if (reader_.joinable()) {
-    reader_.join();
+  cancel();
+  if (events_.joinable()) {
+    events_.join();
   }
+  free_transfers();
   if (handle_ != nullptr) {
     if (interface_number_ >= 0) {
       libusb_release_interface(handle_, interface_number_);
@@ -616,6 +628,290 @@ LibusbBulkTransport::~LibusbBulkTransport() {
     libusb_close(handle_);
     handle_ = nullptr;
   }
+}
+
+void LibusbBulkTransport::submit_in_transfer(std::size_t index) {
+  libusb_transfer* transfer = in_transfers_[index];
+  if (transfer == nullptr || handle_ == nullptr ||
+      stop_.load(std::memory_order_acquire)) {
+    return;
+  }
+  libusb_fill_bulk_transfer(
+      transfer, handle_, endpoint_in_, in_buffers_[index].data(),
+      static_cast<int>(kInTransferBytes), &LibusbBulkTransport::on_in_complete,
+      this, 0U);
+  // Count before submitting: libusb may complete the URB on the event thread
+  // before submit_transfer() returns to us.
+  active_transfers_.fetch_add(1, std::memory_order_acq_rel);
+  const int rc = libusb_submit_transfer(transfer);
+  if (rc != LIBUSB_SUCCESS && rc != LIBUSB_ERROR_BUSY) {
+    active_transfers_.fetch_sub(1, std::memory_order_acq_rel);
+    report_error("bulk IN submit failed: " + libusb_text(rc));
+    if (rc == LIBUSB_ERROR_NO_DEVICE) {
+      closed_.store(true, std::memory_order_release);
+      cv_.notify_all();
+      notify_rx();
+    }
+  }
+}
+
+void LIBUSB_CALL LibusbBulkTransport::on_in_complete(
+    libusb_transfer* transfer) {
+  if (transfer == nullptr || transfer->user_data == nullptr) {
+    return;
+  }
+  static_cast<LibusbBulkTransport*>(transfer->user_data)
+      ->handle_in_complete(transfer);
+}
+
+void LIBUSB_CALL LibusbBulkTransport::on_out_complete(
+    libusb_transfer* transfer) {
+  if (transfer == nullptr || transfer->user_data == nullptr) {
+    return;
+  }
+  static_cast<LibusbBulkTransport*>(transfer->user_data)
+      ->handle_out_complete(transfer);
+}
+
+void LibusbBulkTransport::handle_in_complete(libusb_transfer* transfer) {
+  // Decremented at scope exit, never at entry: the destructor must not free a
+  // transfer whose callback is still running.
+  struct ActiveGuard {
+    std::atomic<int>& counter;
+    ~ActiveGuard() { counter.fetch_sub(1, std::memory_order_acq_rel); }
+  } guard{active_transfers_};
+  const auto found =
+      std::find(in_transfers_.begin(), in_transfers_.end(), transfer);
+  if (found == in_transfers_.end()) {
+    return;
+  }
+  const std::size_t index =
+      static_cast<std::size_t>(found - in_transfers_.begin());
+  if (stop_.load(std::memory_order_acquire)) {
+    return;
+  }
+  if (transfer->status == LIBUSB_TRANSFER_COMPLETED) {
+    consecutive_in_errors_.store(0, std::memory_order_relaxed);
+    const int transferred = transfer->actual_length;
+    if (transferred > 0) {
+      rx_bytes_.fetch_add(static_cast<std::uint64_t>(transferred),
+                          std::memory_order_relaxed);
+      {
+        std::lock_guard lock(mutex_);
+        if (rx_buffer_.size() + static_cast<std::size_t>(transferred) >
+            kMaxRxBufferBytes) {
+          const std::size_t drop =
+              rx_buffer_.size() + static_cast<std::size_t>(transferred) -
+              kMaxRxBufferBytes;
+          rx_buffer_.erase(
+              rx_buffer_.begin(),
+              rx_buffer_.begin() + static_cast<std::ptrdiff_t>(
+                                       std::min(drop, rx_buffer_.size())));
+        }
+        rx_buffer_.insert(rx_buffer_.end(),
+                          transfer->buffer,
+                          transfer->buffer + transferred);
+      }
+      cv_.notify_all();
+      notify_rx();
+    }
+    submit_in_transfer(index);
+    return;
+  }
+  if (transfer->status == LIBUSB_TRANSFER_CANCELLED ||
+      transfer->status == LIBUSB_TRANSFER_NO_DEVICE) {
+    if (transfer->status == LIBUSB_TRANSFER_NO_DEVICE) {
+      closed_.store(true, std::memory_order_release);
+      cv_.notify_all();
+      notify_rx();
+    } else if (!stop_.load(std::memory_order_acquire)) {
+      // WinUSB aborts every queued URB on an endpoint when one transfer is
+      // cancelled, so a cancellation that did not come from cancel() must
+      // re-arm or the read side silently loses a slot each time.
+      submit_in_transfer(index);
+    }
+    return;
+  }
+  // STALL / ERROR: fail the transport and let the host reconnect cleanly.
+  // libusb_clear_halt() is a synchronous EP0 control transfer and must never
+  // run from this callback: it re-enters the libusb event handler and resets
+  // the device's DATA0/DATA1 toggle, which makes the Android AOA driver drop
+  // the pipe. Re-arming a stalled endpoint would only spin here.
+  bulk_errors_.fetch_add(1, std::memory_order_relaxed);
+  const bool transient_error = transfer->status == LIBUSB_TRANSFER_ERROR &&
+                               consecutive_in_errors_.fetch_add(
+                                   1, std::memory_order_relaxed) + 1 < 3;
+  if (transient_error && !stop_.load(std::memory_order_acquire)) {
+    // IN URBs use an infinite timeout, so a stray error is usually a one-off
+    // glitch; re-arm and let the next completion decide.
+    submit_in_transfer(index);
+    return;
+  }
+  report_error("bulk IN failed: " +
+               std::string(libusb_error_name(transfer->status)));
+  failed_.store(true, std::memory_order_release);
+  notify_rx();
+}
+
+void LibusbBulkTransport::handle_out_complete(libusb_transfer* transfer) {
+  struct ActiveGuard {
+    std::atomic<int>& counter;
+    ~ActiveGuard() { counter.fetch_sub(1, std::memory_order_acq_rel); }
+  } guard{active_transfers_};
+  OutSlot* slot = nullptr;
+  for (auto& candidate : out_slots_) {
+    if (candidate.transfer == transfer) {
+      slot = &candidate;
+      break;
+    }
+  }
+  if (slot == nullptr) {
+    return;
+  }
+  switch (transfer->status) {
+    case LIBUSB_TRANSFER_COMPLETED:
+      if (transfer->actual_length > 0) {
+        tx_bytes_.fetch_add(static_cast<std::uint64_t>(transfer->actual_length),
+                            std::memory_order_relaxed);
+      }
+      if (transfer->actual_length < transfer->length) {
+        // Bytes already handed to the URB cannot be rewound, so a short write
+        // would leave a hole in the framed stream. Fail the link instead: the
+        // session then tears down and re-handshakes from a clean offset.
+        bulk_errors_.fetch_add(1, std::memory_order_relaxed);
+        write_blocked_.store(true, std::memory_order_relaxed);
+        failed_.store(true, std::memory_order_release);
+        notify_rx();
+        report_error("bulk OUT short write: " +
+                     std::to_string(transfer->actual_length) + "/" +
+                     std::to_string(transfer->length));
+      } else {
+        consecutive_write_errors_.store(0, std::memory_order_relaxed);
+      }
+      break;
+    case LIBUSB_TRANSFER_TIMED_OUT:
+      // write() already reported the full packet as accepted, so core has
+      // popped it. A timed-out URB therefore leaves a hole in the framed
+      // stream that no retry can fill: fail the link and re-handshake.
+      // With the 2 s timeout this only fires on a genuinely wedged pipe.
+      write_timeouts_.fetch_add(1, std::memory_order_relaxed);
+      write_blocked_.store(true, std::memory_order_relaxed);
+      failed_.store(true, std::memory_order_release);
+      notify_rx();
+      report_error("bulk OUT timed out after " +
+                   std::to_string(write_timeout_ms_.load(
+                       std::memory_order_relaxed)) +
+                   "ms");
+      break;
+    case LIBUSB_TRANSFER_NO_DEVICE:
+      closed_.store(true, std::memory_order_release);
+      cv_.notify_all();
+      notify_rx();
+      break;
+    case LIBUSB_TRANSFER_CANCELLED:
+      break;
+    default:
+      bulk_errors_.fetch_add(1, std::memory_order_relaxed);
+      write_blocked_.store(true, std::memory_order_relaxed);
+      failed_.store(true, std::memory_order_release);
+      notify_rx();
+      report_error("bulk OUT failed: " +
+                   std::string(libusb_error_name(transfer->status)));
+      break;
+  }
+  slot->busy.store(false, std::memory_order_release);
+  // A queued frame was refused for lack of a free URB; now that one retired,
+  // wake the link worker instead of letting it poll every 1 ms. Use the
+  // dedicated flag: write_blocked_ is consumed by consume_write_blocked() on
+  // the worker thread, so testing it here would always see false.
+  if (out_wake_needed_.exchange(false, std::memory_order_acq_rel)) {
+    notify_rx();
+  }
+}
+
+void LibusbBulkTransport::event_loop() {
+#ifdef _WIN32
+  SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_ABOVE_NORMAL);
+#endif
+  auto drain_deadline = std::chrono::steady_clock::time_point{};
+  while (true) {
+    const bool stopping = stop_.load(std::memory_order_acquire);
+    if (stopping) {
+      if (active_transfers_.load(std::memory_order_acquire) <= 0) {
+        return;
+      }
+      if (drain_deadline.time_since_epoch().count() == 0) {
+        drain_deadline =
+            std::chrono::steady_clock::now() + std::chrono::seconds(1);
+      } else if (std::chrono::steady_clock::now() > drain_deadline) {
+        return;
+      }
+    }
+    timeval tv{};
+    tv.tv_sec = 0;
+    tv.tv_usec = 50'000;
+    const int rc =
+        libusb_handle_events_timeout_completed(context_, &tv, nullptr);
+    if (rc != LIBUSB_SUCCESS && rc != LIBUSB_ERROR_INTERRUPTED &&
+        rc != LIBUSB_ERROR_TIMEOUT) {
+      report_error("libusb_handle_events failed: " + libusb_text(rc));
+      if (rc == LIBUSB_ERROR_NO_DEVICE || rc == LIBUSB_ERROR_IO) {
+        // Keep draining: in-flight URBs still have to complete their
+        // callbacks before the transport is destroyed.
+        closed_.store(true, std::memory_order_release);
+        notify_rx();
+        // handle_events() returns immediately once the device is gone; sleep
+        // rather than spin until the outstanding callbacks drain.
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+      }
+    }
+  }
+}
+
+void LibusbBulkTransport::free_transfers() {
+  for (auto*& transfer : in_transfers_) {
+    if (transfer != nullptr) {
+      libusb_free_transfer(transfer);
+      transfer = nullptr;
+    }
+  }
+  for (auto& slot : out_slots_) {
+    if (slot.transfer != nullptr) {
+      libusb_free_transfer(slot.transfer);
+      slot.transfer = nullptr;
+    }
+  }
+}
+
+void LibusbBulkTransport::cancel_all_transfers() {
+  for (auto* transfer : in_transfers_) {
+    if (transfer != nullptr) {
+      (void)libusb_cancel_transfer(transfer);
+    }
+  }
+  for (auto& slot : out_slots_) {
+    if (slot.transfer != nullptr) {
+      (void)libusb_cancel_transfer(slot.transfer);
+    }
+  }
+}
+
+void LibusbBulkTransport::report_error(const std::string& message) {
+  {
+    std::lock_guard lock(mutex_);
+    last_error_ = message;
+  }
+}
+
+void LibusbBulkTransport::set_stream_fps(int fps) {
+  // Async URBs do not block the sender, so scaling the timeout by frame rate
+  // is counter-productive: at 120 Hz it used to become 25 ms, and every URB
+  // in a 6-slot pipeline started counting down at submit time. On WinUSB one
+  // expired URB calls WinUsb_AbortPipe() and cancels the whole endpoint, which
+  // is exactly what made the link drop mid-stream. Keep a generous bound and
+  // let the session heartbeat decide whether the device is gone.
+  (void)fps;
+  write_timeout_ms_.store(2000, std::memory_order_release);
 }
 
 void LibusbBulkTransport::wake_reader() { cv_.notify_all(); }
@@ -664,130 +960,79 @@ deskmate::protocol::IoResult LibusbBulkTransport::write(
   if (handle_ == nullptr || closed_.load(std::memory_order_acquire)) {
     return {deskmate::protocol::IoStatus::Closed, 0};
   }
-  int transferred = 0;
-  const int rc = libusb_bulk_transfer(
-      handle_, endpoint_out_, const_cast<unsigned char*>(source.data()),
-      static_cast<int>(source.size()), &transferred, kWriteTimeoutMs);
-  if (rc == LIBUSB_SUCCESS || rc == LIBUSB_ERROR_TIMEOUT) {
-    if (rc == LIBUSB_ERROR_TIMEOUT) {
-      write_timeouts_.fetch_add(1, std::memory_order_relaxed);
+  if (failed_.load(std::memory_order_acquire)) {
+    // An async URB that died mid-packet already left a hole in the framed
+    // stream, so no later write can repair it: report a hard error and let the
+    // session re-handshake from a clean offset.
+    return {deskmate::protocol::IoStatus::Error, 0};
+  }
+  if (source.empty()) {
+    return {deskmate::protocol::IoStatus::Ok, 0};
+  }
+  // ByteIo allows partial writes, and core already advances its offset by the
+  // returned byte count. A large keyframe must therefore be split into
+  // kMaxOutTransferBytes chunks instead of failing the whole session.
+  const std::size_t chunk = std::min(source.size(), kMaxOutTransferBytes);
+  // Find a free slot; the whole point of the pool is that a submit never
+  // blocks the pump thread waiting for the previous URB to retire.
+  // Arm the wake flag *before* scanning: a completion that races with this
+  // write either frees a slot we then take, or sees the flag and notifies.
+  out_wake_needed_.store(true, std::memory_order_release);
+  OutSlot* slot = nullptr;
+  for (auto& candidate : out_slots_) {
+    if (candidate.transfer == nullptr) {
+      continue;
     }
-    consecutive_write_errors_.store(0, std::memory_order_relaxed);
-    if (transferred <= 0) {
-      write_blocked_.store(true, std::memory_order_relaxed);
-      return {deskmate::protocol::IoStatus::WouldBlock, 0};
+    bool expected = false;
+    if (candidate.busy.compare_exchange_strong(
+            expected, true, std::memory_order_acq_rel)) {
+      slot = &candidate;
+      break;
     }
-    tx_bytes_.fetch_add(static_cast<std::uint64_t>(transferred),
-                        std::memory_order_relaxed);
-    return {deskmate::protocol::IoStatus::Ok,
-            static_cast<std::size_t>(transferred)};
   }
-  if (rc == LIBUSB_ERROR_NO_DEVICE) {
-    closed_.store(true, std::memory_order_release);
-    wake_reader();
-    notify_rx();
-    return {deskmate::protocol::IoStatus::Closed, 0};
-  }
-  bulk_errors_.fetch_add(1, std::memory_order_relaxed);
-  const int errs =
-      consecutive_write_errors_.fetch_add(1, std::memory_order_relaxed) + 1;
-  if (rc == LIBUSB_ERROR_PIPE) {
-    libusb_clear_halt(handle_, endpoint_out_);
-  }
-  {
-    std::lock_guard lock(mutex_);
-    last_error_ = "bulk OUT failed: " + libusb_text(rc);
-  }
-  const bool transient =
-      (rc == LIBUSB_ERROR_PIPE || rc == LIBUSB_ERROR_IO ||
-       rc == LIBUSB_ERROR_INTERRUPTED || rc == LIBUSB_ERROR_BUSY);
-  if (transient && errs <= 6) {
+  if (slot == nullptr) {
     write_blocked_.store(true, std::memory_order_relaxed);
     return {deskmate::protocol::IoStatus::WouldBlock, 0};
   }
-  return {deskmate::protocol::IoStatus::Error, 0};
+  out_wake_needed_.store(false, std::memory_order_release);
+  std::memcpy(slot->buffer.data(), source.data(), chunk);
+  libusb_fill_bulk_transfer(
+      slot->transfer, handle_, endpoint_out_, slot->buffer.data(),
+      static_cast<int>(chunk),
+      &LibusbBulkTransport::on_out_complete, this,
+      static_cast<unsigned>(write_timeout_ms_.load(std::memory_order_relaxed)));
+  active_transfers_.fetch_add(1, std::memory_order_acq_rel);
+  const int rc = libusb_submit_transfer(slot->transfer);
+  if (rc != LIBUSB_SUCCESS) {
+    active_transfers_.fetch_sub(1, std::memory_order_acq_rel);
+    slot->busy.store(false, std::memory_order_release);
+    out_wake_needed_.store(true, std::memory_order_release);
+    report_error("bulk OUT submit failed: " + libusb_text(rc));
+    bulk_errors_.fetch_add(1, std::memory_order_relaxed);
+    write_blocked_.store(true, std::memory_order_relaxed);
+    if (rc == LIBUSB_ERROR_NO_DEVICE) {
+      closed_.store(true, std::memory_order_release);
+      notify_rx();
+      return {deskmate::protocol::IoStatus::Closed, 0};
+    }
+    return {deskmate::protocol::IoStatus::WouldBlock, 0};
+  }
+  return {deskmate::protocol::IoStatus::Ok, chunk};
 }
 
 void LibusbBulkTransport::cancel() {
-  stop_.store(true, std::memory_order_release);
+  if (stop_.exchange(true, std::memory_order_acq_rel)) {
+    return;
+  }
+  cancel_all_transfers();
   wake_reader();
   notify_rx();
 }
 
 bool LibusbBulkTransport::alive() const {
-  return handle_ != nullptr && !closed_.load(std::memory_order_acquire) &&
+  return handle_ != nullptr && !stop_.load(std::memory_order_acquire) &&
+         !closed_.load(std::memory_order_acquire) &&
          !failed_.load(std::memory_order_acquire);
-}
-
-void LibusbBulkTransport::reader_loop() {
-#ifdef _WIN32
-  SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_ABOVE_NORMAL);
-#endif
-  std::array<std::uint8_t, 16384> chunk{};
-  int consecutive_errors = 0;
-  while (!stop_.load(std::memory_order_acquire)) {
-    int transferred = 0;
-    const int rc = libusb_bulk_transfer(
-        handle_, endpoint_in_, chunk.data(), static_cast<int>(chunk.size()),
-        &transferred, kReaderTimeoutMs);
-    if (rc == LIBUSB_SUCCESS || rc == LIBUSB_ERROR_TIMEOUT) {
-      consecutive_errors = 0;
-      if (transferred > 0) {
-        rx_bytes_.fetch_add(static_cast<std::uint64_t>(transferred),
-                            std::memory_order_relaxed);
-        {
-          std::lock_guard lock(mutex_);
-          if (rx_buffer_.size() + static_cast<std::size_t>(transferred) >
-              kMaxRxBufferBytes) {
-            const std::size_t drop =
-                rx_buffer_.size() + static_cast<std::size_t>(transferred) -
-                kMaxRxBufferBytes;
-            rx_buffer_.erase(
-                rx_buffer_.begin(),
-                rx_buffer_.begin() +
-                    static_cast<std::ptrdiff_t>(std::min(drop, rx_buffer_.size())));
-          }
-          rx_buffer_.insert(rx_buffer_.end(), chunk.begin(),
-                            chunk.begin() + transferred);
-        }
-        cv_.notify_all();
-        notify_rx();
-      }
-      continue;
-    }
-    if (rc == LIBUSB_ERROR_NO_DEVICE) {
-      closed_.store(true, std::memory_order_release);
-      cv_.notify_all();
-      notify_rx();
-      return;
-    }
-    bulk_errors_.fetch_add(1, std::memory_order_relaxed);
-    ++consecutive_errors;
-    if (rc == LIBUSB_ERROR_PIPE || rc == LIBUSB_ERROR_IO) {
-      libusb_clear_halt(handle_, endpoint_in_);
-    }
-    const bool transient =
-        (rc == LIBUSB_ERROR_PIPE || rc == LIBUSB_ERROR_IO ||
-         rc == LIBUSB_ERROR_OVERFLOW || rc == LIBUSB_ERROR_INTERRUPTED ||
-         rc == LIBUSB_ERROR_BUSY);
-    {
-      std::lock_guard lock(mutex_);
-      last_error_ = "bulk IN " +
-                    std::string(transient ? "transient (" : "failed (") +
-                    std::to_string(consecutive_errors) + "): " + libusb_text(rc);
-    }
-    if (transient && consecutive_errors <= 12 &&
-        !stop_.load(std::memory_order_acquire)) {
-      std::this_thread::sleep_for(std::chrono::milliseconds(25));
-      continue;
-    }
-    if (!stop_.load(std::memory_order_acquire)) {
-      failed_.store(true, std::memory_order_release);
-      cv_.notify_all();
-      notify_rx();
-    }
-    return;
-  }
 }
 
 LibusbAoaDiscovery::LibusbAoaDiscovery() {
@@ -1184,7 +1429,7 @@ std::unique_ptr<LinkTransport> LibusbAoaDiscovery::open_accessory(
   return std::make_unique<LibusbBulkTransport>(
       handle, pair.endpoint_in, pair.endpoint_out,
       deskmate::platform::aoa_device_id(accessory.identity),
-      static_cast<int>(pair.interface_number));
+      static_cast<int>(pair.interface_number), context_);
 }
 
 bool LibusbAoaDiscovery::is_accessory_present(std::uint8_t bus,
@@ -1317,11 +1562,13 @@ LibusbBulkTransport::LibusbBulkTransport(libusb_device_handle* handle,
                                          std::uint8_t endpoint_in,
                                          std::uint8_t endpoint_out,
                                          std::string device_id,
-                                         int interface_number)
+                                         int interface_number,
+                                         libusb_context* context)
     : handle_(handle),
       endpoint_in_(endpoint_in),
       endpoint_out_(endpoint_out),
       interface_number_(interface_number),
+      context_(context),
       device_id_(std::move(device_id)) {}
 
 LibusbBulkTransport::~LibusbBulkTransport() = default;
@@ -1337,12 +1584,21 @@ deskmate::protocol::IoResult LibusbBulkTransport::write(
 }
 
 void LibusbBulkTransport::cancel() {}
-void LibusbBulkTransport::reader_loop() {}
 void LibusbBulkTransport::wake_reader() {}
 void LibusbBulkTransport::notify_rx() {}
 void LibusbBulkTransport::set_rx_callback(std::function<void()>) {}
+void LibusbBulkTransport::set_stream_fps(int) {}
 bool LibusbBulkTransport::consume_write_blocked() noexcept { return false; }
 bool LibusbBulkTransport::alive() const { return false; }
+void LIBUSB_CALL LibusbBulkTransport::on_in_complete(libusb_transfer*) {}
+void LIBUSB_CALL LibusbBulkTransport::on_out_complete(libusb_transfer*) {}
+void LibusbBulkTransport::event_loop() {}
+void LibusbBulkTransport::submit_in_transfer(std::size_t) {}
+void LibusbBulkTransport::handle_in_complete(libusb_transfer*) {}
+void LibusbBulkTransport::handle_out_complete(libusb_transfer*) {}
+void LibusbBulkTransport::cancel_all_transfers() {}
+void LibusbBulkTransport::free_transfers() {}
+void LibusbBulkTransport::report_error(const std::string&) {}
 
 LibusbAoaDiscovery::LibusbAoaDiscovery()
     : last_error_(

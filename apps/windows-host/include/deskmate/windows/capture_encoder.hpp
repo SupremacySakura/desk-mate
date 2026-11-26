@@ -4,8 +4,11 @@
 #include <cstdint>
 #include <functional>
 #include <memory>
+#include <mutex>
+#include <optional>
 #include <span>
 #include <string>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
@@ -59,6 +62,7 @@ class CaptureEncoder {
   [[nodiscard]] virtual bool running() const = 0;
   [[nodiscard]] virtual std::uint64_t encoded_frame_count() const { return 0; }
   [[nodiscard]] virtual std::uint64_t received_frame_count() const { return 0; }
+  [[nodiscard]] virtual std::uint64_t dropped_frame_count() const { return 0; }
   [[nodiscard]] virtual std::string status_summary() const { return {}; }
 };
 
@@ -95,17 +99,82 @@ bool apply_monitor_layout(const std::vector<MonitorPlacement>& placements);
 [[nodiscard]] int normalize_preferred_refresh_hz(int hz) noexcept;
 
 // Resolves the active capture refresh rate from user preference, device
-// negotiated refresh rate, and host fallback.
+// negotiated refresh rate, and host fallback, clamped to `negotiated_hz` when
+// negotiated so the host never exceeds the client decoder's active profile.
 [[nodiscard]] int resolve_effective_refresh_hz(int preferred_hz,
                                                  int negotiated_hz,
                                                  int fallback_hz = 60) noexcept;
 
-// Auto mode keeps the proven 60 Hz USB baseline. Users can still opt into a
-// higher rate explicitly through the UI or --fps.
+// Handshake advertisement always offers up to 120 Hz (120/90/60) unless an
+// explicit CLI --fps fallback was supplied.
 [[nodiscard]] int resolve_advertised_refresh_hz(int preferred_hz,
                                                 bool explicit_fallback,
                                                 int fallback_hz) noexcept;
-[[nodiscard]] int async_input_wait_budget_ms(int fps) noexcept;
+
+class FramePacer {
+ public:
+  explicit FramePacer(int fps);
+  [[nodiscard]] std::int64_t next_deadline_us(
+      std::int64_t submitted_at_us) noexcept;
+
+ private:
+  std::int64_t period_us_;
+  std::int64_t next_deadline_us_{-1};
+};
+
+// A transient not-ready result leaves the newest sample queued. Only replacing
+// an unsubmitted sample counts as a capture-side drop.
+template <typename Sample>
+class LatestFrameQueue {
+ public:
+  static_assert(!std::is_reference_v<Sample>);
+
+  bool push(Sample sample) {
+    std::lock_guard lock(mutex_);
+    const bool replaced = pending_.has_value();
+    pending_ = std::move(sample);
+    return replaced;
+  }
+
+  // Push and hand the evicted sample back to the caller so it can release any
+  // resource (GPU texture slot, sample) the replaced frame was holding.
+  std::optional<Sample> replace(Sample sample) {
+    std::lock_guard lock(mutex_);
+    std::optional<Sample> evicted = std::move(pending_);
+    pending_ = std::move(sample);
+    return evicted;
+  }
+
+  [[nodiscard]] std::optional<Sample> peek() const
+    requires std::copy_constructible<Sample>
+  {
+    std::lock_guard lock(mutex_);
+    return pending_;
+  }
+
+  [[nodiscard]] std::optional<Sample> take() {
+    std::lock_guard lock(mutex_);
+    return std::exchange(pending_, std::nullopt);
+  }
+
+  bool restore_if_empty(Sample sample) {
+    std::lock_guard lock(mutex_);
+    if (pending_.has_value()) {
+      return false;
+    }
+    pending_ = std::move(sample);
+    return true;
+  }
+
+  void discard() {
+    std::lock_guard lock(mutex_);
+    pending_.reset();
+  }
+
+ private:
+  mutable std::mutex mutex_;
+  std::optional<Sample> pending_;
+};
 
 // Computes a target H.264/HEVC bitrate sized to avoid overflowing the 12 KiB
 // x 64 fragment USB keyframe budget while preserving clarity at high FPS.

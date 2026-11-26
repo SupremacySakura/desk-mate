@@ -155,6 +155,7 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
     private boolean lastHudExpanded;
     private boolean lastHudShowFps;
     private int lastHudFps = -1;
+    private float lastPreferredRefreshHz = -1.0f;
     private String lastHudBitrateText = "";
     private String lastHudCodec = "";
     private String lastHudRes = "";
@@ -419,6 +420,7 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
         lastSampleAt = 0L;
         engine = null;
         rawEngineJson = "{}";
+        applyWindowPreferredRefreshRate(0.0f);
         syncTouchCapture();
         if (page == Page.DISPLAY) {
             navigate(Page.HOME);
@@ -440,6 +442,7 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
                 "attached".equals(engine.surface) &&
                 engine.decoderRendered > 0L) {
                 frameReady = true;
+                applyWindowPreferredRefreshRate(parseNegotiatedRefreshHz(activeResolution));
                 if (!enteredThisLink) {
                     enteredThisLink = true;
                     navigate(Page.DISPLAY);
@@ -448,6 +451,7 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
             } else if (!"streaming".equals(engine.session) &&
                        !"paused".equals(engine.session)) {
                 frameReady = false;
+                applyWindowPreferredRefreshRate(0.0f);
             }
             syncTouchCapture();
         }
@@ -1989,15 +1993,57 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
 
     @SuppressWarnings("deprecation")
     private float currentRefreshHz() {
+        final Display display;
         if (Build.VERSION.SDK_INT >= 30) {
-            final Display display = getDisplay();
-            if (display != null) {
-                return display.getRefreshRate();
+            display = getDisplay();
+        } else {
+            display = ((WindowManager) getSystemService(Context.WINDOW_SERVICE)).getDefaultDisplay();
+        }
+        if (display == null) {
+            return 60.0f;
+        }
+        float bestHz = display.getRefreshRate();
+        final Display.Mode current = display.getMode();
+        final Display.Mode[] modes = display.getSupportedModes();
+        if (current != null && modes != null) {
+            final int curW = current.getPhysicalWidth();
+            final int curH = current.getPhysicalHeight();
+            for (final Display.Mode mode : modes) {
+                if (mode.getPhysicalWidth() == curW &&
+                    mode.getPhysicalHeight() == curH &&
+                    mode.getRefreshRate() > bestHz) {
+                    bestHz = mode.getRefreshRate();
+                }
             }
         }
-        final Display display =
-            ((WindowManager) getSystemService(Context.WINDOW_SERVICE)).getDefaultDisplay();
-        return display != null ? display.getRefreshRate() : 60.0f;
+        return bestHz > 0.0f ? bestHz : 60.0f;
+    }
+
+    private static float parseNegotiatedRefreshHz(String resolution) {
+        if (resolution == null) {
+            return 0.0f;
+        }
+        final int at = resolution.lastIndexOf('@');
+        if (at < 0 || at + 1 >= resolution.length()) {
+            return 0.0f;
+        }
+        try {
+            final float hz = Float.parseFloat(resolution.substring(at + 1).trim());
+            return hz > 0.0f ? hz : 0.0f;
+        } catch (NumberFormatException ignored) {
+            return 0.0f;
+        }
+    }
+
+    private void applyWindowPreferredRefreshRate(float hz) {
+        final float target = hz > 0.0f ? hz : 0.0f;
+        if (Math.abs(target - lastPreferredRefreshHz) < 0.1f) {
+            return;
+        }
+        lastPreferredRefreshHz = target;
+        final WindowManager.LayoutParams params = getWindow().getAttributes();
+        params.preferredRefreshRate = target;
+        getWindow().setAttributes(params);
     }
 
     private void stopSession() {

@@ -625,6 +625,42 @@ final class AppController: NSObject, NSApplicationDelegate {
         }
     }
 
+    private static func effectiveFrameRate(
+        preferredHz: Int,
+        negotiatedHz: Int,
+        explicitFrameRate: Double?,
+        fallbackHz: Double
+    ) -> Double {
+        let rawTarget: Double
+        if preferredHz > 0 {
+            rawTarget = Double(preferredHz)
+        } else if let explicitFrameRate {
+            rawTarget = explicitFrameRate
+        } else if negotiatedHz > 0 {
+            rawTarget = Double(negotiatedHz)
+        } else {
+            rawTarget = fallbackHz
+        }
+        if negotiatedHz > 0 {
+            return min(rawTarget, Double(negotiatedHz))
+        }
+        return rawTarget
+    }
+
+    @MainActor
+    private func restartCapture(for channel: DeviceChannel) async {
+        guard !channel.captureStarting else { return }
+        channel.captureStarting = true
+        let oldPipeline = channel.capture
+        channel.capture = nil
+        channel.activeCaptureFrameRate = 0
+        if let oldPipeline {
+            await oldPipeline.stop()
+        }
+        channel.captureStarting = false
+        await startCaptureIfNeeded(for: channel)
+    }
+
     private func setPreferredFrameRate(_ hz: Int) {
         let normalized = Self.normalizePreferredFrameRate(hz)
         preferredFrameRateHz = normalized
@@ -633,18 +669,37 @@ final class AppController: NSObject, NSApplicationDelegate {
             dm_bridge_set_preferred_refresh_hz(bridge, Int32(normalized))
         }
         let allChannels = allActiveChannelsSorted()
-        Task { @MainActor in
-            for channel in allChannels {
-                if let pipeline = channel.capture {
-                    channel.capture = nil
-                    await pipeline.stop()
+        var channelsToRestart: [DeviceChannel] = []
+        for channel in allChannels where channel.captureWanted {
+            let negotiatedHz = (channel.linkID > 0 ? bridge.map { Int(dm_bridge_negotiated_refresh_hz_for_link($0, channel.linkID)) } : nil) ?? 0
+            let maxSupportedHz = (channel.linkID > 0 ? bridge.map { Int(dm_bridge_max_refresh_hz_for_link($0, channel.linkID)) } : nil) ?? 0
+            let desiredCap = normalized > 0 ? normalized : 120
+            var reconfInitiated = false
+            if let bridge, channel.linkID > 0, negotiatedHz > 0,
+               ((normalized > 0 && normalized > negotiatedHz) || (normalized == 0 && maxSupportedHz > negotiatedHz)),
+               dm_bridge_request_refresh_hz_for_link(bridge, channel.linkID, Int32(desiredCap)) > 0 {
+                reconfInitiated = true
+            }
+            if !reconfInitiated {
+                let targetRate = Int(Self.effectiveFrameRate(
+                    preferredHz: normalized,
+                    negotiatedHz: negotiatedHz,
+                    explicitFrameRate: options.frameRateExplicit ? options.frameRate : nil,
+                    fallbackHz: targetFrameRate(for: channel)
+                ).rounded())
+                if targetRate != channel.activeCaptureFrameRate {
+                    channelsToRestart.append(channel)
                 }
             }
-            for channel in allChannels where channel.captureWanted {
-                await self.startCaptureIfNeeded(for: channel)
+        }
+        if !channelsToRestart.isEmpty {
+            Task { @MainActor in
+                for channel in channelsToRestart {
+                    await self.restartCapture(for: channel)
+                }
+                self.syncWindow()
+                self.updateStatusIcon()
             }
-            self.syncWindow()
-            self.updateStatusIcon()
         }
         syncWindow()
     }
@@ -1161,8 +1216,10 @@ final class AppController: NSObject, NSApplicationDelegate {
         view.preferredFrameRateHz = preferredFrameRateHz
         if let targetChannel, targetChannel.linkID > 0, let bridge {
             view.negotiatedRefreshHz = Int(dm_bridge_negotiated_refresh_hz_for_link(bridge, targetChannel.linkID))
+            view.maxSupportedRefreshHz = Int(dm_bridge_max_refresh_hz_for_link(bridge, targetChannel.linkID))
         } else {
             view.negotiatedRefreshHz = 0
+            view.maxSupportedRefreshHz = 0
         }
         view.liveFps = totalFps
         view.liveBitrateMbps = totalBitrate
@@ -1356,9 +1413,7 @@ final class AppController: NSObject, NSApplicationDelegate {
         config.device_selector = nil
         config.width = Int32(options.width)
         config.height = Int32(options.height)
-        if preferredFrameRateHz > 0 {
-            config.refresh_hz = Int32(preferredFrameRateHz)
-        } else if options.frameRateExplicit {
+        if options.frameRateExplicit {
             config.refresh_hz = Int32(options.frameRate.rounded())
         } else {
             config.refresh_hz = 120
@@ -1470,6 +1525,22 @@ final class AppController: NSObject, NSApplicationDelegate {
                fatalError == nil && cachedScreenPermission &&
                (autoVirtualDisplay || channel.displaySession != nil || !displayChoices().isEmpty) {
                 Task { await self.startCaptureIfNeeded(for: channel) }
+            } else if channel.capture != nil && !channel.captureStarting &&
+                      channel.captureWanted && videoEnabled && channel.linkID > 0,
+                      let bridge {
+                let negotiatedHz = Int(dm_bridge_negotiated_refresh_hz_for_link(bridge, channel.linkID))
+                let desiredRate = Int(Self.effectiveFrameRate(
+                    preferredHz: preferredFrameRateHz,
+                    negotiatedHz: negotiatedHz,
+                    explicitFrameRate: options.frameRateExplicit ? options.frameRate : nil,
+                    fallbackHz: targetFrameRate(for: channel)
+                ).rounded())
+                if desiredRate > 0 && channel.activeCaptureFrameRate > 0 &&
+                   desiredRate != channel.activeCaptureFrameRate {
+                    Task { @MainActor in
+                        await self.restartCapture(for: channel)
+                    }
+                }
             }
             updateLiveMetrics(for: channel)
         }
@@ -1655,16 +1726,12 @@ final class AppController: NSObject, NSApplicationDelegate {
 
         let captureWidth = negotiatedW > 0 ? negotiatedW : options.width
         let captureHeight = negotiatedH > 0 ? negotiatedH : options.height
-        let captureFrameRate: Double
-        if preferredFrameRateHz > 0 {
-            captureFrameRate = Double(preferredFrameRateHz)
-        } else if options.frameRateExplicit {
-            captureFrameRate = options.frameRate
-        } else if negotiatedHz > 0 {
-            captureFrameRate = Double(negotiatedHz)
-        } else {
-            captureFrameRate = targetFrameRate(for: channel)
-        }
+        let captureFrameRate = Self.effectiveFrameRate(
+            preferredHz: preferredFrameRateHz,
+            negotiatedHz: negotiatedHz,
+            explicitFrameRate: options.frameRateExplicit ? options.frameRate : nil,
+            fallbackHz: targetFrameRate(for: channel)
+        )
         let captureCodec: String
         switch negotiatedCodecRaw {
         case 1: captureCodec = "h264"
@@ -1788,6 +1855,7 @@ final class AppController: NSObject, NSApplicationDelegate {
                 return
             }
             channel.capture = pipeline
+            channel.activeCaptureFrameRate = Int(captureFrameRate.rounded())
             channel.captureError = nil
             NSLog("DeskMate: [link %llu] capture started on display %u at %dx%d@%d %@",
                   channel.linkID, displaySession.info.displayID, captureWidth, captureHeight,
@@ -1822,6 +1890,7 @@ final class AppController: NSObject, NSApplicationDelegate {
     private func stopCapture(for channel: DeviceChannel, destroyAutoDisplay: Bool, immediate: Bool = false) {
         let pipeline = channel.capture
         channel.capture = nil
+        channel.activeCaptureFrameRate = 0
         channel.liveFps = 0
         channel.destroyDisplayTask?.cancel()
         channel.destroyDisplayTask = nil

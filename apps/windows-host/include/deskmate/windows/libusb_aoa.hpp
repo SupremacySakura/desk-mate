@@ -2,6 +2,7 @@
 
 #include "deskmate/windows/aoa_links.hpp"
 
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
@@ -15,8 +16,18 @@
 #include <unordered_set>
 #include <vector>
 
+// libusb.h must be visible here so the async callback declarations below use
+// the same calling convention libusb expects (WINAPI on 32-bit Windows).
+#if defined(DESKMATE_HAVE_LIBUSB) && DESKMATE_HAVE_LIBUSB
+#include <libusb-1.0/libusb.h>
+#else
 struct libusb_context;
 struct libusb_device_handle;
+struct libusb_transfer;
+#ifndef LIBUSB_CALL
+#define LIBUSB_CALL
+#endif
+#endif
 
 namespace deskmate::windows {
 
@@ -30,15 +41,16 @@ struct ScannedUsbDevice {
 
 // Bulk transport over a claimed AOA interface.
 //
-// The reader runs on its own thread, mirroring the macOS host: libusb bulk IN
-// polling must never share a loop with the video write pump. Writes report the
-// exact prefix accepted by libusb so the core can retry only the suffix after a
-// timeout or a short transfer.
+// Both directions use libusb's asynchronous API with a dedicated event thread.
+// A synchronous bulk_write blocks the caller until the URB completes, which at
+// 90/120 Hz serialises the whole video pipeline behind one transfer at a time;
+// writes here only fill a free slot and submit, so several URBs stay in flight.
 class LibusbBulkTransport final : public LinkTransport {
  public:
   LibusbBulkTransport(libusb_device_handle* handle, std::uint8_t endpoint_in,
                       std::uint8_t endpoint_out, std::string device_id,
-                      int interface_number = -1);
+                      int interface_number = -1,
+                      libusb_context* context = nullptr);
   ~LibusbBulkTransport() override;
 
   LibusbBulkTransport(const LibusbBulkTransport&) = delete;
@@ -68,35 +80,73 @@ class LibusbBulkTransport final : public LinkTransport {
     return last_error_;
   }
   void set_rx_callback(std::function<void()> callback) override;
+  void set_stream_fps(int fps) override;
   [[nodiscard]] bool consume_write_blocked() noexcept override;
 
  private:
-  void reader_loop();
+  struct OutSlot {
+    libusb_transfer* transfer{nullptr};
+    std::vector<unsigned char> buffer;
+    std::atomic<bool> busy{false};
+  };
+
+  static void LIBUSB_CALL on_in_complete(libusb_transfer* transfer);
+  static void LIBUSB_CALL on_out_complete(libusb_transfer* transfer);
+
+  void event_loop();
+  void submit_in_transfer(std::size_t index);
+  void handle_in_complete(libusb_transfer* transfer);
+  void handle_out_complete(libusb_transfer* transfer);
+  void cancel_all_transfers();
+  void free_transfers();
+  void report_error(const std::string& message);
   void wake_reader();
   void notify_rx();
 
-  // Unused in the no-libusb stub build, where the transport is inert.
   [[maybe_unused]] libusb_device_handle* handle_;
   [[maybe_unused]] std::uint8_t endpoint_in_;
   [[maybe_unused]] std::uint8_t endpoint_out_;
   [[maybe_unused]] int interface_number_;
+  [[maybe_unused]] libusb_context* context_;
   std::string device_id_;
   std::atomic<bool> stop_{false};
   std::atomic<bool> closed_{false};
   std::atomic<bool> failed_{false};
   std::atomic<bool> write_blocked_{false};
+  // Set when a frame was refused for lack of a free OUT slot. Unlike
+  // write_blocked_ (consumed by the link worker) this flag is only cleared by
+  // the OUT completion handler, so a slot retiring always wakes the sender.
+  std::atomic<bool> out_wake_needed_{false};
   std::atomic<std::uint64_t> rx_bytes_{0};
   std::atomic<std::uint64_t> tx_bytes_{0};
   std::atomic<std::uint64_t> bulk_errors_{0};
   std::atomic<std::uint64_t> write_timeouts_{0};
-  [[maybe_unused]] std::atomic<int> consecutive_write_errors_{0};
-  std::thread reader_;
+  std::atomic<int> consecutive_write_errors_{0};
+  std::atomic<int> consecutive_in_errors_{0};
+  // Bulk OUT URB timeout. Async writes never block the caller, so this only
+  // bounds a genuinely wedged pipe; 25 ms (the old 3000/fps value) made every
+  // queued URB race the timer and let WinUSB abort the whole pipe.
+  std::atomic<int> write_timeout_ms_{2000};
+  std::atomic<int> active_transfers_{0};
+  std::thread events_;
   mutable std::mutex mutex_;
   std::condition_variable cv_;
   std::deque<std::uint8_t> rx_buffer_;
   std::string last_error_;
   std::mutex rx_cb_mutex_;
   std::function<void()> rx_callback_;
+
+  static constexpr std::size_t kInTransferCount = 4;
+  static constexpr std::size_t kInTransferBytes = 16384;
+  static constexpr std::size_t kOutSlotCount = 6;
+  static constexpr std::size_t kMaxOutTransferBytes = 16384;
+
+  [[maybe_unused]] std::array<libusb_transfer*, kInTransferCount>
+      in_transfers_{};
+  [[maybe_unused]] std::array<
+      std::array<unsigned char, kInTransferBytes>, kInTransferCount>
+      in_buffers_{};
+  [[maybe_unused]] std::array<OutSlot, kOutSlotCount> out_slots_{};
 };
 
 // libusb-backed AOA discovery and attach. libusb's WinUSB backend is used on

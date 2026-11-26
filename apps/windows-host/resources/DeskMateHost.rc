@@ -18,11 +18,11 @@ BEGIN
         BEGIN
             VALUE "CompanyName", "DeskMate"
             VALUE "FileDescription", "DeskMate Windows Host"
-            VALUE "FileVersion", "1.4.0.0"
+            VALUE "FileVersion", "1.5.0.0"
             VALUE "InternalName", "DeskMateHost"
             VALUE "OriginalFilename", "DeskMateHost.exe"
             VALUE "ProductName", "DeskMate"
-            VALUE "ProductVersion", "1.4.0.0"
+            VALUE "ProductVersion", "1.5.0.0"
         END
     END
     BLOCK "VarFileInfo"

@@ -87,6 +87,13 @@ int32_t dm_bridge_negotiated_width_for_link(DMBridge *bridge, uint64_t link_id);
 int32_t dm_bridge_negotiated_height_for_link(DMBridge *bridge, uint64_t link_id);
 int32_t dm_bridge_negotiated_refresh_hz_for_link(DMBridge *bridge, uint64_t link_id);
 int32_t dm_bridge_negotiated_codec_for_link(DMBridge *bridge, uint64_t link_id);
+/* Returns the maximum refresh rate (Hz) the peer supports for the currently
+   negotiated resolution on `link_id`, or 0 if not yet known. */
+int32_t dm_bridge_max_refresh_hz_for_link(DMBridge *bridge, uint64_t link_id);
+/* Requests a live session refresh-rate upgrade up to `target_hz` on `link_id`
+   when the peer supports a higher rate for the active resolution. Returns the
+   target refresh rate if reconfiguration was initiated, or 0 otherwise. */
+int32_t dm_bridge_request_refresh_hz_for_link(DMBridge *bridge, uint64_t link_id, int32_t target_hz);
 
 /* Host system events; values mirror deskmate::protocol::HostEvent. */
 enum {

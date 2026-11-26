@@ -68,6 +68,7 @@ if(WIN32)
         advapi32
         wtsapi32
         winmm
+        avrt
         winhttp
         setupapi
         cfgmgr32
