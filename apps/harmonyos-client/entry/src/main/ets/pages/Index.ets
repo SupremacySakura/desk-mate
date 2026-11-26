@@ -52,7 +52,7 @@ interface DiagnosticRow {
 type Page = 'home' | 'settings' | 'diagnostics' | 'display';
 
 /**
- * Architectural wired dual-display schematic (Mac host + USB-C AOA data bus + HarmonyOS tablet).
+ * Quiet Squircle wired dual-display schematic (Host + USB-C AOA + HarmonyOS tablet/phone).
  */
 @Component
 struct WiredLinkSchematic {
@@ -63,6 +63,7 @@ struct WiredLinkSchematic {
   @Prop @Watch('redraw') resolutionText: string = '';
   @Prop compact: boolean = false;
   @Prop @Watch('redraw') isPhone: boolean = false;
+  @StorageProp('deskMateDarkMode') @Watch('redraw') darkMode: boolean = false;
 
   private settings: RenderingContextSettings = new RenderingContextSettings(true);
   private ctx: CanvasRenderingContext2D = new CanvasRenderingContext2D(this.settings);
@@ -100,95 +101,81 @@ struct WiredLinkSchematic {
 
     this.ctx.clearRect(0, 0, w, h);
 
+    const accentColor: string = this.darkMode ? '#4F8BFF' : '#2563EB';
+    const accentSoft: string = this.darkMode ? '#18253D' : '#EFF6FF';
+    const positiveColor: string = this.darkMode ? '#34D399' : '#15803D';
+    const inkColor: string = this.darkMode ? '#F4F4F5' : '#18181B';
+    const inkSecondary: string = this.darkMode ? '#A1A1AA' : '#5A5A60';
+    const inkMuted: string = this.darkMode ? '#71717A' : '#8B8B92';
+    const surfaceColor: string = this.darkMode ? '#181A1E' : '#FFFFFF';
+    const subtleColor: string = this.darkMode ? '#212429' : '#ECECE8';
+    const hairlineColor: string = this.darkMode ? '#2A2D33' : '#E2E1DC';
     const activeColor: string = this.streaming
-      ? '#9D193D'
-      : (this.linked ? '#B9975B' : '#8C858E');
-    const inkColor: string = '#232026';
-    const hairlineColor: string = '#DCD6CC';
+      ? accentColor
+      : (this.linked ? positiveColor : inkMuted);
 
-    // Subtle corner calibration brackets
-    const inset: number = this.compact ? 9 : 12;
-    const tick: number = this.compact ? 6 : 7;
-    this.ctx.strokeStyle = hairlineColor;
-    this.ctx.lineWidth = 1.0;
-    this.ctx.beginPath();
-    this.ctx.moveTo(inset, inset + tick);
-    this.ctx.lineTo(inset, inset);
-    this.ctx.lineTo(inset + tick, inset);
+    // Subtle dot grid inside schematic canvas
+    const step: number = 16;
+    this.ctx.fillStyle = hairlineColor;
+    for (let gx: number = 14; gx < w - 10; gx += step) {
+      for (let gy: number = 14; gy < h - 10; gy += step) {
+        this.ctx.beginPath();
+        this.ctx.arc(gx, gy, 0.9, 0, Math.PI * 2);
+        this.ctx.fill();
+      }
+    }
 
-    this.ctx.moveTo(w - inset - tick, inset);
-    this.ctx.lineTo(w - inset, inset);
-    this.ctx.lineTo(w - inset, inset + tick);
-
-    this.ctx.moveTo(inset, h - inset - tick);
-    this.ctx.lineTo(inset, h - inset);
-    this.ctx.lineTo(inset + tick, h - inset);
-
-    this.ctx.moveTo(w - inset - tick, h - inset);
-    this.ctx.lineTo(w - inset, h - inset);
-    this.ctx.lineTo(w - inset, h - inset - tick);
-    this.ctx.stroke();
-
-    // Subtle center horizontal drafting guide
     const cy: number = h * 0.5;
-    this.ctx.save();
-    this.ctx.setLineDash([3, 4]);
-    this.ctx.strokeStyle = '#EAE4DD';
-    this.ctx.lineWidth = 1.0;
-    this.ctx.beginPath();
-    this.ctx.moveTo(this.compact ? 16 : 22, cy);
-    this.ctx.lineTo(w - (this.compact ? 16 : 22), cy);
-    this.ctx.stroke();
-    this.ctx.restore();
-
-    const macW: number = Math.min(w * (this.compact ? 0.36 : 0.34), this.compact ? 96 : 118);
+    const macW: number = Math.min(w * (this.compact ? 0.34 : 0.33), this.compact ? 98 : 122);
     const macH: number = macW * 0.64;
-    const macX: number = w * (this.compact ? 0.08 : 0.14);
-    const macY: number = cy - macH * 0.56;
+    const macX: number = w * (this.compact ? 0.08 : 0.12);
+    const macY: number = cy - macH * 0.54;
 
-    const padW: number = Math.min(w * (this.compact ? 0.38 : 0.36), this.compact ? 104 : 128);
-    const padH: number = this.isPhone ? padW * 0.56 : padW * 0.68;
-    const padX: number = w * (this.compact ? 0.92 : 0.86) - padW;
-    const padY: number = cy - padH * 0.44;
+    const padW: number = Math.min(w * (this.compact ? 0.36 : 0.35), this.compact ? 106 : 132);
+    const padH: number = this.isPhone ? padW * 0.58 : padW * 0.68;
+    const padX: number = w * (this.compact ? 0.92 : 0.88) - padW;
+    const padY: number = cy - padH * 0.46;
 
-    // Stepped USB-C AOA data bus connecting Mac bottom-right to Tablet top/left edge
+    // Smooth USB-C link connector
     const busStartX: number = macX + macW;
-    const busStartY: number = macY + macH * 0.52;
+    const busStartY: number = cy;
     const busEndX: number = padX;
-    const busEndY: number = padY + padH * 0.52;
+    const busEndY: number = cy;
     const busMidX: number = (busStartX + busEndX) * 0.5;
 
-    this.ctx.strokeStyle = this.linked ? '#9D193D' : '#CFC8BC';
-    this.ctx.lineWidth = this.linked ? 1.8 : 1.1;
+    this.ctx.strokeStyle = this.linked ? activeColor : hairlineColor;
+    this.ctx.lineWidth = this.linked ? 1.8 : 1.2;
     this.ctx.beginPath();
     this.ctx.moveTo(busStartX, busStartY);
-    this.ctx.lineTo(busMidX, busStartY);
-    this.ctx.lineTo(busMidX, busEndY);
     this.ctx.lineTo(busEndX, busEndY);
     this.ctx.stroke();
 
-    // Bus terminal square pads & central signal node
-    this.ctx.fillStyle = activeColor;
-    this.ctx.fillRect(busStartX - 2, busStartY - 2, 4, 4);
-    this.ctx.fillRect(busEndX - 2, busEndY - 2, 4, 4);
-    this.ctx.fillRect(busMidX - 3, (busStartY + busEndY) * 0.5 - 3, 6, 6);
-
-    // 1. Primary Mac display frame
-    this.drawRoundedRect(macX, macY, macW, macH, 3);
-    this.ctx.fillStyle = '#FFFFFF';
+    // Central USB-C pill badge
+    const pillW: number = 42;
+    const pillH: number = 18;
+    this.drawRoundedRect(busMidX - pillW * 0.5, cy - pillH * 0.5, pillW, pillH, 9);
+    this.ctx.fillStyle = this.linked ? accentSoft : subtleColor;
     this.ctx.fill();
-    this.ctx.strokeStyle = inkColor;
-    this.ctx.lineWidth = 1.25;
+    this.ctx.strokeStyle = this.linked ? activeColor : hairlineColor;
+    this.ctx.lineWidth = 1.0;
     this.ctx.stroke();
 
-    // Top menu bar inside Mac screen
-    this.ctx.fillStyle = '#F2EDE4';
-    this.ctx.fillRect(macX + 1, macY + 1, macW - 2, 6);
+    this.ctx.fillStyle = this.linked ? activeColor : inkMuted;
+    this.ctx.font = '600 9px monospace';
+    this.ctx.textAlign = 'center';
+    this.ctx.fillText('USB-C', busMidX, cy + 3.2);
 
-    // Stand foot below Mac screen
+    // 1. Primary Mac display tile
+    this.drawRoundedRect(macX, macY, macW, macH, 10);
+    this.ctx.fillStyle = surfaceColor;
+    this.ctx.fill();
+    this.ctx.strokeStyle = hairlineColor;
+    this.ctx.lineWidth = 1.2;
+    this.ctx.stroke();
+
     const macCenterX: number = macX + macW * 0.5;
     const standBottom: number = macY + macH + 9;
-    this.ctx.strokeStyle = '#767079';
+    this.ctx.strokeStyle = inkMuted;
     this.ctx.lineWidth = 1.2;
     this.ctx.beginPath();
     this.ctx.moveTo(macCenterX, macY + macH);
@@ -198,123 +185,121 @@ struct WiredLinkSchematic {
     this.ctx.stroke();
 
     this.ctx.fillStyle = inkColor;
-    this.ctx.font = this.compact ? '500 10px sans-serif' : '500 11px sans-serif';
+    this.ctx.font = this.compact ? '500 10.5px sans-serif' : '600 11.5px sans-serif';
     this.ctx.textAlign = 'center';
-    this.ctx.fillText('MAC 主屏', macCenterX, macY + macH * 0.54);
+    this.ctx.fillText('电脑主屏', macCenterX, macY + macH * 0.48);
 
-    this.ctx.fillStyle = '#8C858E';
-    this.ctx.font = '400 9px monospace';
-    this.ctx.fillText('HOST', macCenterX, macY + macH * 0.74);
+    this.ctx.fillStyle = inkMuted;
+    this.ctx.font = '400 9.5px monospace';
+    this.ctx.fillText('HOST', macCenterX, macY + macH * 0.72);
 
-    // 2. HarmonyOS Tablet / Phone extended display frame
-    const cornerRadius: number = this.isPhone ? 5 : 3.5;
+    // 2. HarmonyOS Tablet / Phone extended display tile
+    const cornerRadius: number = this.isPhone ? 12 : 10;
     this.drawRoundedRect(padX, padY, padW, padH, cornerRadius);
-    this.ctx.fillStyle = this.streaming
-      ? '#F7EAEF'
-      : (this.linked ? '#FAF7F2' : '#FFFFFF');
+    this.ctx.fillStyle = this.streaming ? accentSoft : surfaceColor;
     this.ctx.fill();
-    this.ctx.strokeStyle = this.linked ? '#9D193D' : '#5A545E';
-    this.ctx.lineWidth = this.linked ? 1.65 : 1.15;
+    this.ctx.strokeStyle = this.linked ? activeColor : hairlineColor;
+    this.ctx.lineWidth = this.linked ? 1.5 : 1.2;
     this.ctx.stroke();
 
-    // Inner display outline
-    this.drawRoundedRect(padX + 4, padY + 4, padW - 8, padH - 8, this.isPhone ? 3 : 2);
-    this.ctx.strokeStyle = this.streaming ? '#D9B6C2' : '#EAE4DD';
-    this.ctx.lineWidth = 0.8;
-    this.ctx.stroke();
-
-    if (this.isPhone) {
-      // Subtle front-camera pill on left bezel to indicate landscape phone orientation
-      this.ctx.fillStyle = this.streaming ? '#D9B6C2' : '#DCD6CC';
-      this.ctx.fillRect(padX + 2.5, padY + padH * 0.36, 1.8, padH * 0.28);
-    }
-
-    // Active status square dot in top-right of device screen
+    // Active status dot in top-right of device screen
     this.ctx.fillStyle = activeColor;
-    this.ctx.fillRect(padX + padW - 11, padY + 7, 4, 4);
+    this.ctx.beginPath();
+    this.ctx.arc(padX + padW - 10, padY + 10, 2.8, 0, Math.PI * 2);
+    this.ctx.fill();
 
     const padCenterX: number = padX + padW * 0.5;
-    this.ctx.fillStyle = this.streaming ? '#9D193D' : inkColor;
-    this.ctx.font = this.compact ? '600 10px sans-serif' : '600 11px sans-serif';
+    this.ctx.fillStyle = this.streaming ? accentColor : inkColor;
+    this.ctx.font = this.compact ? '600 10.5px sans-serif' : '600 11.5px sans-serif';
     this.ctx.textAlign = 'center';
     this.ctx.fillText(
       this.streaming && this.fps > 0 ? `${this.fps} FPS` : (this.isPhone ? '手机副屏' : '扩展副屏'),
       padCenterX,
-      padY + padH * 0.52
+      padY + padH * 0.48
     );
 
-    this.ctx.fillStyle = this.linked ? '#767079' : '#A49EA6';
-    this.ctx.font = '400 9px monospace';
+    this.ctx.fillStyle = this.linked ? inkSecondary : inkMuted;
+    this.ctx.font = '400 9.5px monospace';
     const subText: string = this.streaming
       ? (this.codecText.length > 0 ? this.codecText : 'LIVE')
       : (this.linked ? 'USB READY' : 'STANDBY');
-    this.ctx.fillText(subText, padCenterX, padY + padH * 0.74);
+    this.ctx.fillText(subText, padCenterX, padY + padH * 0.72);
   }
 
   build() {
     Column({ space: 0 }) {
-      // Card top spec bar
       Row({ space: 8 }) {
-        Row({ space: 6 }) {
-          Row()
-            .width(5)
-            .height(5)
-            .backgroundColor(this.streaming ? '#9D193D' : (this.linked ? '#B9975B' : '#8C858E'))
-          Text('TOPOLOGY // 副屏链路拓扑')
-            .fontSize(9.5)
-            .fontWeight(FontWeight.Medium)
-            .letterSpacing(1.0)
-            .fontColor('#8C858E')
-            .maxLines(1)
-            .textOverflow({ overflow: TextOverflow.Ellipsis })
-            .layoutWeight(1)
-        }.layoutWeight(1)
-        Text(this.streaming ? '推流中' : (this.linked ? 'USB 已连接' : '待连接'))
-          .fontSize(10)
+        Text('有线链路拓扑')
+          .fontSize(12.5)
           .fontWeight(FontWeight.Medium)
-          .fontColor(this.streaming ? '#9D193D' : (this.linked ? '#7D602B' : '#767079'))
-          .padding({ left: 7, right: 7, top: 2, bottom: 2 })
-          .backgroundColor(this.streaming ? '#F7EAEF' : '#FAF7F2')
-          .border({ width: 0.7, color: this.streaming ? '#D9B6C2' : '#DCD6CC' })
-          .borderRadius(2)
+          .fontColor($r('app.color.dm_ink'))
+          .layoutWeight(1)
+
+        Row({ space: 5 }) {
+          Row()
+            .width(6)
+            .height(6)
+            .borderRadius(3)
+            .backgroundColor(this.streaming
+              ? $r('app.color.dm_accent')
+              : (this.linked ? $r('app.color.dm_positive') : $r('app.color.dm_ink_muted')))
+          Text(this.streaming ? '推流中' : (this.linked ? 'USB 已连接' : '待连接'))
+            .fontSize(11)
+            .fontWeight(FontWeight.Medium)
+            .fontColor(this.streaming
+              ? $r('app.color.dm_accent')
+              : (this.linked ? $r('app.color.dm_positive') : $r('app.color.dm_ink_secondary')))
+        }
+        .padding({ left: 8, right: 8, top: 3, bottom: 3 })
+        .backgroundColor(this.streaming
+          ? $r('app.color.dm_accent_soft')
+          : (this.linked ? $r('app.color.dm_positive_soft') : $r('app.color.dm_subtle')))
+        .border({
+          width: 0.8,
+          color: this.streaming
+            ? $r('app.color.dm_accent_border')
+            : (this.linked ? $r('app.color.dm_positive_border') : $r('app.color.dm_hairline'))
+        })
+        .borderRadius(999)
       }
       .width('100%')
-      .padding({ left: 14, right: 14, top: 10, bottom: 8 })
+      .padding({ left: 16, right: 16, top: 11, bottom: 10 })
 
-      Divider().color('#EAE4DD').strokeWidth(0.75)
+      Divider().color($r('app.color.dm_soft_hairline')).strokeWidth(0.8)
 
       Canvas(this.ctx)
         .width('100%')
-        .height(this.compact ? (this.isPhone ? 148 : 170) : 216)
-        .backgroundColor('#FCFBF8')
+        .height(this.compact ? (this.isPhone ? 152 : 172) : 210)
+        .backgroundColor($r('app.color.dm_canvas'))
         .onReady(() => this.drawDiagram())
         .onAreaChange(() => this.drawDiagram())
 
-      Divider().color('#EAE4DD').strokeWidth(0.75)
+      Divider().color($r('app.color.dm_soft_hairline')).strokeWidth(0.8)
 
       Row({ space: 8 }) {
-        Text('USB · AOA 硬件直连')
-          .fontSize(10.5)
-          .fontColor('#8C858E')
+        Text('USB-C AOA 直连')
+          .fontSize(11)
+          .fontColor($r('app.color.dm_ink_muted'))
         Text(this.resolutionText.length > 0
           ? `${this.codecText || 'HEVC'} · ${this.resolutionText}`
           : (this.linked ? '正在同步分辨率' : '等待数据线握手'))
-          .fontSize(10.5)
+          .fontSize(11)
           .fontWeight(FontWeight.Medium)
-          .fontColor('#5A545E')
+          .fontColor($r('app.color.dm_ink_secondary'))
           .maxLines(1)
           .textOverflow({ overflow: TextOverflow.Ellipsis })
           .layoutWeight(1)
           .textAlign(TextAlign.End)
       }
       .width('100%')
-      .padding({ left: 14, right: 14, top: 9, bottom: 10 })
-      .backgroundColor('#FFFFFF')
+      .padding({ left: 16, right: 16, top: 10, bottom: 10 })
+      .backgroundColor($r('app.color.dm_surface'))
     }
     .width('100%')
-    .backgroundColor('#FFFFFF')
-    .border({ width: 0.8, color: '#DCD6CC' })
-    .borderRadius(4)
+    .backgroundColor($r('app.color.dm_surface'))
+    .border({ width: 0.8, color: $r('app.color.dm_hairline') })
+    .borderRadius(16)
+    .clip(true)
   }
 }
 
@@ -628,55 +613,93 @@ struct Index {
       return '等待 USB 配件授权';
     }
     if (this.link.state === 'connected') {
-      return this.frameReady ? '扩展显示运行中' : '正在准备画面';
+      return this.frameReady ? '扩展桌面已就绪' : '正在准备画面';
     }
-    return '等待 USB 有线接入';
+    return '连接数据线即可扩展';
   }
 
   private statusDetail(): string {
     if (this.link.state === 'error') {
       return this.link.message.includes('permission')
         ? '点按下方重试，并在系统提示弹窗中允许 USB 配件连接。'
-        : '请检查 Mac 端 DeskMate 状态与 USB 数据线连接后重试。';
+        : '请检查电脑端 DeskMate 状态与 USB 数据线连接后重试。';
     }
     if (this.link.state === 'authorizing') {
       return '请在系统提示弹窗中点击允许，建立高速 USB 配件通信通道。';
     }
     if (this.link.state === 'connected') {
       return this.frameReady
-        ? '扩展桌面已建立并保持实时推流，可随时进入全屏扩展画面。'
+        ? '已建立低延迟有线扩展桌面，可随时进入全屏画面与反向触控。'
         : 'USB 已连接，正在协商编码格式与虚拟显示器首帧画面。';
     }
     if (this.isPhone) {
-      return '连接 Mac 后将自动匹配手机比例创建虚拟扩展屏，进入连接后自动横屏，支持低延迟画面与反向触控。';
+      return '连接电脑后将自动匹配手机比例创建虚拟扩展屏，出画后自动切换横屏，支持低延迟画面与反向触控。';
     }
-    return '连接 Mac 后将自动匹配平板比例创建虚拟扩展屏，支持低延迟画面与反向触控。';
+    return '连接电脑后将自动匹配平板比例创建虚拟扩展屏，支持低延迟画面与反向触控。';
   }
 
-  private statusEyebrow(): string {
+  private badgeFgColor(): Resource {
+    if (this.frameReady) {
+      return $r('app.color.dm_accent');
+    }
     if (this.link.state === 'connected') {
-      return this.frameReady ? 'STREAMING // 画面就绪' : 'USB LINKED // 已连接';
+      return $r('app.color.dm_positive');
+    }
+    if (this.link.state === 'authorizing') {
+      return $r('app.color.dm_warning');
     }
     if (this.link.state === 'error') {
-      return 'FAULT // 连接异常';
+      return $r('app.color.dm_danger');
     }
-    if (this.link.state === 'authorizing') {
-      return 'AUTH // 等待配件授权';
-    }
-    return 'STANDBY // 等待 USB 接入';
+    return $r('app.color.dm_ink_secondary');
   }
 
-  private statusAccent(): string {
+  private badgeBgColor(): Resource {
     if (this.frameReady) {
-      return '#2D7D5B';
+      return $r('app.color.dm_accent_soft');
     }
-    if (this.link.state === 'error' || this.link.state === 'connected') {
-      return '#9D193D';
+    if (this.link.state === 'connected') {
+      return $r('app.color.dm_positive_soft');
     }
     if (this.link.state === 'authorizing') {
-      return '#A8641E';
+      return $r('app.color.dm_warning_soft');
     }
-    return '#8C858E';
+    if (this.link.state === 'error') {
+      return $r('app.color.dm_danger_soft');
+    }
+    return $r('app.color.dm_subtle');
+  }
+
+  private badgeBorderColor(): Resource {
+    if (this.frameReady) {
+      return $r('app.color.dm_accent_border');
+    }
+    if (this.link.state === 'connected') {
+      return $r('app.color.dm_positive_border');
+    }
+    if (this.link.state === 'authorizing') {
+      return $r('app.color.dm_warning_border');
+    }
+    if (this.link.state === 'error') {
+      return $r('app.color.dm_danger_border');
+    }
+    return $r('app.color.dm_hairline');
+  }
+
+  private statusDotColor(): Resource {
+    if (this.frameReady) {
+      return $r('app.color.dm_accent');
+    }
+    if (this.link.state === 'connected') {
+      return $r('app.color.dm_positive');
+    }
+    if (this.link.state === 'authorizing') {
+      return $r('app.color.dm_warning');
+    }
+    if (this.link.state === 'error') {
+      return $r('app.color.dm_danger');
+    }
+    return $r('app.color.dm_ink_muted');
   }
 
   private codecDisplayName(value: string): string {
@@ -716,59 +739,39 @@ struct Index {
   }
 
   @Builder
-  private sectionHeader(en: string, zh: string) {
-    Row({ space: 10 }) {
-      Row({ space: 6 }) {
-        Text(en)
-          .fontSize(10.5)
-          .fontWeight(FontWeight.Medium)
-          .letterSpacing(1.4)
-          .fontColor('#9D193D')
-        Text('/')
-          .fontSize(10.5)
-          .fontColor('#DCD6CC')
-        Text(zh)
-          .fontSize(11.5)
-          .fontWeight(FontWeight.Medium)
-          .fontColor('#232026')
-      }
-      Divider()
-        .color('#DCD6CC')
-        .strokeWidth(0.8)
-        .layoutWeight(1)
-    }.width('100%').margin({ top: 4, bottom: 2 })
+  private sectionHeader(title: string) {
+    Text(title)
+      .fontSize(13)
+      .fontWeight(FontWeight.Medium)
+      .fontColor($r('app.color.dm_ink'))
+      .width('100%')
+      .margin({ top: 4, bottom: 2 })
   }
 
   @Builder
   private primaryButton(label: string, onTap: () => void, fullWidth: boolean) {
     Button({ type: ButtonType.Normal }) {
-      Column() {
-        Row().width('100%').height(1.2).backgroundColor('#75B9975B')
-        Row({ space: 10 }) {
-          Text(label)
-            .fontSize(13.5)
-            .fontWeight(FontWeight.Medium)
-            .letterSpacing(0.6)
-            .fontColor('#FFFFFF')
-          Text('→')
-            .fontSize(13.5)
-            .fontColor('#FFFFFF')
-        }
-        .width(fullWidth ? '100%' : 'auto')
-        .justifyContent(FlexAlign.Center)
-        .padding({
-          left: fullWidth ? 18 : 20,
-          right: fullWidth ? 18 : 20,
-          top: fullWidth ? 12 : 10,
-          bottom: fullWidth ? 13 : 11
-        })
+      Row({ space: 8 }) {
+        Text(label)
+          .fontSize(13.5)
+          .fontWeight(FontWeight.Medium)
+          .fontColor($r('app.color.dm_accent_fg'))
+        Text('→')
+          .fontSize(13.5)
+          .fontColor($r('app.color.dm_accent_fg'))
       }
       .width(fullWidth ? '100%' : 'auto')
+      .justifyContent(FlexAlign.Center)
+      .padding({
+        left: fullWidth ? 18 : 22,
+        right: fullWidth ? 18 : 22,
+        top: fullWidth ? 12 : 10,
+        bottom: fullWidth ? 12 : 10
+      })
     }
     .width(fullWidth ? '100%' : 'auto')
-    .backgroundColor('#9D193D')
-    .border({ width: 0.8, color: '#7E1230' })
-    .borderRadius(3)
+    .backgroundColor($r('app.color.dm_accent'))
+    .borderRadius(999)
     .onClick(onTap)
   }
 
@@ -776,128 +779,105 @@ struct Index {
   private stepRow(num: string, text: string) {
     Row({ space: 12 }) {
       Text(num)
-        .fontSize(11)
+        .fontSize(12)
         .fontWeight(FontWeight.Medium)
-        .fontColor('#9D193D')
-        .width(22)
+        .fontColor($r('app.color.dm_accent'))
+        .width(18)
       Text(text)
-        .fontSize(13.5)
-        .fontColor('#4D4752')
+        .fontSize(13)
+        .fontColor($r('app.color.dm_ink_secondary'))
         .layoutWeight(1)
     }
     .width('100%')
-    .padding({ top: 9, bottom: 9, left: 12, right: 12 })
+    .padding({ top: 10, bottom: 10, left: 14, right: 14 })
   }
 
   @Builder
-  private headerTab(target: Page, en: string, zh: string) {
+  private headerTab(target: Page, label: string) {
     Button({ type: ButtonType.Normal }) {
-      Column({ space: 5 }) {
-        Row({ space: 6 }) {
-          Row()
-            .width(4)
-            .height(4)
-            .backgroundColor(this.page === target ? '#9D193D' : Color.Transparent)
-            .border({ width: 0.8, color: this.page === target ? '#9D193D' : '#8C858E' })
-          Text(`${en} / ${zh}`)
-            .fontSize(11.5)
-            .fontWeight(this.page === target ? FontWeight.Medium : FontWeight.Normal)
-            .fontColor(this.page === target ? '#9D193D' : '#767079')
-        }
-        Row()
-          .width('100%')
-          .height(1.5)
-          .backgroundColor(this.page === target ? '#9D193D' : Color.Transparent)
-      }.padding({ top: 6, bottom: 2, left: 6, right: 6 })
+      Text(label)
+        .fontSize(12)
+        .fontWeight(FontWeight.Medium)
+        .fontColor(this.page === target ? $r('app.color.dm_ink') : $r('app.color.dm_ink_secondary'))
+        .padding({ left: 14, right: 14, top: 6, bottom: 6 })
     }
-    .backgroundColor(Color.Transparent)
+    .backgroundColor(this.page === target ? $r('app.color.dm_surface') : Color.Transparent)
+    .borderRadius(999)
     .onClick(() => this.navigate(target))
   }
 
   @Builder
-  private bottomTab(target: Page, en: string, zh: string) {
+  private bottomTab(target: Page, label: string) {
     Button({ type: ButtonType.Normal }) {
-      Column({ space: 3 }) {
-        Row()
-          .width(26)
-          .height(2)
-          .backgroundColor(this.page === target ? '#9D193D' : Color.Transparent)
-        Row({ space: 4 }) {
-          Row()
-            .width(4)
-            .height(4)
-            .backgroundColor(this.page === target ? '#9D193D' : Color.Transparent)
-            .border({ width: 0.8, color: this.page === target ? '#9D193D' : '#8C858E' })
-          Text(en)
-            .fontSize(9)
-            .fontWeight(FontWeight.Medium)
-            .letterSpacing(1.0)
-            .fontColor(this.page === target ? '#9D193D' : '#8C858E')
-        }
-        Text(zh)
-          .fontSize(11.5)
-          .fontWeight(this.page === target ? FontWeight.Medium : FontWeight.Normal)
-          .fontColor(this.page === target ? '#232026' : '#767079')
-      }
-      .width('100%')
-      .padding({ top: 6, bottom: 8, left: 4, right: 4 })
-      .alignItems(HorizontalAlign.Center)
+      Text(label)
+        .fontSize(12)
+        .fontWeight(FontWeight.Medium)
+        .fontColor(this.page === target ? $r('app.color.dm_accent') : $r('app.color.dm_ink_secondary'))
+        .width('100%')
+        .textAlign(TextAlign.Center)
+        .padding({ top: 8, bottom: 8 })
     }
     .layoutWeight(1)
-    .backgroundColor(Color.Transparent)
+    .backgroundColor(this.page === target ? $r('app.color.dm_accent_soft') : Color.Transparent)
+    .borderRadius(999)
     .onClick(() => this.navigate(target))
   }
 
   @Builder
   private connectionGuideCard() {
     Column() {
-      this.stepRow('01', '确保 Mac 上的 DeskMate 已启动运行')
-      Divider().color('#EAE4DD').strokeWidth(0.75)
-      this.stepRow('02', `使用高速 USB 数据线连接 Mac 与${this.deviceLabel()}`)
-      Divider().color('#EAE4DD').strokeWidth(0.75)
-      this.stepRow('03', '弹出询问时点击允许访问 USB 配件')
+      this.stepRow('1', '确保电脑端的 DeskMate 已启动运行')
+      Divider().color($r('app.color.dm_soft_hairline')).strokeWidth(0.8)
+      this.stepRow('2', `使用高速 USB-C 数据线连接电脑与${this.deviceLabel()}`)
+      Divider().color($r('app.color.dm_soft_hairline')).strokeWidth(0.8)
+      this.stepRow('3', '系统弹出访问确认时点击允许 USB 配件连接')
     }
     .width('100%')
-    .backgroundColor('#FFFFFF')
-    .border({ width: 0.8, color: '#DCD6CC' })
-    .borderRadius(4)
+    .backgroundColor($r('app.color.dm_surface'))
+    .border({ width: 0.8, color: $r('app.color.dm_hairline') })
+    .borderRadius(16)
+    .clip(true)
   }
 
   @Builder
   private liveSpecCard() {
-    Column({ space: 8 }) {
+    Column({ space: 0 }) {
       Row({ space: 12 }) {
         Text('显示规格')
-          .fontSize(11.5)
-          .fontColor('#8C858E')
-          .width(64)
+          .fontSize(12)
+          .fontColor($r('app.color.dm_ink_muted'))
+          .width(68)
         Text(`${this.activeCodec || this.codecDisplayName(this.preferredCodec)} · ${this.activeResolution || '协商中'}`)
           .fontSize(13)
           .fontWeight(FontWeight.Medium)
-          .fontColor('#232026')
+          .fontColor($r('app.color.dm_ink'))
           .layoutWeight(1)
-      }.width('100%')
+      }
+      .width('100%')
+      .padding({ left: 14, right: 14, top: 11, bottom: 11 })
 
       if (this.frameReady) {
-        Divider().color('#EAE4DD').strokeWidth(0.75)
+        Divider().color($r('app.color.dm_soft_hairline')).strokeWidth(0.8)
         Row({ space: 12 }) {
           Text('实时性能')
-            .fontSize(11.5)
-            .fontColor('#9D193D')
-            .width(64)
+            .fontSize(12)
+            .fontColor($r('app.color.dm_accent'))
+            .width(68)
           Text(`${this.fps} FPS · ${this.bitrateMbps.toFixed(1)} Mbps · 触控就绪`)
             .fontSize(13)
             .fontWeight(FontWeight.Medium)
-            .fontColor('#232026')
+            .fontColor($r('app.color.dm_ink'))
             .layoutWeight(1)
-        }.width('100%')
+        }
+        .width('100%')
+        .padding({ left: 14, right: 14, top: 11, bottom: 11 })
       }
     }
     .width('100%')
-    .padding(12)
-    .backgroundColor('#FFFFFF')
-    .border({ width: 0.8, color: '#DCD6CC' })
-    .borderRadius(4)
+    .backgroundColor($r('app.color.dm_surface'))
+    .border({ width: 0.8, color: $r('app.color.dm_hairline') })
+    .borderRadius(16)
+    .clip(true)
   }
 
   @Builder
@@ -914,28 +894,16 @@ struct Index {
           isPhone: this.isPhone
         })
 
-        Column({ space: 8 }) {
-          Row({ space: 7 }) {
-            Row()
-              .width(5)
-              .height(5)
-              .backgroundColor(this.statusAccent())
-            Text(this.statusEyebrow())
-              .fontSize(10)
-              .fontWeight(FontWeight.Medium)
-              .letterSpacing(1.3)
-              .fontColor(this.statusAccent())
-          }
-
+        Column({ space: 6 }) {
           Text(this.statusTitle())
-            .fontSize(22)
-            .fontWeight(FontWeight.Regular)
-            .fontColor('#232026')
+            .fontSize(20)
+            .fontWeight(FontWeight.Medium)
+            .fontColor($r('app.color.dm_ink'))
 
           Text(this.statusDetail())
             .fontSize(13)
             .lineHeight(19.5)
-            .fontColor('#5A545E')
+            .fontColor($r('app.color.dm_ink_secondary'))
         }
         .width('100%')
         .alignItems(HorizontalAlign.Start)
@@ -956,8 +924,7 @@ struct Index {
       .padding({ left: 16, right: 16, top: 14, bottom: 20 })
       .alignItems(HorizontalAlign.Start)
     } else {
-      Row({ space: 28 }) {
-        // Left architectural wired dual-display schematic
+      Row({ space: 24 }) {
         Column({ space: 12 }) {
           WiredLinkSchematic({
             linked: this.link.state === 'connected',
@@ -969,32 +936,19 @@ struct Index {
             isPhone: this.isPhone
           })
         }
-        .width('43%')
+        .width('44%')
         .alignItems(HorizontalAlign.Start)
 
-        // Right editorial column
         Column({ space: 14 }) {
-          Row({ space: 7 }) {
-            Row()
-              .width(5)
-              .height(5)
-              .backgroundColor(this.statusAccent())
-            Text(this.statusEyebrow())
-              .fontSize(10.5)
-              .fontWeight(FontWeight.Medium)
-              .letterSpacing(1.4)
-              .fontColor(this.statusAccent())
-          }
-
           Text(this.statusTitle())
-            .fontSize(26)
-            .fontWeight(FontWeight.Regular)
-            .fontColor('#232026')
+            .fontSize(24)
+            .fontWeight(FontWeight.Medium)
+            .fontColor($r('app.color.dm_ink'))
 
           Text(this.statusDetail())
             .fontSize(13.5)
             .lineHeight(20)
-            .fontColor('#5A545E')
+            .fontColor($r('app.color.dm_ink_secondary'))
 
           if (this.link.state === 'searching' || this.link.state === 'authorizing') {
             this.connectionGuideCard()
@@ -1012,34 +966,34 @@ struct Index {
             }.margin({ top: 2 })
           }
 
-          Row({ space: 12 }) {
+          Row({ space: 10 }) {
             Button('编码与浮窗设置', { type: ButtonType.Normal })
-              .height(34)
-              .padding({ left: 12, right: 12 })
-              .fontSize(12)
-              .fontColor('#232026')
-              .backgroundColor('#FFFFFF')
-              .border({ width: 0.8, color: '#DCD6CC' })
-              .borderRadius(3)
+              .height(36)
+              .padding({ left: 14, right: 14 })
+              .fontSize(12.5)
+              .fontColor($r('app.color.dm_ink'))
+              .backgroundColor($r('app.color.dm_surface'))
+              .border({ width: 0.8, color: $r('app.color.dm_hairline') })
+              .borderRadius(11)
               .onClick(() => this.navigate('settings'))
 
             Button('查看连接诊断', { type: ButtonType.Normal })
-              .height(34)
-              .padding({ left: 12, right: 12 })
-              .fontSize(12)
-              .fontColor('#9D193D')
-              .backgroundColor('#F7EAEF')
-              .border({ width: 0.8, color: '#D9B6C2' })
-              .borderRadius(3)
+              .height(36)
+              .padding({ left: 14, right: 14 })
+              .fontSize(12.5)
+              .fontColor($r('app.color.dm_accent'))
+              .backgroundColor($r('app.color.dm_accent_soft'))
+              .border({ width: 0.8, color: $r('app.color.dm_accent_border') })
+              .borderRadius(11)
               .onClick(() => this.navigate('diagnostics'))
           }.margin({ top: 2 })
         }
-        .width('57%')
+        .width('56%')
         .alignItems(HorizontalAlign.Start)
       }
       .width('100%')
-      .constraintSize({ maxWidth: 1040 })
-      .padding({ left: 28, right: 28, top: 18, bottom: 18 })
+      .constraintSize({ maxWidth: 1000 })
+      .padding({ left: 28, right: 28, top: 20, bottom: 20 })
       .alignItems(VerticalAlign.Center)
     }
   }
@@ -1047,119 +1001,106 @@ struct Index {
   @Builder
   private settingsFields(compact: boolean) {
     Column({ space: 14 }) {
-      Column({ space: 4 }) {
-        Text('SETTINGS // 显示与解码配置')
-          .fontSize(10)
-          .fontWeight(FontWeight.Medium)
-          .letterSpacing(1.4)
-          .fontColor('#9D193D')
-        Text('系统设置')
-          .fontSize(compact ? 20 : 21)
-          .fontWeight(FontWeight.Regular)
-          .fontColor('#232026')
-      }.width('100%').alignItems(HorizontalAlign.Start)
+      Text('系统设置')
+        .fontSize(compact ? 19 : 20)
+        .fontWeight(FontWeight.Medium)
+        .fontColor($r('app.color.dm_ink'))
+        .width('100%')
 
       if (compact) {
         Row({ space: 10 }) {
           Text('当前编码与规格')
-            .fontSize(11.5)
-            .fontColor('#8C858E')
+            .fontSize(12)
+            .fontColor($r('app.color.dm_ink_muted'))
           Blank()
           Text(this.activeCodec.length > 0
             ? `${this.activeCodec}${this.activeResolution.length > 0 ? ' · ' + this.activeResolution : ''}`
             : this.codecDisplayName(this.preferredCodec))
             .fontSize(12.5)
             .fontWeight(FontWeight.Medium)
-            .fontColor('#232026')
+            .fontColor($r('app.color.dm_ink'))
         }
         .width('100%')
-        .padding({ left: 12, right: 12, top: 10, bottom: 10 })
-        .backgroundColor('#FFFFFF')
-        .border({ width: 0.8, color: '#DCD6CC' })
-        .borderRadius(4)
+        .padding({ left: 14, right: 14, top: 12, bottom: 12 })
+        .backgroundColor($r('app.color.dm_surface'))
+        .border({ width: 0.8, color: $r('app.color.dm_hairline') })
+        .borderRadius(16)
       }
 
-      this.sectionHeader('DISPLAY', '画面与性能浮窗')
+      this.sectionHeader('画面与性能浮窗')
 
       Row({ space: 12 }) {
         Column({ space: 3 }) {
           Text('性能参数浮窗')
-            .fontSize(14.5)
+            .fontSize(14)
             .fontWeight(FontWeight.Medium)
-            .fontColor('#232026')
+            .fontColor($r('app.color.dm_ink'))
           Text('全屏投屏时在右上角显示帧率、码率、编码格式与丢帧统计')
             .fontSize(12)
-            .fontColor('#767079')
+            .fontColor($r('app.color.dm_ink_secondary'))
         }.alignItems(HorizontalAlign.Start).layoutWeight(1)
 
         Toggle({ type: ToggleType.Switch, isOn: this.showFps })
-          .selectedColor('#9D193D')
+          .selectedColor($r('app.color.dm_accent'))
           .accessibilityText('性能参数浮窗')
           .onChange((enabled: boolean) => {
             this.showFps = enabled;
           })
       }
       .width('100%')
-      .padding({ left: 14, right: 14, top: 10, bottom: 10 })
-      .backgroundColor('#FFFFFF')
-      .border({ width: 0.8, color: '#DCD6CC' })
-      .borderRadius(4)
+      .padding({ left: 16, right: 16, top: 12, bottom: 12 })
+      .backgroundColor($r('app.color.dm_surface'))
+      .border({ width: 0.8, color: $r('app.color.dm_hairline') })
+      .borderRadius(16)
 
       if (this.isPhone) {
         Column({ space: 3 }) {
           Text('横竖屏自动切换')
             .fontSize(14)
             .fontWeight(FontWeight.Medium)
-            .fontColor('#232026')
+            .fontColor($r('app.color.dm_ink'))
           Text('连接前保持竖屏便于配置，进入扩展画面后自动切换横屏并支持左右翻转')
             .fontSize(12)
             .lineHeight(18)
-            .fontColor('#767079')
+            .fontColor($r('app.color.dm_ink_secondary'))
         }
         .width('100%')
-        .padding({ left: 14, right: 14, top: 10, bottom: 10 })
-        .backgroundColor('#FFFFFF')
-        .border({ width: 0.8, color: '#DCD6CC' })
-        .borderRadius(4)
+        .padding({ left: 16, right: 16, top: 12, bottom: 12 })
+        .backgroundColor($r('app.color.dm_surface'))
+        .border({ width: 0.8, color: $r('app.color.dm_hairline') })
+        .borderRadius(16)
         .alignItems(HorizontalAlign.Start)
       }
 
-      this.sectionHeader('CODEC', '视频编码格式')
+      this.sectionHeader('视频编码格式')
 
       Text(this.activeCodec.length > 0
         ? `当前协商：${this.activeCodec}${this.activeResolution.length > 0 ? ' · ' + this.activeResolution : ''}`
         : '选择传输编码偏好，默认自动优先使用 HEVC 硬件解码')
         .fontSize(12)
-        .fontColor('#767079')
+        .fontColor($r('app.color.dm_ink_secondary'))
         .width('100%')
 
       Row({ space: compact ? 8 : 10 }) {
         ForEach(CODEC_OPTIONS, (option: CodecOption) => {
           Button({ type: ButtonType.Normal }) {
             Column({ space: 4 }) {
-              Row({ space: compact ? 4 : 6 }) {
-                Row()
-                  .width(4)
-                  .height(4)
-                  .backgroundColor(this.preferredCodec === option.value ? '#9D193D' : Color.Transparent)
-                  .border({ width: 0.8, color: this.preferredCodec === option.value ? '#9D193D' : '#8C858E' })
-                Text(option.title)
-                  .fontSize(compact ? 13 : 14)
-                  .fontWeight(this.preferredCodec === option.value ? FontWeight.Medium : FontWeight.Normal)
-                  .fontColor(this.preferredCodec === option.value ? '#9D193D' : '#232026')
-              }
+              Text(option.title)
+                .fontSize(compact ? 13 : 14)
+                .fontWeight(FontWeight.Medium)
+                .fontColor(this.preferredCodec === option.value ? $r('app.color.dm_accent') : $r('app.color.dm_ink'))
               Text(option.subtitle)
                 .fontSize(compact ? 10.5 : 11)
-                .fontColor(this.preferredCodec === option.value ? '#9D193D' : '#767079')
+                .fontColor(this.preferredCodec === option.value ? $r('app.color.dm_accent') : $r('app.color.dm_ink_muted'))
             }
             .width('100%')
-            .padding({ top: 10, bottom: 10, left: compact ? 6 : 10, right: compact ? 6 : 10 })
-            .backgroundColor(this.preferredCodec === option.value ? '#F7EAEF' : '#FFFFFF')
+            .padding({ top: 11, bottom: 11, left: compact ? 6 : 10, right: compact ? 6 : 10 })
+            .backgroundColor(this.preferredCodec === option.value ? $r('app.color.dm_accent_soft') : $r('app.color.dm_surface'))
             .border({
               width: 0.8,
-              color: this.preferredCodec === option.value ? '#D9B6C2' : '#DCD6CC'
+              color: this.preferredCodec === option.value ? $r('app.color.dm_accent_border') : $r('app.color.dm_hairline')
             })
-            .borderRadius(3)
+            .borderRadius(11)
           }
           .layoutWeight(1)
           .backgroundColor(Color.Transparent)
@@ -1171,28 +1112,28 @@ struct Index {
         Row({ space: 12 }) {
           Text('编码偏好已更新，重新连接 USB 会话后生效')
             .fontSize(12)
-            .fontColor('#9D193D')
+            .fontColor($r('app.color.dm_accent'))
             .layoutWeight(1)
           Button('立即重连', { type: ButtonType.Normal })
-            .height(30)
-            .padding({ left: 12, right: 12 })
-            .fontSize(11.5)
-            .fontColor(Color.White)
-            .backgroundColor('#9D193D')
-            .borderRadius(3)
+            .height(32)
+            .padding({ left: 14, right: 14 })
+            .fontSize(12)
+            .fontColor($r('app.color.dm_accent_fg'))
+            .backgroundColor($r('app.color.dm_accent'))
+            .borderRadius(999)
             .onClick(() => {
               this.codecChangedWhileConnected = false;
               this.accessoryLink.reconnect();
             })
         }
         .width('100%')
-        .padding({ left: 12, right: 12, top: 8, bottom: 8 })
-        .backgroundColor('#F7EAEF')
-        .border({ width: 0.8, color: '#D9B6C2' })
-        .borderRadius(3)
+        .padding({ left: 14, right: 14, top: 10, bottom: 10 })
+        .backgroundColor($r('app.color.dm_accent_soft'))
+        .border({ width: 0.8, color: $r('app.color.dm_accent_border') })
+        .borderRadius(14)
       }
 
-      this.sectionHeader('DIAGNOSTICS', '实时诊断')
+      this.sectionHeader('连接诊断')
 
       Button({ type: ButtonType.Normal }) {
         Row({ space: 12 }) {
@@ -1200,22 +1141,22 @@ struct Index {
             Text('查看连接与解码统计')
               .fontSize(14)
               .fontWeight(FontWeight.Medium)
-              .fontColor('#232026')
+              .fontColor($r('app.color.dm_ink'))
             Text('检视 USB 状态、协商参数、码率与帧率统计')
               .fontSize(12)
-              .fontColor('#767079')
+              .fontColor($r('app.color.dm_ink_secondary'))
           }.alignItems(HorizontalAlign.Start).layoutWeight(1)
 
           Text('查看 →')
-            .fontSize(11.5)
+            .fontSize(12)
             .fontWeight(FontWeight.Medium)
-            .fontColor('#9D193D')
+            .fontColor($r('app.color.dm_accent'))
         }
         .width('100%')
-        .padding({ top: 10, bottom: 10, left: 14, right: 14 })
-        .backgroundColor('#FFFFFF')
-        .border({ width: 0.8, color: '#DCD6CC' })
-        .borderRadius(4)
+        .padding({ top: 12, bottom: 12, left: 16, right: 16 })
+        .backgroundColor($r('app.color.dm_surface'))
+        .border({ width: 0.8, color: $r('app.color.dm_hairline') })
+        .borderRadius(16)
       }
       .width('100%')
       .backgroundColor(Color.Transparent)
@@ -1235,8 +1176,7 @@ struct Index {
       .padding({ left: 16, right: 16, top: 14, bottom: 20 })
       .alignItems(HorizontalAlign.Start)
     } else {
-      Row({ space: 26 }) {
-        // Left wired schematic card
+      Row({ space: 24 }) {
         Column({ space: 10 }) {
           WiredLinkSchematic({
             linked: this.link.state === 'connected',
@@ -1250,35 +1190,34 @@ struct Index {
 
           Column({ space: 4 }) {
             Text('当前编码偏好')
-              .fontSize(10.5)
-              .fontColor('#8C858E')
+              .fontSize(11)
+              .fontColor($r('app.color.dm_ink_muted'))
             Text(this.activeCodec.length > 0
               ? `${this.activeCodec}${this.activeResolution.length > 0 ? ' · ' + this.activeResolution : ''}`
               : this.codecDisplayName(this.preferredCodec))
-              .fontSize(12.5)
+              .fontSize(13)
               .fontWeight(FontWeight.Medium)
-              .fontColor('#232026')
+              .fontColor($r('app.color.dm_ink'))
           }
           .width('100%')
-          .padding(12)
-          .backgroundColor('#FFFFFF')
-          .border({ width: 0.8, color: '#DCD6CC' })
-          .borderRadius(4)
+          .padding(14)
+          .backgroundColor($r('app.color.dm_surface'))
+          .border({ width: 0.8, color: $r('app.color.dm_hairline') })
+          .borderRadius(16)
           .alignItems(HorizontalAlign.Start)
         }
-        .width('34%')
+        .width('35%')
         .alignItems(HorizontalAlign.Start)
 
-        // Right settings column
         Column() {
           this.settingsFields(false)
         }
-        .width('66%')
+        .width('65%')
         .alignItems(HorizontalAlign.Start)
       }
       .width('100%')
-      .constraintSize({ maxWidth: 1040 })
-      .padding({ left: 28, right: 28, top: 16, bottom: 24 })
+      .constraintSize({ maxWidth: 1000 })
+      .padding({ left: 28, right: 28, top: 18, bottom: 24 })
       .alignItems(VerticalAlign.Top)
     }
   }
@@ -1289,26 +1228,27 @@ struct Index {
       ForEach(this.diagnosticRows(), (row: DiagnosticRow, index: number) => {
         Column() {
           if (index > 0) {
-            Divider().color('#EAE4DD').strokeWidth(0.75)
+            Divider().color($r('app.color.dm_soft_hairline')).strokeWidth(0.8)
           }
           Row({ space: 12 }) {
             Text(row.label)
               .fontSize(compact ? 12 : 12.5)
-              .fontColor('#767079')
+              .fontColor($r('app.color.dm_ink_muted'))
               .width(compact ? 76 : 96)
             Text(row.value)
               .fontSize(compact ? 12 : 12.5)
               .fontWeight(FontWeight.Medium)
-              .fontColor('#232026')
+              .fontColor($r('app.color.dm_ink'))
               .layoutWeight(1)
-          }.width('100%').padding({ top: 8, bottom: 8, left: 12, right: 12 })
+          }.width('100%').padding({ top: 10, bottom: 10, left: 14, right: 14 })
         }.width('100%')
       }, (row: DiagnosticRow) => `${row.label}:${row.value}`)
     }
     .width('100%')
-    .backgroundColor('#FFFFFF')
-    .border({ width: 0.8, color: '#DCD6CC' })
-    .borderRadius(4)
+    .backgroundColor($r('app.color.dm_surface'))
+    .border({ width: 0.8, color: $r('app.color.dm_hairline') })
+    .borderRadius(16)
+    .clip(true)
   }
 
   @Builder
@@ -1316,12 +1256,12 @@ struct Index {
     Button('重新握手 USB 连接', { type: ButtonType.Normal })
       .width('100%')
       .height(height)
-      .fontSize(12)
+      .fontSize(12.5)
       .fontWeight(FontWeight.Medium)
-      .fontColor('#9D193D')
-      .backgroundColor('#F7EAEF')
-      .border({ width: 0.8, color: '#D9B6C2' })
-      .borderRadius(3)
+      .fontColor($r('app.color.dm_accent'))
+      .backgroundColor($r('app.color.dm_accent_soft'))
+      .border({ width: 0.8, color: $r('app.color.dm_accent_border') })
+      .borderRadius(11)
       .onClick(() => {
         if (this.link.state === 'connected') {
           this.accessoryLink.reconnect();
@@ -1335,29 +1275,21 @@ struct Index {
   private diagnosticsContent() {
     if (this.isCompactLayout()) {
       Column({ space: 12 }) {
-        Column({ space: 4 }) {
-          Text('DIAGNOSTICS // 会话与传输摘要')
-            .fontSize(10)
-            .fontWeight(FontWeight.Medium)
-            .letterSpacing(1.4)
-            .fontColor('#9D193D')
-          Text('连接与解码诊断')
-            .fontSize(20)
-            .fontWeight(FontWeight.Regular)
-            .fontColor('#232026')
-        }.width('100%').alignItems(HorizontalAlign.Start)
-
-        Divider().color('#DCD6CC').strokeWidth(0.8)
+        Text('连接与解码诊断')
+          .fontSize(19)
+          .fontWeight(FontWeight.Medium)
+          .fontColor($r('app.color.dm_ink'))
+          .width('100%')
 
         this.diagnosticsRowsCard(true)
 
-        this.reconnectUsbButton(40)
+        this.reconnectUsbButton(42)
       }
       .width('100%')
       .padding({ left: 16, right: 16, top: 14, bottom: 20 })
       .alignItems(HorizontalAlign.Start)
     } else {
-      Row({ space: 26 }) {
+      Row({ space: 24 }) {
         Column({ space: 10 }) {
           WiredLinkSchematic({
             linked: this.link.state === 'connected',
@@ -1369,56 +1301,48 @@ struct Index {
             isPhone: this.isPhone
           })
 
-          this.reconnectUsbButton(34)
+          this.reconnectUsbButton(38)
         }
-        .width('34%')
+        .width('35%')
         .alignItems(HorizontalAlign.Start)
 
         Column({ space: 12 }) {
-          Column({ space: 4 }) {
-            Text('DIAGNOSTICS // 会话与传输摘要')
-              .fontSize(10)
-              .fontWeight(FontWeight.Medium)
-              .letterSpacing(1.4)
-              .fontColor('#9D193D')
-            Text('连接与解码诊断')
-              .fontSize(21)
-              .fontWeight(FontWeight.Regular)
-              .fontColor('#232026')
-          }.width('100%').alignItems(HorizontalAlign.Start)
-
-          Divider().color('#DCD6CC').strokeWidth(0.8)
+          Text('连接与解码诊断')
+            .fontSize(20)
+            .fontWeight(FontWeight.Medium)
+            .fontColor($r('app.color.dm_ink'))
+            .width('100%')
 
           this.diagnosticsRowsCard(false)
 
-          Row({ space: 12 }) {
+          Row({ space: 10 }) {
             Button('← 返回系统设置', { type: ButtonType.Normal })
-              .height(34)
-              .padding({ left: 12, right: 12 })
+              .height(36)
+              .padding({ left: 14, right: 14 })
               .fontSize(12)
-              .fontColor('#5A545E')
-              .backgroundColor('#FFFFFF')
-              .border({ width: 0.8, color: '#DCD6CC' })
-              .borderRadius(3)
+              .fontColor($r('app.color.dm_ink_secondary'))
+              .backgroundColor($r('app.color.dm_surface'))
+              .border({ width: 0.8, color: $r('app.color.dm_hairline') })
+              .borderRadius(11)
               .onClick(() => this.navigate('settings'))
 
             Button('返回主页', { type: ButtonType.Normal })
-              .height(34)
-              .padding({ left: 12, right: 12 })
+              .height(36)
+              .padding({ left: 14, right: 14 })
               .fontSize(12)
-              .fontColor('#9D193D')
-              .backgroundColor('#F7EAEF')
-              .border({ width: 0.8, color: '#D9B6C2' })
-              .borderRadius(3)
+              .fontColor($r('app.color.dm_accent'))
+              .backgroundColor($r('app.color.dm_accent_soft'))
+              .border({ width: 0.8, color: $r('app.color.dm_accent_border') })
+              .borderRadius(11)
               .onClick(() => this.navigate('home'))
           }
         }
-        .width('66%')
+        .width('65%')
         .alignItems(HorizontalAlign.Start)
       }
       .width('100%')
-      .constraintSize({ maxWidth: 1040 })
-      .padding({ left: 28, right: 28, top: 16, bottom: 24 })
+      .constraintSize({ maxWidth: 1000 })
+      .padding({ left: 28, right: 28, top: 18, bottom: 24 })
       .alignItems(VerticalAlign.Top)
     }
   }
@@ -1431,105 +1355,111 @@ struct Index {
         Row({ space: 12 }) {
           if (this.page !== 'home') {
             Button({ type: ButtonType.Normal }) {
-              Row({ space: 6 }) {
+              Row({ space: 5 }) {
                 Text('←')
                   .fontSize(13)
-                  .fontColor('#9D193D')
+                  .fontColor($r('app.color.dm_accent'))
                 Text('返回')
-                  .fontSize(12)
-                  .fontColor('#232026')
+                  .fontSize(12.5)
+                  .fontColor($r('app.color.dm_ink'))
               }
             }
             .height(32)
-            .padding({ left: 11, right: 11 })
-            .backgroundColor('#FFFFFF')
-            .border({ width: 0.8, color: '#DCD6CC' })
-            .borderRadius(3)
+            .padding({ left: 12, right: 12 })
+            .backgroundColor($r('app.color.dm_subtle'))
+            .border({ width: 0.8, color: $r('app.color.dm_hairline') })
+            .borderRadius(999)
             .onClick(() => this.onBackPress())
           } else {
-            Row({ space: 8 }) {
-              Row()
-                .width(5)
-                .height(5)
-                .backgroundColor(this.statusAccent())
-              Text('DESKMATE')
-                .fontSize(13.5)
-                .fontWeight(FontWeight.Medium)
-                .letterSpacing(1.8)
-                .fontColor('#232026')
-            }
+            Text('DeskMate')
+              .fontSize(15)
+              .fontWeight(FontWeight.Medium)
+              .fontColor($r('app.color.dm_ink'))
           }
 
           Blank()
 
           Row({ space: 6 }) {
             Row()
-              .width(4)
-              .height(4)
-              .backgroundColor(this.statusAccent())
+              .width(6)
+              .height(6)
+              .borderRadius(3)
+              .backgroundColor(this.statusDotColor())
             Text(this.shortStatusLabel())
-              .fontSize(10.5)
+              .fontSize(11)
               .fontWeight(FontWeight.Medium)
-              .fontColor(this.frameReady || this.link.state === 'error' ? '#9D193D' : '#5A545E')
+              .fontColor(this.badgeFgColor())
           }
-          .padding({ left: 9, right: 9, top: 4, bottom: 4 })
-          .backgroundColor(this.frameReady || this.link.state === 'error' ? '#F7EAEF' : '#FAF7F2')
-          .border({ width: 0.8, color: this.frameReady || this.link.state === 'error' ? '#D9B6C2' : '#DCD6CC' })
-          .borderRadius(3)
+          .padding({ left: 10, right: 10, top: 4, bottom: 4 })
+          .backgroundColor(this.badgeBgColor())
+          .border({ width: 0.8, color: this.badgeBorderColor() })
+          .borderRadius(999)
         }
         .width('100%')
         .padding({ left: 16, right: 16, top: Math.max(this.safeTopVp + 6, 14), bottom: 10 })
-        .backgroundColor('#CCFFFFFF')
+        .backgroundColor($r('app.color.dm_surface'))
       } else {
         Row({ space: 16 }) {
           if (this.page !== 'home') {
             Button({ type: ButtonType.Normal }) {
-              Row({ space: 6 }) {
+              Row({ space: 5 }) {
                 Text('←')
                   .fontSize(13)
-                  .fontColor('#9D193D')
+                  .fontColor($r('app.color.dm_accent'))
                 Text('返回')
-                  .fontSize(12)
-                  .fontColor('#232026')
+                  .fontSize(12.5)
+                  .fontColor($r('app.color.dm_ink'))
               }
             }
             .height(34)
-            .padding({ left: 12, right: 12 })
-            .backgroundColor('#FFFFFF')
-            .border({ width: 0.8, color: '#DCD6CC' })
-            .borderRadius(3)
+            .padding({ left: 13, right: 13 })
+            .backgroundColor($r('app.color.dm_subtle'))
+            .border({ width: 0.8, color: $r('app.color.dm_hairline') })
+            .borderRadius(999)
             .onClick(() => this.onBackPress())
           } else {
-            Row({ space: 8 }) {
-              Row()
-                .width(5)
-                .height(5)
-                .backgroundColor(this.statusAccent())
-              Text('DESKMATE')
-                .fontSize(14)
+            Row({ space: 10 }) {
+              Text('DeskMate')
+                .fontSize(15)
                 .fontWeight(FontWeight.Medium)
-                .letterSpacing(2.0)
-                .fontColor('#232026')
-              Text('// 扩展屏终端')
-                .fontSize(11)
-                .fontColor('#8C858E')
+                .fontColor($r('app.color.dm_ink'))
+
+              Row({ space: 6 }) {
+                Row()
+                  .width(6)
+                  .height(6)
+                  .borderRadius(3)
+                  .backgroundColor(this.statusDotColor())
+                Text(this.shortStatusLabel())
+                  .fontSize(11)
+                  .fontWeight(FontWeight.Medium)
+                  .fontColor(this.badgeFgColor())
+              }
+              .padding({ left: 10, right: 10, top: 4, bottom: 4 })
+              .backgroundColor(this.badgeBgColor())
+              .border({ width: 0.8, color: this.badgeBorderColor() })
+              .borderRadius(999)
             }
           }
 
           Blank()
 
-          Row({ space: 8 }) {
-            this.headerTab('home', 'DISPLAY', '扩展显示')
-            this.headerTab('settings', 'SETTINGS', '系统设置')
-            this.headerTab('diagnostics', 'DIAGNOSTICS', '连接诊断')
+          Row({ space: 2 }) {
+            this.headerTab('home', '连接')
+            this.headerTab('settings', '设置')
+            this.headerTab('diagnostics', '诊断')
           }
+          .padding(3)
+          .backgroundColor($r('app.color.dm_subtle'))
+          .border({ width: 0.8, color: $r('app.color.dm_soft_hairline') })
+          .borderRadius(999)
         }
         .width('100%')
-        .padding({ left: 28, right: 28, top: Math.max(this.safeTopVp + 8, 28), bottom: 8 })
-        .backgroundColor('#CCFFFFFF')
+        .padding({ left: 28, right: 28, top: Math.max(this.safeTopVp + 8, 22), bottom: 10 })
+        .backgroundColor($r('app.color.dm_surface'))
       }
 
-      Divider().color('#DCD6CC').strokeWidth(0.8)
+      Divider().color($r('app.color.dm_hairline')).strokeWidth(0.8)
 
       Scroll() {
         Column() {
@@ -1547,47 +1477,43 @@ struct Index {
       .layoutWeight(1)
       .align(!this.isCompactLayout() && this.page === 'home' ? Alignment.Center : Alignment.Top)
 
-      Divider().color('#DCD6CC').strokeWidth(0.8)
+      Divider().color($r('app.color.dm_hairline')).strokeWidth(0.8)
 
-      // Bottom navigation (compact) or whisper status bar (tablet)
       if (this.isCompactLayout()) {
-        Row({ space: 0 }) {
-          this.bottomTab('home', 'DISPLAY', '扩展显示')
-          this.bottomTab('settings', 'SETTINGS', '系统设置')
-          this.bottomTab('diagnostics', 'DIAG', '连接诊断')
+        Row({ space: 6 }) {
+          this.bottomTab('home', '连接')
+          this.bottomTab('settings', '设置')
+          this.bottomTab('diagnostics', '诊断')
         }
         .width('100%')
-        .padding({ left: 8, right: 8, bottom: this.safeBottomVp })
-        .backgroundColor('#F2FFFFFF')
+        .padding({ left: 12, right: 12, top: 6, bottom: Math.max(8, this.safeBottomVp) })
+        .backgroundColor($r('app.color.dm_surface'))
       } else {
         Row() {
-          Text('USB · AOA 硬件直连  //  自动 HiDPI 虚拟屏  //  多点与双指触控')
-            .fontSize(10.5)
-            .fontColor('#8C858E')
+          Text('USB-C AOA 硬件直连 · 自动 HiDPI 虚拟屏 · 多点与双指触控')
+            .fontSize(11)
+            .fontColor($r('app.color.dm_ink_muted'))
           Blank()
           Row({ space: 6 }) {
             Row()
-              .width(4)
-              .height(4)
-              .backgroundColor(this.statusAccent())
+              .width(6)
+              .height(6)
+              .borderRadius(3)
+              .backgroundColor(this.statusDotColor())
             Text(`${this.activeCodec.length > 0 ? this.activeCodec : this.preferredCodec.toUpperCase()} · ${this.activeResolution.length > 0 ? this.activeResolution : '待机'}`)
-              .fontSize(10.5)
-              .fontColor('#5A545E')
+              .fontSize(11)
+              .fontColor($r('app.color.dm_ink_secondary'))
           }
         }
         .width('100%')
-        .constraintSize({ minHeight: 30 + this.safeBottomVp })
+        .constraintSize({ minHeight: 32 + this.safeBottomVp })
         .padding({ left: 28, right: 28, top: 6, bottom: Math.max(6, this.safeBottomVp) })
-        .backgroundColor('#CCFFFFFF')
+        .backgroundColor($r('app.color.dm_surface'))
       }
     }
     .width('100%')
     .height('100%')
-    .radialGradient({
-      center: ['45%', '42%'],
-      radius: 680,
-      colors: [['#FFFFFF', 0.0], ['#FCFBF8', 0.58], ['#F4F0E8', 1.0]]
-    })
+    .backgroundColor($r('app.color.dm_canvas'))
     .zIndex(1)
   }
 
@@ -1608,25 +1534,25 @@ struct Index {
         Row({ space: 8 }) {
           if (this.controlsExpanded) {
             Button('← 返回主页', { type: ButtonType.Normal })
-              .height(this.isPhone ? 34 : 40)
-              .padding({ left: this.isPhone ? 11 : 14, right: this.isPhone ? 11 : 14 })
+              .height(this.isPhone ? 34 : 38)
+              .padding({ left: this.isPhone ? 12 : 14, right: this.isPhone ? 12 : 14 })
               .fontSize(this.isPhone ? 12 : 12.5)
               .fontWeight(FontWeight.Medium)
-              .fontColor('#232026')
-              .backgroundColor('#F5FCFBF8')
-              .border({ width: 0.8, color: '#DCD6CC' })
-              .borderRadius(4)
+              .fontColor('#F4F4F5')
+              .backgroundColor('#DB181A1E')
+              .border({ width: 0.8, color: '#26FFFFFF' })
+              .borderRadius(999)
               .onClick(() => this.navigate('home'))
           }
           Button({ type: ButtonType.Normal }) {
             SymbolGlyph(this.controlsExpanded ? $r('sys.symbol.chevron_up') : $r('sys.symbol.chevron_down'))
-              .fontSize(this.isPhone ? 16 : 18).fontColor(['#FCFBF8'])
+              .fontSize(this.isPhone ? 16 : 17).fontColor(['#F4F4F5'])
           }
-          .width(this.isPhone ? 34 : 40)
-          .height(this.isPhone ? 34 : 40)
-          .borderRadius(4)
-          .backgroundColor('#D918161B')
-          .border({ width: 0.8, color: '#5A5059' })
+          .width(this.isPhone ? 34 : 38)
+          .height(this.isPhone ? 34 : 38)
+          .borderRadius(999)
+          .backgroundColor('#DB181A1E')
+          .border({ width: 0.8, color: '#26FFFFFF' })
           .accessibilityText(this.controlsExpanded ? '收起显示工具栏' : '展开显示工具栏')
           .onClick(() => { this.controlsExpanded = !this.controlsExpanded; })
 
@@ -1635,55 +1561,56 @@ struct Index {
           if (this.showFps) {
             Row({ space: this.isPhone ? 7 : 10 }) {
               Row()
-                .width(5)
-                .height(5)
-                .backgroundColor('#9D193D')
+                .width(6)
+                .height(6)
+                .borderRadius(3)
+                .backgroundColor('#4F8BFF')
               Row({ space: 4 }) {
                 Text(`${this.fps}`)
                   .fontSize(this.isPhone ? 11.5 : 13)
                   .fontWeight(FontWeight.Bold)
-                  .fontColor('#8BF2C4')
+                  .fontColor('#4F8BFF')
                 Text('FPS')
                   .fontSize(this.isPhone ? 10 : 10.5)
-                  .fontColor('#D6D1CC')
+                  .fontColor('#A1A1AA')
               }
-              Divider().vertical(true).height(12).color('#4B444E')
+              Divider().vertical(true).height(12).color('#3F3F46')
               Row({ space: 4 }) {
                 Text(`${this.bitrateMbps.toFixed(1)}`)
                   .fontSize(this.isPhone ? 11.5 : 13)
                   .fontWeight(FontWeight.Bold)
-                  .fontColor('#FCFBF8')
+                  .fontColor('#F4F4F5')
                 Text('Mbps')
                   .fontSize(this.isPhone ? 10 : 10.5)
-                  .fontColor('#D6D1CC')
+                  .fontColor('#A1A1AA')
               }
-              Divider().vertical(true).height(12).color('#4B444E')
+              Divider().vertical(true).height(12).color('#3F3F46')
               Text(this.activeCodec.length > 0 ? this.activeCodec : '--')
                 .fontSize(this.isPhone ? 11 : 12)
                 .fontWeight(FontWeight.Medium)
-                .fontColor('#E6C994')
+                .fontColor('#F4F4F5')
               if (this.activeResolution.length > 0) {
-                Divider().vertical(true).height(12).color('#4B444E')
+                Divider().vertical(true).height(12).color('#3F3F46')
                 Text(this.activeResolution)
                   .fontSize(this.isPhone ? 11 : 12)
-                  .fontColor('#E2DDD6')
+                  .fontColor('#A1A1AA')
               }
               if (this.droppedFrames > 0) {
-                Divider().vertical(true).height(12).color('#4B444E')
+                Divider().vertical(true).height(12).color('#3F3F46')
                 Text(`丢帧 ${this.droppedFrames}`)
                   .fontSize(this.isPhone ? 11 : 12)
-                  .fontColor('#F8B4B4')
+                  .fontColor('#F87171')
               }
             }
             .padding({
-              left: this.isPhone ? 9 : 12,
-              right: this.isPhone ? 9 : 12,
-              top: this.isPhone ? 5 : 7,
-              bottom: this.isPhone ? 5 : 7
+              left: this.isPhone ? 10 : 14,
+              right: this.isPhone ? 10 : 14,
+              top: this.isPhone ? 6 : 7,
+              bottom: this.isPhone ? 6 : 7
             })
-            .backgroundColor('#D918161B')
-            .borderRadius(4)
-            .border({ width: 0.8, color: '#5A5059' })
+            .backgroundColor('#DB181A1E')
+            .borderRadius(999)
+            .border({ width: 0.8, color: '#26FFFFFF' })
             .hitTestBehavior(HitTestMode.None)
           }
         }

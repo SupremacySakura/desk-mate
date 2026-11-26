@@ -36,6 +36,12 @@ final class DeviceLayout {
 
     private DeviceLayout() {}
 
+    static boolean isDarkMode(Context context) {
+        final int nightMode = context.getResources().getConfiguration().uiMode
+            & Configuration.UI_MODE_NIGHT_MASK;
+        return nightMode == Configuration.UI_MODE_NIGHT_YES;
+    }
+
     static boolean isPhoneDevice(Context context) {
         final Configuration config = context.getResources().getConfiguration();
         return config.smallestScreenWidthDp < 600;
@@ -119,6 +125,7 @@ final class DeviceLayout {
         if (window == null) {
             return;
         }
+        final StudioDrawables.Palette p = StudioDrawables.palette(activity);
         if (Build.VERSION.SDK_INT >= 30) {
             window.setDecorFitsSystemWindows(false);
             final WindowInsetsController controller = window.getInsetsController();
@@ -134,13 +141,16 @@ final class DeviceLayout {
                     window.setNavigationBarColor(Color.BLACK);
                 } else {
                     controller.show(WindowInsets.Type.systemBars());
+                    final int lightAppearance = p.dark
+                        ? 0
+                        : (WindowInsetsController.APPEARANCE_LIGHT_STATUS_BARS
+                            | WindowInsetsController.APPEARANCE_LIGHT_NAVIGATION_BARS);
                     controller.setSystemBarsAppearance(
-                        WindowInsetsController.APPEARANCE_LIGHT_STATUS_BARS
-                            | WindowInsetsController.APPEARANCE_LIGHT_NAVIGATION_BARS,
+                        lightAppearance,
                         WindowInsetsController.APPEARANCE_LIGHT_STATUS_BARS
                             | WindowInsetsController.APPEARANCE_LIGHT_NAVIGATION_BARS);
-                    window.setStatusBarColor(StudioDrawables.COLOR_CANVAS_MID);
-                    window.setNavigationBarColor(StudioDrawables.COLOR_SHELL_CHROME);
+                    window.setStatusBarColor(p.surface);
+                    window.setNavigationBarColor(p.surface);
                 }
             }
         } else {
@@ -158,14 +168,16 @@ final class DeviceLayout {
             } else {
                 int flags = View.SYSTEM_UI_FLAG_LAYOUT_STABLE
                     | View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN
-                    | View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION
-                    | View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR;
-                if (Build.VERSION.SDK_INT >= 26) {
-                    flags |= View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR;
+                    | View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION;
+                if (!p.dark) {
+                    flags |= View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR;
+                    if (Build.VERSION.SDK_INT >= 26) {
+                        flags |= View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR;
+                    }
                 }
                 decor.setSystemUiVisibility(flags);
-                window.setStatusBarColor(StudioDrawables.COLOR_CANVAS_MID);
-                window.setNavigationBarColor(StudioDrawables.COLOR_SHELL_CHROME);
+                window.setStatusBarColor(p.surface);
+                window.setNavigationBarColor(p.surface);
             }
         }
 

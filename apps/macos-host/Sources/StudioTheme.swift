@@ -1,195 +1,191 @@
 import AppKit
 import SwiftUI
 
-enum StudioPalette {
-    static let canvasTop = Color(red: 1.000, green: 1.000, blue: 1.000)
-    static let canvasMid = Color(red: 0.988, green: 0.984, blue: 0.973)     // #FCFBF8
-    static let canvasEdge = Color(red: 0.957, green: 0.941, blue: 0.910)    // #F4F0E8
-    static let cardSurface = Color(red: 1.000, green: 1.000, blue: 1.000)   // #FFFFFF
-    static let subtleSurface = Color(red: 0.980, green: 0.969, blue: 0.949) // #FAF7F2
-    static let hairline = Color(red: 0.863, green: 0.839, blue: 0.800)      // #DCD6CC
-    static let softHairline = Color(red: 0.918, green: 0.898, blue: 0.867)  // #EAE4DD
-    static let ink = Color(red: 0.137, green: 0.125, blue: 0.149)           // #232026
-    static let inkSecondary = Color(red: 0.353, green: 0.329, blue: 0.369)  // #5A545E
-    static let inkMuted = Color(red: 0.549, green: 0.522, blue: 0.557)      // #8C858E
-    static let crimson = Color(red: 0.616, green: 0.098, blue: 0.239)       // #9D193D
-    static let crimsonPressed = Color(red: 0.494, green: 0.071, blue: 0.188)// #7E1230
-    static let roseWash = Color(red: 0.969, green: 0.918, blue: 0.937)      // #F7EAEF
-    static let roseBorder = Color(red: 0.851, green: 0.714, blue: 0.761)    // #D9B6C2
-    static let champagne = Color(red: 0.725, green: 0.592, blue: 0.357)     // #B9975B
-    static let jade = Color(red: 0.176, green: 0.490, blue: 0.357)          // #2D7D5B
-    static let jadeWash = Color(red: 0.933, green: 0.969, blue: 0.953)      // #EEF7F3
-    static let amber = Color(red: 0.659, green: 0.392, blue: 0.118)         // #A8641E
-    static let amberWash = Color(red: 0.984, green: 0.953, blue: 0.910)     // #FBF3E8
+private func adaptiveColor(light: UInt32, dark: UInt32) -> Color {
+    Color(nsColor: NSColor(name: nil) { appearance in
+        let isDark = appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+        let hex = isDark ? dark : light
+        let r = CGFloat((hex >> 16) & 0xFF) / 255.0
+        let g = CGFloat((hex >> 8) & 0xFF) / 255.0
+        let b = CGFloat(hex & 0xFF) / 255.0
+        return NSColor(srgbRed: r, green: g, blue: b, alpha: 1.0)
+    })
+}
 
-    static let cornerRadius: CGFloat = 3
-    static let cardRadius: CGFloat = 4
+enum StudioPalette {
+    static let canvas = adaptiveColor(light: 0xF5F5F3, dark: 0x111214)
+    static let cardSurface = adaptiveColor(light: 0xFFFFFF, dark: 0x181A1E)
+    static let subtleSurface = adaptiveColor(light: 0xECECE8, dark: 0x212429)
+    static let hoverSurface = adaptiveColor(light: 0xE5E5E0, dark: 0x292D34)
+    static let hairline = adaptiveColor(light: 0xE2E1DC, dark: 0x2A2D33)
+    static let softHairline = adaptiveColor(light: 0xECEBE6, dark: 0x22252B)
+
+    static let ink = adaptiveColor(light: 0x18181B, dark: 0xF4F4F5)
+    static let inkSecondary = adaptiveColor(light: 0x5A5A60, dark: 0xA1A1AA)
+    static let inkMuted = adaptiveColor(light: 0x8B8B92, dark: 0x71717A)
+
+    static let accent = adaptiveColor(light: 0x2563EB, dark: 0x4F8BFF)
+    static let accentPressed = adaptiveColor(light: 0x1D4ED8, dark: 0x3B7AF5)
+    static let accentForeground = adaptiveColor(light: 0xFFFFFF, dark: 0x091326)
+    static let accentSoft = adaptiveColor(light: 0xEFF6FF, dark: 0x18253D)
+    static let accentBorder = adaptiveColor(light: 0xBFDBFE, dark: 0x294A82)
+
+    static let positive = adaptiveColor(light: 0x15803D, dark: 0x34D399)
+    static let positiveWash = adaptiveColor(light: 0xECFDF5, dark: 0x122921)
+    static let positiveBorder = adaptiveColor(light: 0xA7F3D0, dark: 0x1F5441)
+
+    static let warning = adaptiveColor(light: 0xB45309, dark: 0xFBBF24)
+    static let warningWash = adaptiveColor(light: 0xFFFBEB, dark: 0x2C2412)
+    static let warningBorder = adaptiveColor(light: 0xFDE68A, dark: 0x594518)
+
+    static let danger = adaptiveColor(light: 0xDC2626, dark: 0xF87171)
+    static let dangerWash = adaptiveColor(light: 0xFEF2F2, dark: 0x2E1618)
+    static let dangerBorder = adaptiveColor(light: 0xFECACA, dark: 0x5E2428)
+
+    static let cornerRadius: CGFloat = 10
+    static let tileRadius: CGFloat = 12
+    static let cardRadius: CGFloat = 16
 }
 
 enum StudioTone {
     case neutral
-    case crimson
+    case accent
     case positive
     case warning
+    case danger
 
     var foreground: Color {
         switch self {
         case .neutral: return StudioPalette.inkSecondary
-        case .crimson: return StudioPalette.crimson
-        case .positive: return StudioPalette.jade
-        case .warning: return StudioPalette.amber
+        case .accent: return StudioPalette.accent
+        case .positive: return StudioPalette.positive
+        case .warning: return StudioPalette.warning
+        case .danger: return StudioPalette.danger
         }
     }
 
     var dot: Color {
         switch self {
         case .neutral: return StudioPalette.inkMuted
-        case .crimson: return StudioPalette.crimson
-        case .positive: return StudioPalette.jade
-        case .warning: return StudioPalette.amber
+        case .accent: return StudioPalette.accent
+        case .positive: return StudioPalette.positive
+        case .warning: return StudioPalette.warning
+        case .danger: return StudioPalette.danger
         }
     }
 
     var background: Color {
         switch self {
         case .neutral: return StudioPalette.subtleSurface
-        case .crimson: return StudioPalette.roseWash
-        case .positive: return StudioPalette.jadeWash
-        case .warning: return StudioPalette.amberWash
+        case .accent: return StudioPalette.accentSoft
+        case .positive: return StudioPalette.positiveWash
+        case .warning: return StudioPalette.warningWash
+        case .danger: return StudioPalette.dangerWash
         }
     }
 
     var border: Color {
         switch self {
         case .neutral: return StudioPalette.hairline
-        case .crimson: return StudioPalette.roseBorder
-        case .positive: return Color(red: 0.710, green: 0.859, blue: 0.788)
-        case .warning: return Color(red: 0.898, green: 0.780, blue: 0.631)
+        case .accent: return StudioPalette.accentBorder
+        case .positive: return StudioPalette.positiveBorder
+        case .warning: return StudioPalette.warningBorder
+        case .danger: return StudioPalette.dangerBorder
         }
     }
 }
 
 struct StudioBackground: View {
     var body: some View {
-        ZStack {
-            LinearGradient(
-                colors: [StudioPalette.canvasTop, StudioPalette.canvasMid, StudioPalette.canvasEdge],
-                startPoint: .topLeading,
-                endPoint: .bottomTrailing
-            )
-            RadialGradient(
-                colors: [StudioPalette.canvasTop.opacity(0.95), Color.clear],
-                center: .top,
-                startRadius: 20,
-                endRadius: 520
-            )
-        }
-        .ignoresSafeArea()
+        StudioPalette.canvas
+            .ignoresSafeArea()
     }
 }
 
-/// Clean architectural dual-display emblem (Mac host screen + linked HarmonyOS tablet).
+/// Quiet Squircle dual-display glyph (Host display + extended client display).
 struct DualDisplayGlyph: View {
     let linked: Bool
     let streaming: Bool
-    var size: CGFloat = 34
+    var size: CGFloat = 32
 
     var body: some View {
         ZStack {
-            RoundedRectangle(cornerRadius: StudioPalette.cardRadius, style: .continuous)
-                .fill(streaming ? StudioPalette.roseWash.opacity(0.55) : StudioPalette.subtleSurface)
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .fill(streaming ? StudioPalette.accentSoft : StudioPalette.subtleSurface)
                 .overlay(
-                    RoundedRectangle(cornerRadius: StudioPalette.cardRadius, style: .continuous)
-                        .stroke(streaming ? StudioPalette.roseBorder : StudioPalette.hairline, lineWidth: 0.75)
+                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                        .stroke(streaming ? StudioPalette.accentBorder : StudioPalette.hairline, lineWidth: 1.0)
                 )
 
             Canvas { context, canvasSize in
                 let w = canvasSize.width
                 let h = canvasSize.height
 
-                // Primary Mac display (back-left)
-                let macRect = CGRect(x: w * 0.17, y: h * 0.24, width: w * 0.52, height: h * 0.40)
-                let macPath = Path(roundedRect: macRect, cornerRadius: 1.5)
-                context.stroke(macPath, with: .color(StudioPalette.ink.opacity(0.78)), lineWidth: 1.15)
+                let macRect = CGRect(x: w * 0.16, y: h * 0.24, width: w * 0.50, height: h * 0.38)
+                let macPath = Path(roundedRect: macRect, cornerRadius: 2.5)
+                context.stroke(macPath, with: .color(StudioPalette.ink.opacity(0.75)), lineWidth: 1.25)
 
-                // Stand foot under Mac display
                 var stand = Path()
                 stand.move(to: CGPoint(x: macRect.midX, y: macRect.maxY))
-                stand.addLine(to: CGPoint(x: macRect.midX, y: macRect.maxY + h * 0.08))
-                stand.move(to: CGPoint(x: macRect.midX - w * 0.11, y: macRect.maxY + h * 0.08))
-                stand.addLine(to: CGPoint(x: macRect.midX + w * 0.11, y: macRect.maxY + h * 0.08))
-                context.stroke(stand, with: .color(StudioPalette.inkMuted), lineWidth: 1.0)
+                stand.addLine(to: CGPoint(x: macRect.midX, y: macRect.maxY + h * 0.09))
+                stand.move(to: CGPoint(x: macRect.midX - w * 0.10, y: macRect.maxY + h * 0.09))
+                stand.addLine(to: CGPoint(x: macRect.midX + w * 0.10, y: macRect.maxY + h * 0.09))
+                context.stroke(stand, with: .color(StudioPalette.inkMuted), lineWidth: 1.1)
 
-                // Secondary Tablet display (front-right overlapping)
-                let padRect = CGRect(x: w * 0.44, y: h * 0.41, width: w * 0.40, height: h * 0.34)
-                let padBg = Path(roundedRect: padRect, cornerRadius: 1.5)
-                let fill = streaming ? StudioPalette.roseWash : StudioPalette.cardSurface
-                context.fill(padBg, with: .color(fill))
+                let padRect = CGRect(x: w * 0.44, y: h * 0.41, width: w * 0.40, height: h * 0.35)
+                let padBg = Path(roundedRect: padRect, cornerRadius: 2.5)
+                context.fill(padBg, with: .color(streaming ? StudioPalette.accentSoft : StudioPalette.cardSurface))
                 context.stroke(
                     padBg,
-                    with: .color((streaming || linked) ? StudioPalette.crimson : StudioPalette.ink),
-                    lineWidth: (streaming || linked) ? 1.25 : 1.05
+                    with: .color((streaming || linked) ? StudioPalette.accent : StudioPalette.ink.opacity(0.85)),
+                    lineWidth: (streaming || linked) ? 1.4 : 1.15
                 )
 
-                // Status dot inside secondary display
-                let dotRect = CGRect(x: padRect.maxX - 5.5, y: padRect.minY + 3.0, width: 2.8, height: 2.8)
-                let dotColor = streaming ? StudioPalette.crimson : (linked ? StudioPalette.champagne : StudioPalette.inkMuted.opacity(0.6))
-                context.fill(Path(dotRect), with: .color(dotColor))
+                let dotRect = CGRect(x: padRect.maxX - 5.2, y: padRect.minY + 2.8, width: 2.8, height: 2.8)
+                let dotColor = streaming ? StudioPalette.accent : (linked ? StudioPalette.positive : StudioPalette.inkMuted.opacity(0.6))
+                context.fill(Path(ellipseIn: dotRect), with: .color(dotColor))
             }
         }
         .frame(width: size, height: size)
     }
 }
 
-/// Clean architectural tablet glyph for the Paired Devices list.
+/// Quiet Squircle tablet/phone glyph for Paired Devices & Active Displays.
 struct StudioDeviceGlyph: View {
     let active: Bool
     let allowed: Bool
-    var size: CGFloat = 32
+    var size: CGFloat = 34
 
     var body: some View {
         ZStack {
-            RoundedRectangle(cornerRadius: StudioPalette.cardRadius, style: .continuous)
-                .fill(active ? StudioPalette.roseWash.opacity(0.65) : StudioPalette.subtleSurface)
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .fill(active ? StudioPalette.accentSoft : StudioPalette.subtleSurface)
                 .overlay(
-                    RoundedRectangle(cornerRadius: StudioPalette.cardRadius, style: .continuous)
-                        .stroke(active ? StudioPalette.roseBorder : StudioPalette.hairline, lineWidth: 0.75)
+                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                        .stroke(active ? StudioPalette.accentBorder : StudioPalette.hairline, lineWidth: 1.0)
                 )
 
             Canvas { context, canvasSize in
                 let w = canvasSize.width
                 let h = canvasSize.height
-                let frameRect = CGRect(x: w * 0.18, y: h * 0.27, width: w * 0.64, height: h * 0.46)
-                let framePath = Path(roundedRect: frameRect, cornerRadius: 2.0)
+                let frameRect = CGRect(x: w * 0.20, y: h * 0.27, width: w * 0.60, height: h * 0.46)
+                let framePath = Path(roundedRect: frameRect, cornerRadius: 3.0)
 
-                if active {
-                    context.fill(framePath, with: .color(StudioPalette.roseWash))
-                } else {
-                    context.fill(framePath, with: .color(StudioPalette.cardSurface))
-                }
+                context.fill(framePath, with: .color(active ? StudioPalette.accentSoft : StudioPalette.cardSurface))
 
                 let strokeColor: Color
                 if !allowed {
-                    strokeColor = StudioPalette.inkMuted.opacity(0.65)
+                    strokeColor = StudioPalette.inkMuted.opacity(0.7)
                 } else if active {
-                    strokeColor = StudioPalette.crimson
+                    strokeColor = StudioPalette.accent
                 } else {
-                    strokeColor = StudioPalette.ink.opacity(0.8)
+                    strokeColor = StudioPalette.ink.opacity(0.82)
                 }
-                context.stroke(framePath, with: .color(strokeColor), lineWidth: active ? 1.25 : 1.05)
+                context.stroke(framePath, with: .color(strokeColor), lineWidth: active ? 1.35 : 1.1)
 
-                // Subtle inner screen border
-                let innerRect = frameRect.insetBy(dx: 2.4, dy: 2.2)
-                context.stroke(
-                    Path(roundedRect: innerRect, cornerRadius: 0.8),
-                    with: .color(StudioPalette.hairline.opacity(0.85)),
-                    lineWidth: 0.6
-                )
-
-                // Top-right status square
-                let dotRect = CGRect(x: innerRect.maxX - 3.6, y: innerRect.minY + 1.8, width: 2.2, height: 2.2)
-                let dotColor = !allowed ? StudioPalette.inkMuted : (active ? StudioPalette.crimson : StudioPalette.jade)
-                context.fill(Path(dotRect), with: .color(dotColor))
+                let dotRect = CGRect(x: frameRect.maxX - 5.5, y: frameRect.minY + 3.5, width: 2.6, height: 2.6)
+                let dotColor = !allowed ? StudioPalette.warning : (active ? StudioPalette.accent : StudioPalette.positive)
+                context.fill(Path(ellipseIn: dotRect), with: .color(dotColor))
             }
         }
         .frame(width: size, height: size)
@@ -202,9 +198,9 @@ struct StudioStatusBadge: View {
 
     var body: some View {
         HStack(spacing: 6) {
-            Rectangle()
+            Circle()
                 .fill(tone.dot)
-                .frame(width: 5, height: 5)
+                .frame(width: 6, height: 6)
             Text(text)
                 .font(.system(size: 11, weight: .medium))
                 .foregroundStyle(tone.foreground)
@@ -213,42 +209,29 @@ struct StudioStatusBadge: View {
         }
         .fixedSize(horizontal: true, vertical: false)
         .padding(.horizontal, 9)
-        .padding(.vertical, 4)
-        .background(
-            RoundedRectangle(cornerRadius: 2.5, style: .continuous)
-                .fill(tone.background)
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: 2.5, style: .continuous)
-                .stroke(tone.border, lineWidth: 0.75)
-        )
+        .padding(.vertical, 3.5)
+        .background(Capsule().fill(tone.background))
+        .overlay(Capsule().stroke(tone.border, lineWidth: 1.0))
     }
 }
 
 struct StudioSectionHeader: View {
-    let english: String
-    let chinese: String
-    var accent: Color = StudioPalette.crimson
+    let title: String
+    var detail: String? = nil
 
     var body: some View {
-        HStack(spacing: 8) {
-            HStack(spacing: 5) {
-                Text(english)
-                    .font(.system(size: 10, weight: .semibold, design: .monospaced))
-                    .tracking(1.3)
-                    .foregroundStyle(accent)
-                Text("/")
-                    .font(.system(size: 10, weight: .regular))
-                    .foregroundStyle(StudioPalette.hairline)
-                Text(chinese)
-                    .font(.system(size: 11, weight: .medium))
-                    .foregroundStyle(StudioPalette.ink)
-            }
-            .fixedSize(horizontal: true, vertical: false)
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            Text(title)
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(StudioPalette.ink)
 
-            Rectangle()
-                .fill(StudioPalette.hairline)
-                .frame(height: 0.75)
+            if let detail, !detail.isEmpty {
+                Text(detail)
+                    .font(.system(size: 11.5))
+                    .foregroundStyle(StudioPalette.inkMuted)
+            }
+
+            Spacer(minLength: 0)
         }
     }
 }
@@ -259,33 +242,22 @@ struct StudioHairlineToggle: View {
 
     var body: some View {
         Button(action: action) {
-            HStack(spacing: 9) {
-                ZStack(alignment: isOn ? .trailing : .leading) {
-                    Rectangle()
-                        .fill(StudioPalette.softHairline)
-                        .frame(width: 48, height: 2)
+            ZStack(alignment: isOn ? .trailing : .leading) {
+                Capsule()
+                    .fill(isOn ? StudioPalette.accent : StudioPalette.subtleSurface)
+                    .overlay(
+                        Capsule()
+                            .stroke(isOn ? StudioPalette.accent : StudioPalette.hairline, lineWidth: 1.0)
+                    )
+                    .frame(width: 38, height: 22)
 
-                    if isOn {
-                        Rectangle()
-                            .fill(StudioPalette.crimson)
-                            .frame(width: 48, height: 2)
-                    }
-
-                    RoundedRectangle(cornerRadius: 1.5, style: .continuous)
-                        .fill(isOn ? StudioPalette.crimson : StudioPalette.cardSurface)
-                        .frame(width: 10, height: 10)
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 1.5, style: .continuous)
-                                .stroke(isOn ? StudioPalette.crimsonPressed : StudioPalette.inkMuted, lineWidth: 0.9)
-                        )
-                }
-                .frame(width: 48, height: 18)
-
-                Text(isOn ? "开启" : "关闭")
-                    .font(.system(size: 11.5, weight: .medium, design: .monospaced))
-                    .foregroundStyle(isOn ? StudioPalette.crimson : StudioPalette.inkMuted)
-                    .frame(width: 30, alignment: .trailing)
+                Circle()
+                    .fill(Color.white)
+                    .frame(width: 16, height: 16)
+                    .shadow(color: Color.black.opacity(0.16), radius: 1.5, x: 0, y: 1)
+                    .padding(3)
             }
+            .animation(.easeOut(duration: 0.16), value: isOn)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
@@ -300,33 +272,24 @@ struct StudioSegmentOption: View {
 
     var body: some View {
         Button(action: action) {
-            HStack(spacing: 6) {
-                Rectangle()
-                    .fill(active ? StudioPalette.crimson : Color.clear)
-                    .frame(width: 4, height: 4)
-                    .overlay(
-                        Rectangle()
-                            .stroke(active ? StudioPalette.crimson : StudioPalette.inkMuted.opacity(0.7), lineWidth: 0.75)
-                    )
-                Text(title)
-                    .font(.system(size: 11.5, weight: active ? .semibold : .regular))
-                    .foregroundStyle(active ? StudioPalette.crimson : StudioPalette.inkSecondary)
-                    .lineLimit(1)
-                    .fixedSize(horizontal: !expand, vertical: false)
-            }
-            .padding(.horizontal, expand ? 6 : 10)
-            .padding(.vertical, 5.5)
-            .frame(maxWidth: expand ? .infinity : nil)
-            .fixedSize(horizontal: !expand, vertical: false)
-            .background(
-                RoundedRectangle(cornerRadius: StudioPalette.cornerRadius, style: .continuous)
-                    .fill(active ? StudioPalette.roseWash : StudioPalette.cardSurface)
-            )
-            .overlay(
-                RoundedRectangle(cornerRadius: StudioPalette.cornerRadius, style: .continuous)
-                    .stroke(active ? StudioPalette.roseBorder : StudioPalette.hairline, lineWidth: 0.75)
-            )
-            .contentShape(Rectangle())
+            Text(title)
+                .font(.system(size: 11.5, weight: .medium))
+                .foregroundStyle(active ? StudioPalette.accent : StudioPalette.inkSecondary)
+                .lineLimit(1)
+                .fixedSize(horizontal: !expand, vertical: false)
+                .padding(.horizontal, expand ? 6 : 11)
+                .padding(.vertical, 6)
+                .frame(maxWidth: expand ? .infinity : nil)
+                .fixedSize(horizontal: !expand, vertical: false)
+                .background(
+                    RoundedRectangle(cornerRadius: StudioPalette.cornerRadius, style: .continuous)
+                        .fill(active ? StudioPalette.accentSoft : StudioPalette.subtleSurface)
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: StudioPalette.cornerRadius, style: .continuous)
+                        .stroke(active ? StudioPalette.accentBorder : StudioPalette.softHairline, lineWidth: 1.0)
+                )
+                .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
     }
@@ -336,24 +299,12 @@ struct StudioPrimaryButtonStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
             .font(.system(size: 12, weight: .medium))
-            .tracking(0.6)
-            .foregroundStyle(Color.white)
-            .padding(.horizontal, 16)
-            .padding(.vertical, 8.5)
+            .foregroundStyle(StudioPalette.accentForeground)
+            .padding(.horizontal, 14)
+            .padding(.vertical, 7.5)
             .background(
-                ZStack(alignment: .top) {
-                    RoundedRectangle(cornerRadius: StudioPalette.cornerRadius, style: .continuous)
-                        .fill(configuration.isPressed ? StudioPalette.crimsonPressed : StudioPalette.crimson)
-
-                    Rectangle()
-                        .fill(StudioPalette.champagne.opacity(0.65))
-                        .frame(height: 1)
-                        .padding(.horizontal, 1)
-                }
-            )
-            .overlay(
                 RoundedRectangle(cornerRadius: StudioPalette.cornerRadius, style: .continuous)
-                    .stroke(StudioPalette.crimsonPressed, lineWidth: 0.75)
+                    .fill(configuration.isPressed ? StudioPalette.accentPressed : StudioPalette.accent)
             )
             .contentShape(Rectangle())
     }
@@ -365,14 +316,14 @@ struct StudioSecondaryButtonStyle: ButtonStyle {
             .font(.system(size: 11.5, weight: .medium))
             .foregroundStyle(StudioPalette.ink)
             .padding(.horizontal, 12)
-            .padding(.vertical, 7)
+            .padding(.vertical, 6.5)
             .background(
                 RoundedRectangle(cornerRadius: StudioPalette.cornerRadius, style: .continuous)
-                    .fill(configuration.isPressed ? StudioPalette.subtleSurface : StudioPalette.cardSurface)
+                    .fill(configuration.isPressed ? StudioPalette.hoverSurface : StudioPalette.subtleSurface)
             )
             .overlay(
                 RoundedRectangle(cornerRadius: StudioPalette.cornerRadius, style: .continuous)
-                    .stroke(StudioPalette.hairline, lineWidth: 0.75)
+                    .stroke(StudioPalette.hairline, lineWidth: 1.0)
             )
             .contentShape(Rectangle())
     }
@@ -384,7 +335,7 @@ struct StudioFlatActionStyle: ButtonStyle {
             .padding(.horizontal, 8)
             .padding(.vertical, 5)
             .background(
-                RoundedRectangle(cornerRadius: StudioPalette.cornerRadius, style: .continuous)
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
                     .fill(configuration.isPressed ? StudioPalette.subtleSurface : Color.clear)
             )
             .contentShape(Rectangle())
@@ -392,9 +343,6 @@ struct StudioFlatActionStyle: ButtonStyle {
 }
 
 /// Oink-inspired interactive proportional multi-display topology canvas.
-/// Renders all physical and DeskMate virtual displays at true relative sizes,
-/// supports dragging to reposition or swap/reorder screens with magnetic edge snapping,
-/// and applies normalized OS display coordinates on drop.
 struct SpatialDisplayArrangerView: View {
     @ObservedObject var interaction: TopologyInteractionModel
     let linked: Bool
@@ -434,7 +382,6 @@ struct SpatialDisplayArrangerView: View {
                 )
             ]
         }
-        // When no device is connected and auto virtual display is enabled, show a draggable preview tile.
         if sessions.isEmpty && autoVirtualDisplay && !list.contains(where: \.isDeskMateVirtual) {
             let primary = list.first(where: \.isPrimary) ?? list[0]
             var bbMinX = primary.x
@@ -505,75 +452,64 @@ struct SpatialDisplayArrangerView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            // Card top spec header
             HStack(spacing: 8) {
-                HStack(spacing: 6) {
-                    Rectangle()
-                        .fill(streaming ? StudioPalette.crimson : (linked ? StudioPalette.champagne : StudioPalette.inkMuted))
-                        .frame(width: 5, height: 5)
-                    Text("TOPOLOGY // 多屏拓扑布局")
-                        .font(.system(size: 9.5, weight: .semibold, design: .monospaced))
-                        .tracking(1.0)
-                        .foregroundStyle(StudioPalette.inkMuted)
-                }
-
-                Spacer(minLength: 6)
+                Text("多屏空间拓扑")
+                    .font(.system(size: 12.5, weight: .semibold))
+                    .foregroundStyle(StudioPalette.ink)
 
                 Text("\(physicalCount) 块屏幕")
-                    .font(.system(size: 10, weight: .medium))
+                    .font(.system(size: 10.5, weight: .medium))
+                    .monospacedDigit()
                     .foregroundStyle(StudioPalette.inkSecondary)
-                    .padding(.horizontal, 7)
+                    .padding(.horizontal, 8)
                     .padding(.vertical, 2.5)
-                    .background(
-                        RoundedRectangle(cornerRadius: 2, style: .continuous)
-                            .fill(StudioPalette.subtleSurface)
-                    )
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 2, style: .continuous)
-                            .stroke(StudioPalette.hairline, lineWidth: 0.6)
-                    )
+                    .background(Capsule().fill(StudioPalette.subtleSurface))
+
+                Spacer(minLength: 6)
 
                 Button {
                     onRefreshDisplays()
                 } label: {
-                    Image(systemName: "arrow.clockwise")
-                        .font(.system(size: 9.5, weight: .semibold))
-                        .foregroundStyle(StudioPalette.inkSecondary)
-                        .frame(width: 20, height: 20)
-                        .background(
-                            RoundedRectangle(cornerRadius: 2, style: .continuous)
-                                .fill(StudioPalette.subtleSurface)
-                        )
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 2, style: .continuous)
-                                .stroke(StudioPalette.hairline, lineWidth: 0.6)
-                        )
+                    HStack(spacing: 4) {
+                        Image(systemName: "arrow.clockwise")
+                            .font(.system(size: 10, weight: .medium))
+                        Text("刷新拓扑")
+                            .font(.system(size: 11, weight: .medium))
+                    }
+                    .foregroundStyle(StudioPalette.inkSecondary)
+                    .padding(.horizontal, 9)
+                    .padding(.vertical, 4)
+                    .background(
+                        RoundedRectangle(cornerRadius: 8, style: .continuous)
+                            .fill(StudioPalette.subtleSurface)
+                    )
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 8, style: .continuous)
+                            .stroke(StudioPalette.softHairline, lineWidth: 1.0)
+                    )
                 }
                 .buttonStyle(.plain)
                 .help("刷新当前连接的显示器拓扑")
             }
-            .padding(.horizontal, 14)
-            .padding(.top, 10)
-            .padding(.bottom, 7)
+            .padding(.horizontal, 16)
+            .padding(.vertical, 10)
 
             Rectangle()
                 .fill(StudioPalette.softHairline)
-                .frame(height: 0.75)
+                .frame(height: 1.0)
 
-            // Interactive Proportional Multi-Display Canvas
             GeometryReader { geo in
                 let items = renderedItems
                 let viewportSource = (interaction.draggedDisplayID != nil && !interaction.dragStartItems.isEmpty) ? interaction.dragStartItems : items
                 let viewport = DisplayTopologySolver.computeViewport(
                     displays: viewportSource,
                     canvasSize: geo.size,
-                    padding: 20.0
+                    padding: 22.0
                 )
 
                 ZStack(alignment: .topLeading) {
                     NonWindowDraggingOverlay()
 
-                    // Dot-grid & calibration corner ticks + magnetic alignment guides
                     Canvas { context, size in
                         let step: CGFloat = 16
                         var gx: CGFloat = 12
@@ -581,30 +517,13 @@ struct SpatialDisplayArrangerView: View {
                             var gy: CGFloat = 12
                             while gy < size.height - 8 {
                                 context.fill(
-                                    Path(CGRect(x: gx - 0.6, y: gy - 0.6, width: 1.2, height: 1.2)),
-                                    with: .color(StudioPalette.hairline.opacity(0.42))
+                                    Path(ellipseIn: CGRect(x: gx - 0.8, y: gy - 0.8, width: 1.6, height: 1.6)),
+                                    with: .color(StudioPalette.hairline.opacity(0.65))
                                 )
                                 gy += step
                             }
                             gx += step
                         }
-
-                        let inset: CGFloat = 8
-                        let tick: CGFloat = 5
-                        var corners = Path()
-                        corners.move(to: CGPoint(x: inset, y: inset + tick))
-                        corners.addLine(to: CGPoint(x: inset, y: inset))
-                        corners.addLine(to: CGPoint(x: inset + tick, y: inset))
-                        corners.move(to: CGPoint(x: size.width - inset - tick, y: inset))
-                        corners.addLine(to: CGPoint(x: size.width - inset, y: inset))
-                        corners.addLine(to: CGPoint(x: size.width - inset, y: inset + tick))
-                        corners.move(to: CGPoint(x: inset, y: size.height - inset - tick))
-                        corners.addLine(to: CGPoint(x: inset, y: size.height - inset))
-                        corners.addLine(to: CGPoint(x: inset + tick, y: size.height - inset))
-                        corners.move(to: CGPoint(x: size.width - inset - tick, y: size.height - inset))
-                        corners.addLine(to: CGPoint(x: size.width - inset, y: size.height - inset))
-                        corners.addLine(to: CGPoint(x: size.width - inset, y: size.height - inset - tick))
-                        context.stroke(corners, with: .color(StudioPalette.hairline), lineWidth: 0.75)
 
                         for guide in interaction.activeGuides {
                             var p = Path()
@@ -621,8 +540,8 @@ struct SpatialDisplayArrangerView: View {
                             }
                             context.stroke(
                                 p,
-                                with: .color(interaction.isSwapPreview ? StudioPalette.champagne : StudioPalette.crimson.opacity(0.7)),
-                                style: StrokeStyle(lineWidth: 1.0, dash: [3, 3])
+                                with: .color(interaction.isSwapPreview ? StudioPalette.warning : StudioPalette.accent.opacity(0.8)),
+                                style: StrokeStyle(lineWidth: 1.2, dash: [4, 4])
                             )
                         }
                     }
@@ -634,8 +553,8 @@ struct SpatialDisplayArrangerView: View {
                             width: item.width,
                             height: item.height
                         )
-                        let w = max(32.0, rect.width)
-                        let h = max(24.0, rect.height)
+                        let w = max(44.0, rect.width)
+                        let h = max(32.0, rect.height)
                         let isDragged = (interaction.draggedDisplayID == item.id)
                         let isSelected = (activeSelectedItem?.id == item.id)
 
@@ -706,78 +625,58 @@ struct SpatialDisplayArrangerView: View {
                 .coordinateSpace(name: "topologyCanvas")
             }
             .frame(maxWidth: .infinity)
-            .frame(height: 248)
-            .background(StudioPalette.canvasMid)
+            .frame(height: 212)
+            .background(StudioPalette.canvas)
             .clipped()
 
             Rectangle()
                 .fill(StudioPalette.softHairline)
-                .frame(height: 0.75)
+                .frame(height: 1.0)
 
-            // Bottom live telemetry & layout footer inside card
-            VStack(alignment: .leading, spacing: 4.5) {
+            HStack(spacing: 12) {
                 if let sel = activeSelectedItem {
-                    HStack(spacing: 6) {
+                    HStack(spacing: 8) {
                         Text("#\(sel.indexNumber) \(roleBadgeText(for: sel))")
-                            .font(.system(size: 10.5, weight: .medium))
+                            .font(.system(size: 11, weight: .medium))
                             .foregroundStyle(StudioPalette.inkMuted)
-                        Spacer()
                         Text(sel.name)
-                            .font(.system(size: 11.5, weight: .semibold))
-                            .foregroundStyle(sel.isDeskMateVirtual ? StudioPalette.crimson : StudioPalette.ink)
+                            .font(.system(size: 12, weight: .semibold))
+                            .foregroundStyle(sel.isDeskMateVirtual ? StudioPalette.accent : StudioPalette.ink)
                             .lineLimit(1)
-                    }
-
-                    HStack(spacing: 6) {
-                        Text("坐标 (\(Int(sel.x.rounded())), \(Int(sel.y.rounded())))")
-                            .font(.system(size: 10.5, design: .monospaced))
+                        Text("(\(Int(sel.x.rounded())), \(Int(sel.y.rounded())))")
+                            .font(.system(size: 11, design: .monospaced))
+                            .monospacedDigit()
                             .foregroundStyle(StudioPalette.inkMuted)
-                        Spacer()
-                        Text(sel.isGhostPreview ? specSummary : sel.resolutionLabel)
-                            .font(.system(size: 10.5, design: .monospaced))
-                            .foregroundStyle(StudioPalette.inkSecondary)
-                            .lineLimit(1)
                     }
                 } else {
-                    HStack(spacing: 6) {
-                        Text("当前布局")
-                            .font(.system(size: 11))
-                            .foregroundStyle(StudioPalette.inkMuted)
-                        Spacer()
-                        Text("主屏\(position.shortLabel)")
-                            .font(.system(size: 11.5, weight: .semibold))
-                            .foregroundStyle(StudioPalette.crimson)
-                    }
+                    Text("主屏\(position.shortLabel)")
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundStyle(StudioPalette.ink)
                 }
 
-                if streaming && liveFps > 0 {
-                    HStack(spacing: 6) {
-                        Text(sessions.count > 1 ? "总输出" : "实时输出")
-                            .font(.system(size: 11))
-                            .foregroundStyle(StudioPalette.inkMuted)
-                        Spacer()
-                        Text(liveBitrateMbps > 0
-                             ? String(format: "%d FPS · %.1f Mbps", liveFps, liveBitrateMbps)
-                             : "\(liveFps) FPS")
-                            .font(.system(size: 11, weight: .semibold, design: .monospaced))
-                            .foregroundStyle(StudioPalette.crimson)
-                    }
-                }
+                Spacer(minLength: 8)
 
-                Text(interaction.isSwapPreview ? "松手将交换两块屏幕的排列顺序" : "拖动屏幕可调整排列位置与顺序，松手自动吸附生效")
-                    .font(.system(size: 10))
-                    .foregroundStyle(interaction.isSwapPreview ? StudioPalette.crimson : StudioPalette.inkMuted)
-                    .lineLimit(1)
+                if interaction.isSwapPreview {
+                    Text("松手将交换两块屏幕顺序")
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(StudioPalette.accent)
+                } else if let sel = activeSelectedItem {
+                    Text(sel.isGhostPreview ? specSummary : sel.resolutionLabel)
+                        .font(.system(size: 11, design: .monospaced))
+                        .monospacedDigit()
+                        .foregroundStyle(StudioPalette.inkSecondary)
+                        .lineLimit(1)
+                }
             }
-            .padding(.horizontal, 14)
-            .padding(.vertical, 8.5)
+            .padding(.horizontal, 16)
+            .padding(.vertical, 9.5)
             .background(StudioPalette.cardSurface)
         }
         .background(StudioPalette.cardSurface)
         .clipShape(RoundedRectangle(cornerRadius: StudioPalette.cardRadius, style: .continuous))
         .overlay(
             RoundedRectangle(cornerRadius: StudioPalette.cardRadius, style: .continuous)
-                .stroke(StudioPalette.hairline, lineWidth: 0.75)
+                .stroke(StudioPalette.hairline, lineWidth: 1.0)
         )
     }
 
@@ -791,106 +690,96 @@ struct SpatialDisplayArrangerView: View {
     ) -> some View {
         let fillColor: Color = {
             if item.isGhostPreview {
-                return StudioPalette.cardSurface.opacity(0.72)
+                return StudioPalette.cardSurface.opacity(0.65)
             }
-            if item.isDeskMateVirtual {
-                return item.streaming ? StudioPalette.roseWash : StudioPalette.subtleSurface
+            if isSelected || (item.isDeskMateVirtual && item.streaming) {
+                return StudioPalette.accentSoft
             }
-            return item.isPrimary ? StudioPalette.cardSurface : StudioPalette.subtleSurface
+            return StudioPalette.cardSurface
         }()
 
         let borderColor: Color = {
-            if isDragged {
-                return StudioPalette.crimson
+            if isDragged || isSelected {
+                return StudioPalette.accent
             }
             if item.isGhostPreview {
                 return StudioPalette.hairline
             }
             if item.isDeskMateVirtual {
-                return (isSelected || item.streaming) ? StudioPalette.crimson : StudioPalette.roseBorder
+                return item.streaming ? StudioPalette.accent : StudioPalette.accentBorder
             }
-            if isSelected {
-                return StudioPalette.ink
-            }
-            return item.isPrimary ? StudioPalette.ink.opacity(0.75) : StudioPalette.champagne
+            return StudioPalette.hairline
         }()
 
-        let badgeBg: Color = item.isDeskMateVirtual
-            ? StudioPalette.crimson
-            : (item.isPrimary ? StudioPalette.ink : StudioPalette.inkSecondary)
+        let badgeBg: Color = (item.isDeskMateVirtual || isSelected)
+            ? StudioPalette.accent
+            : StudioPalette.inkSecondary
 
         ZStack(alignment: .topLeading) {
             if item.isGhostPreview {
-                RoundedRectangle(cornerRadius: 3, style: .continuous)
+                RoundedRectangle(cornerRadius: StudioPalette.tileRadius, style: .continuous)
                     .fill(fillColor)
                     .overlay(
-                        RoundedRectangle(cornerRadius: 3, style: .continuous)
-                            .strokeBorder(borderColor, style: StrokeStyle(lineWidth: isDragged ? 1.4 : 0.9, dash: [3, 3]))
+                        RoundedRectangle(cornerRadius: StudioPalette.tileRadius, style: .continuous)
+                            .strokeBorder(borderColor, style: StrokeStyle(lineWidth: isDragged ? 1.5 : 1.2, dash: [4, 4]))
                     )
             } else {
-                RoundedRectangle(cornerRadius: 3, style: .continuous)
+                RoundedRectangle(cornerRadius: StudioPalette.tileRadius, style: .continuous)
                     .fill(fillColor)
                     .overlay(
-                        RoundedRectangle(cornerRadius: 3, style: .continuous)
-                            .stroke(borderColor, lineWidth: isDragged ? 1.6 : (isSelected ? 1.35 : 0.95))
+                        RoundedRectangle(cornerRadius: StudioPalette.tileRadius, style: .continuous)
+                            .stroke(borderColor, lineWidth: (isDragged || isSelected) ? 1.5 : 1.0)
                     )
             }
 
-            VStack(spacing: 0) {
-                if item.isPrimary {
-                    Rectangle()
-                        .fill(StudioPalette.softHairline)
-                        .frame(height: 4)
-                }
+            VStack(spacing: 2) {
+                HStack(spacing: 5) {
+                    Text("\(item.indexNumber)")
+                        .font(.system(size: 9, weight: .semibold, design: .monospaced))
+                        .foregroundStyle(StudioPalette.accentForeground)
+                        .padding(.horizontal, 5)
+                        .padding(.vertical, 1.5)
+                        .background(Capsule().fill(badgeBg))
 
-                VStack(spacing: 1.5) {
-                    HStack(spacing: 4) {
-                        Text("\(item.indexNumber)")
-                            .font(.system(size: 8.5, weight: .bold, design: .monospaced))
-                            .foregroundStyle(Color.white)
-                            .padding(.horizontal, 4)
-                            .padding(.vertical, 1)
-                            .background(
-                                RoundedRectangle(cornerRadius: 2, style: .continuous)
-                                    .fill(badgeBg)
-                            )
-
-                        if width >= 54 {
-                            Text(item.name)
-                                .font(.system(size: 9, weight: .semibold))
-                                .foregroundStyle(item.isGhostPreview ? StudioPalette.inkMuted : StudioPalette.ink)
-                                .lineLimit(1)
-                                .truncationMode(.tail)
-                        }
-
-                        Spacer(minLength: 0)
+                    if width >= 62 {
+                        Text(item.name)
+                            .font(.system(size: 10, weight: .medium))
+                            .foregroundStyle(item.isGhostPreview ? StudioPalette.inkMuted : (isSelected ? StudioPalette.accent : StudioPalette.ink))
+                            .lineLimit(1)
+                            .truncationMode(.tail)
                     }
-                    .padding(.horizontal, 4)
-                    .padding(.top, 4)
 
                     Spacer(minLength: 0)
+                }
+                .padding(.horizontal, 7)
+                .padding(.top, 7)
 
-                    if height >= 36 {
-                        let sub: String = {
-                            if item.isGhostPreview { return "拖动设定方位" }
-                            if item.streaming && item.liveFps > 0 { return "\(item.liveFps) FPS" }
-                            if item.isDeskMateVirtual { return "DeskMate 副屏" }
-                            if item.isPrimary { return "主显示器" }
-                            return "\(item.pixelWidth)×\(item.pixelHeight)"
-                        }()
+                Spacer(minLength: 0)
+
+                if height >= 40 {
+                    let sub: String = {
+                        if item.isGhostPreview { return "拖动设定方位" }
+                        if item.streaming && item.liveFps > 0 { return "\(item.liveFps) FPS" }
+                        if item.isDeskMateVirtual { return "USB-C 副屏" }
+                        if item.isPrimary { return "主屏" }
+                        return "\(item.pixelWidth)×\(item.pixelHeight)"
+                    }()
+                    HStack {
                         Text(sub)
-                            .font(.system(size: 8.5, weight: .medium, design: .monospaced))
-                            .foregroundStyle(item.isDeskMateVirtual && !item.isGhostPreview ? StudioPalette.crimson : StudioPalette.inkMuted)
+                            .font(.system(size: 9.5, weight: .medium, design: .monospaced))
+                            .monospacedDigit()
+                            .foregroundStyle(item.isDeskMateVirtual && !item.isGhostPreview ? StudioPalette.accent : StudioPalette.inkMuted)
                             .lineLimit(1)
-                            .padding(.horizontal, 4)
-                            .padding(.bottom, 4)
+                        Spacer(minLength: 0)
                     }
+                    .padding(.horizontal, 7)
+                    .padding(.bottom, 6)
                 }
             }
-            .clipShape(RoundedRectangle(cornerRadius: 3, style: .continuous))
+            .clipShape(RoundedRectangle(cornerRadius: StudioPalette.tileRadius, style: .continuous))
         }
         .frame(width: width, height: height)
-        .shadow(color: isDragged ? Color.black.opacity(0.14) : Color.clear, radius: 5, x: 0, y: 2)
+        .shadow(color: isDragged ? Color.black.opacity(0.14) : Color.clear, radius: 6, x: 0, y: 2)
         .contentShape(Rectangle())
     }
 

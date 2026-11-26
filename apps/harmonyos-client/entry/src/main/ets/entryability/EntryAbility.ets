@@ -1,4 +1,4 @@
-import { AbilityConstant, ConfigurationConstant, UIAbility, Want } from '@kit.AbilityKit';
+import { AbilityConstant, Configuration, ConfigurationConstant, UIAbility, Want } from '@kit.AbilityKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { window } from '@kit.ArkUI';
 import { isPhoneDevice, preferredOrientationForPage } from '../deskmate/DeviceLayout';
@@ -8,10 +8,20 @@ const DOMAIN: number = 0x3210;
 const TAG: string = 'DeskMateAbility';
 
 export default class EntryAbility extends UIAbility {
+  private syncColorMode(colorMode: ConfigurationConstant.ColorMode | undefined): void {
+    const isDark: boolean = colorMode === ConfigurationConstant.ColorMode.COLOR_MODE_DARK;
+    AppStorage.setOrCreate('deskMateDarkMode', isDark);
+  }
+
   onCreate(_want: Want, _launchParam: AbilityConstant.LaunchParam): void {
     hilog.info(DOMAIN, TAG, 'onCreate');
     this.context.getApplicationContext().setColorMode(
-      ConfigurationConstant.ColorMode.COLOR_MODE_LIGHT);
+      ConfigurationConstant.ColorMode.COLOR_MODE_NOT_SET);
+    this.syncColorMode(this.context.config.colorMode);
+  }
+
+  onConfigurationUpdate(newConfig: Configuration): void {
+    this.syncColorMode(newConfig.colorMode);
   }
 
   onWindowStageCreate(windowStage: window.WindowStage): void {

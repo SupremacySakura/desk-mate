@@ -71,11 +71,15 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
         String error = "";
     }
 
+    private StudioDrawables.Palette palette;
+
     private SurfaceView surfaceView;
     private LinearLayout shellContainer;
     private LinearLayout headerContainer;
+    private View headerDivider;
     private ScrollView scrollView;
     private LinearLayout contentContainer;
+    private View bottomDivider;
     private LinearLayout bottomContainer;
 
     private LinearLayout displayHudContainer;
@@ -134,8 +138,6 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
     private TextView topStatusTextView;
     private View topStatusDotView;
     private LinearLayout topStatusBadgeView;
-    private TextView eyebrowView;
-    private View eyebrowDotView;
     private TextView statusTitleView;
     private TextView statusDetailView;
     private TextView liveSpecValueView;
@@ -147,7 +149,6 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
     private View whisperDotView;
     private final List<TextView> diagnosticValueViews = new ArrayList<>();
     private final List<LinearLayout> codecOptionCards = new ArrayList<>();
-    private final List<View> codecOptionDots = new ArrayList<>();
     private final List<TextView> codecOptionTitles = new ArrayList<>();
     private final List<TextView> codecOptionSubtitles = new ArrayList<>();
 
@@ -160,7 +161,7 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
     private String lastHudCodec = "";
     private String lastHudRes = "";
     private long lastHudDrops = -1L;
-    private Boolean lastBadgeHighlight;
+    private String lastBadgeStateKey = "";
     private String lastSelectedCodecCard;
 
     private final Runnable refreshTick = new Runnable() {
@@ -188,6 +189,7 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
         setContentView(R.layout.activity_main);
         getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
 
+        palette = StudioDrawables.palette(this);
         prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE);
         showFps = prefs.getBoolean(KEY_SHOW_FPS, false);
         preferredCodec = normalizeCodec(prefs.getString(KEY_CODEC, "auto"));
@@ -199,7 +201,7 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
         shellContainer = findViewById(R.id.shell_container);
         displayHudContainer = findViewById(R.id.display_hud);
 
-        shellContainer.setBackground(StudioDrawables.alabasterBackground());
+        shellContainer.setBackgroundColor(palette.canvas);
         shellContainer.setClickable(true);
         shellContainer.setFocusable(true);
         initShellSkeleton();
@@ -265,8 +267,16 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
     @Override
     public void onConfigurationChanged(Configuration newConfig) {
         super.onConfigurationChanged(newConfig);
+        palette = StudioDrawables.palette(this);
         compactLayout = DeviceLayout.isCompactLayout(this);
         lastStructureKey = "";
+        shellContainer.setBackgroundColor(palette.canvas);
+        if (headerDivider != null) {
+            headerDivider.setBackgroundColor(palette.hairline);
+        }
+        if (bottomDivider != null) {
+            bottomDivider.setBackgroundColor(palette.hairline);
+        }
         DeviceLayout.applyWindowPresentation(this, isPhone, page == Page.DISPLAY);
         renderAll();
         applyChromeInsets();
@@ -293,11 +303,12 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
         headerContainer = new LinearLayout(this);
         headerContainer.setOrientation(LinearLayout.HORIZONTAL);
         headerContainer.setGravity(Gravity.CENTER_VERTICAL);
-        headerContainer.setBackgroundColor(StudioDrawables.COLOR_HEADER_CHROME);
+        headerContainer.setBackgroundColor(palette.surface);
         shellContainer.addView(headerContainer, new LinearLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
 
-        shellContainer.addView(makeHairlineDivider(StudioDrawables.COLOR_HAIRLINE, 0.8f));
+        headerDivider = makeHairlineDivider(palette.hairline, 0.8f);
+        shellContainer.addView(headerDivider);
 
         scrollView = new ScrollView(this);
         scrollView.setFillViewport(true);
@@ -310,7 +321,8 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
         shellContainer.addView(scrollView, new LinearLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f));
 
-        shellContainer.addView(makeHairlineDivider(StudioDrawables.COLOR_HAIRLINE, 0.8f));
+        bottomDivider = makeHairlineDivider(palette.hairline, 0.8f);
+        shellContainer.addView(bottomDivider);
 
         bottomContainer = new LinearLayout(this);
         bottomContainer.setOrientation(LinearLayout.HORIZONTAL);
@@ -329,72 +341,71 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
         hudReturnBtn.setText("← 返回主页");
         hudReturnBtn.setTextSize(TypedValue.COMPLEX_UNIT_SP, isPhone ? 12f : 12.5f);
         hudReturnBtn.setTypeface(Typeface.DEFAULT_BOLD);
-        hudReturnBtn.setTextColor(StudioDrawables.COLOR_INK);
+        hudReturnBtn.setTextColor(StudioDrawables.COLOR_HUD_INK);
         hudReturnBtn.setGravity(Gravity.CENTER);
-        hudReturnBtn.setBackground(StudioDrawables.card(
-            this, StudioDrawables.COLOR_RETURN_BTN_BG, StudioDrawables.COLOR_HAIRLINE, 4f, 0.8f));
-        hudReturnBtn.setPadding(dp(isPhone ? 11f : 14f), 0, dp(isPhone ? 11f : 14f), 0);
+        hudReturnBtn.setBackground(StudioDrawables.pill(
+            this, StudioDrawables.COLOR_HUD_BG, StudioDrawables.COLOR_HUD_BORDER, 0.8f));
+        hudReturnBtn.setPadding(dp(isPhone ? 12f : 14f), 0, dp(isPhone ? 12f : 14f), 0);
         final LinearLayout.LayoutParams retLp = new LinearLayout.LayoutParams(
-            ViewGroup.LayoutParams.WRAP_CONTENT, dp(isPhone ? 34f : 40f));
+            ViewGroup.LayoutParams.WRAP_CONTENT, dp(isPhone ? 34f : 38f));
         retLp.rightMargin = dp(8f);
         hudReturnBtn.setOnClickListener(v -> navigate(Page.HOME));
         displayHudContainer.addView(hudReturnBtn, retLp);
 
         hudToggleBtn = new TextView(this);
         hudToggleBtn.setText("▾");
-        hudToggleBtn.setTextSize(TypedValue.COMPLEX_UNIT_SP, isPhone ? 15f : 17f);
-        hudToggleBtn.setTextColor(StudioDrawables.COLOR_HUD_WHITE);
+        hudToggleBtn.setTextSize(TypedValue.COMPLEX_UNIT_SP, isPhone ? 15f : 16f);
+        hudToggleBtn.setTextColor(StudioDrawables.COLOR_HUD_INK);
         hudToggleBtn.setGravity(Gravity.CENTER);
-        hudToggleBtn.setBackground(StudioDrawables.card(
-            this, StudioDrawables.COLOR_HUD_BG, StudioDrawables.COLOR_HUD_BORDER, 4f, 0.8f));
+        hudToggleBtn.setBackground(StudioDrawables.pill(
+            this, StudioDrawables.COLOR_HUD_BG, StudioDrawables.COLOR_HUD_BORDER, 0.8f));
         hudToggleBtn.setOnClickListener(v -> {
             controlsExpanded = !controlsExpanded;
             updateDisplayHudState();
         });
         displayHudContainer.addView(hudToggleBtn, new LinearLayout.LayoutParams(
-            dp(isPhone ? 34f : 40f), dp(isPhone ? 34f : 40f)));
+            dp(isPhone ? 34f : 38f), dp(isPhone ? 34f : 38f)));
 
         final View spacer = new View(this);
-        displayHudContainer.addView(spacer, new LinearLayout.LayoutParams(
-            0, 1, 1f));
+        displayHudContainer.addView(spacer, new LinearLayout.LayoutParams(0, 1, 1f));
 
         hudMetricsPill = new LinearLayout(this);
         hudMetricsPill.setOrientation(LinearLayout.HORIZONTAL);
         hudMetricsPill.setGravity(Gravity.CENTER_VERTICAL);
         hudMetricsPill.setClickable(false);
         hudMetricsPill.setFocusable(false);
-        hudMetricsPill.setBackground(StudioDrawables.card(
-            this, StudioDrawables.COLOR_HUD_BG, StudioDrawables.COLOR_HUD_BORDER, 4f, 0.8f));
+        hudMetricsPill.setBackground(StudioDrawables.pill(
+            this, StudioDrawables.COLOR_HUD_BG, StudioDrawables.COLOR_HUD_BORDER, 0.8f));
         hudMetricsPill.setPadding(
-            dp(isPhone ? 9f : 12f), dp(isPhone ? 5f : 7f),
-            dp(isPhone ? 9f : 12f), dp(isPhone ? 5f : 7f));
+            dp(isPhone ? 10f : 14f), dp(isPhone ? 6f : 7f),
+            dp(isPhone ? 10f : 14f), dp(isPhone ? 6f : 7f));
 
         final View pillDot = new View(this);
-        pillDot.setBackgroundColor(StudioDrawables.COLOR_CRIMSON);
-        final LinearLayout.LayoutParams pillDotLp = new LinearLayout.LayoutParams(dp(5f), dp(5f));
+        pillDot.setBackground(StudioDrawables.circleDot(StudioDrawables.COLOR_HUD_ACCENT));
+        final LinearLayout.LayoutParams pillDotLp = new LinearLayout.LayoutParams(dp(6f), dp(6f));
         pillDotLp.rightMargin = dp(isPhone ? 7f : 10f);
         hudMetricsPill.addView(pillDot, pillDotLp);
 
-        hudFpsValue = makeHudText("0", StudioDrawables.COLOR_HUD_FPS, isPhone ? 11.5f : 13f, true);
-        final TextView fpsUnit = makeHudText("FPS", StudioDrawables.COLOR_HUD_LABEL, isPhone ? 10f : 10.5f, false);
+        hudFpsValue = makeHudText("0", StudioDrawables.COLOR_HUD_ACCENT, isPhone ? 11.5f : 13f, true);
+        final TextView fpsUnit = makeHudText("FPS", StudioDrawables.COLOR_HUD_MUTED, isPhone ? 10f : 10.5f, false);
         hudMetricsPill.addView(hudFpsValue, rightMarginLp(4f));
         hudMetricsPill.addView(fpsUnit, rightMarginLp(isPhone ? 7f : 10f));
 
         hudMetricsPill.addView(makeHudDivider());
 
-        hudBitrateValue = makeHudText("0.0", StudioDrawables.COLOR_HUD_WHITE, isPhone ? 11.5f : 13f, true);
-        final TextView mbpsUnit = makeHudText("Mbps", StudioDrawables.COLOR_HUD_LABEL, isPhone ? 10f : 10.5f, false);
+        hudBitrateValue = makeHudText("0.0", StudioDrawables.COLOR_HUD_INK, isPhone ? 11.5f : 13f, true);
+        final TextView mbpsUnit = makeHudText("Mbps", StudioDrawables.COLOR_HUD_MUTED, isPhone ? 10f : 10.5f, false);
         hudMetricsPill.addView(hudBitrateValue, rightMarginLp(4f));
         hudMetricsPill.addView(mbpsUnit, rightMarginLp(isPhone ? 7f : 10f));
 
         hudMetricsPill.addView(makeHudDivider());
 
-        hudCodecValue = makeHudText("--", StudioDrawables.COLOR_HUD_CODEC, isPhone ? 11f : 12f, true);
+        hudCodecValue = makeHudText("--", StudioDrawables.COLOR_HUD_INK, isPhone ? 11f : 12f, true);
         hudMetricsPill.addView(hudCodecValue);
 
         hudResDivider = makeHudDivider();
         hudMetricsPill.addView(hudResDivider);
-        hudResValue = makeHudText("", StudioDrawables.COLOR_HUD_RES, isPhone ? 11f : 12f, false);
+        hudResValue = makeHudText("", StudioDrawables.COLOR_HUD_MUTED, isPhone ? 11f : 12f, false);
         hudMetricsPill.addView(hudResValue);
 
         hudDropDivider = makeHudDivider();
@@ -574,18 +585,18 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
             } else {
                 headerContainer.setPadding(
                     dp(28f) + safeInsets.left,
-                    Math.max(safeInsets.top + dp(8f), dp(22f)),
+                    Math.max(safeInsets.top + dp(8f), dp(18f)),
                     dp(28f) + safeInsets.right,
-                    dp(8f));
+                    dp(10f));
             }
         }
         if (bottomContainer != null) {
             if (compactLayout) {
                 bottomContainer.setPadding(
-                    dp(8f) + safeInsets.left, 0,
-                    dp(8f) + safeInsets.right, safeInsets.bottom);
+                    dp(12f) + safeInsets.left, dp(6f),
+                    dp(12f) + safeInsets.right, Math.max(dp(8f), safeInsets.bottom));
             } else {
-                bottomContainer.setMinimumHeight(dp(30f) + safeInsets.bottom);
+                bottomContainer.setMinimumHeight(dp(32f) + safeInsets.bottom);
                 bottomContainer.setPadding(
                     dp(28f) + safeInsets.left, dp(6f),
                     dp(28f) + safeInsets.right, Math.max(dp(6f), safeInsets.bottom));
@@ -611,8 +622,9 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
         displayHudContainer.setVisibility(View.GONE);
         shellContainer.setVisibility(View.VISIBLE);
 
-        final String structureKey = compactLayout + "|" + page.name() + "|" + link.state.name()
-            + "|" + frameReady + "|" + codecChangedWhileConnected + "|" + isPhone;
+        final String structureKey = palette.dark + "|" + compactLayout + "|" + page.name()
+            + "|" + link.state.name() + "|" + frameReady + "|" + codecChangedWhileConnected
+            + "|" + isPhone;
         if (!structureKey.equals(lastStructureKey)) {
             lastStructureKey = structureKey;
             rebuildShellViews();
@@ -683,14 +695,12 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
     }
 
     private void rebuildShellViews() {
-        lastBadgeHighlight = null;
+        lastBadgeStateKey = "";
         lastSelectedCodecCard = null;
         schematicView = null;
         topStatusTextView = null;
         topStatusDotView = null;
         topStatusBadgeView = null;
-        eyebrowView = null;
-        eyebrowDotView = null;
         statusTitleView = null;
         statusDetailView = null;
         liveSpecValueView = null;
@@ -702,7 +712,6 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
         whisperDotView = null;
         diagnosticValueViews.clear();
         codecOptionCards.clear();
-        codecOptionDots.clear();
         codecOptionTitles.clear();
         codecOptionSubtitles.clear();
 
@@ -713,77 +722,68 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
 
     private void buildHeader() {
         headerContainer.removeAllViews();
+        headerContainer.setBackgroundColor(palette.surface);
+
         if (compactLayout) {
             if (page != Page.HOME) {
-                headerContainer.addView(makeBackHeaderButton(dp(32f), dp(11f)));
+                headerContainer.addView(makeBackHeaderButton(dp(32f), dp(12f)));
             } else {
-                headerContainer.addView(makeBrandTitle(false));
+                headerContainer.addView(makeBrandTitle());
             }
             final View spacer = new View(this);
             headerContainer.addView(spacer, new LinearLayout.LayoutParams(0, 1, 1f));
 
-            topStatusBadgeView = new LinearLayout(this);
-            topStatusBadgeView.setOrientation(LinearLayout.HORIZONTAL);
-            topStatusBadgeView.setGravity(Gravity.CENTER_VERTICAL);
-            topStatusBadgeView.setPadding(dp(9f), dp(4f), dp(9f), dp(4f));
-
-            topStatusDotView = new View(this);
-            final LinearLayout.LayoutParams dotLp = new LinearLayout.LayoutParams(dp(4f), dp(4f));
-            dotLp.rightMargin = dp(6f);
-            topStatusBadgeView.addView(topStatusDotView, dotLp);
-
-            topStatusTextView = new TextView(this);
-            topStatusTextView.setTextSize(TypedValue.COMPLEX_UNIT_SP, 10.5f);
-            topStatusTextView.setTypeface(Typeface.DEFAULT_BOLD);
-            topStatusBadgeView.addView(topStatusTextView);
-
-            headerContainer.addView(topStatusBadgeView);
+            headerContainer.addView(makeStatusBadge());
             return;
         }
 
         if (page != Page.HOME) {
-            headerContainer.addView(makeBackHeaderButton(dp(34f), dp(12f)));
+            headerContainer.addView(makeBackHeaderButton(dp(34f), dp(13f)));
         } else {
-            headerContainer.addView(makeBrandTitle(true));
+            headerContainer.addView(makeBrandTitle(), rightMarginLp(10f));
+            headerContainer.addView(makeStatusBadge());
         }
+
         final View spacer = new View(this);
         headerContainer.addView(spacer, new LinearLayout.LayoutParams(0, 1, 1f));
 
-        final LinearLayout tabsRow = new LinearLayout(this);
-        tabsRow.setOrientation(LinearLayout.HORIZONTAL);
-        tabsRow.setGravity(Gravity.CENTER_VERTICAL);
-        tabsRow.addView(makeHeaderTab(Page.HOME, "DISPLAY", "扩展显示"), rightMarginLp(8f));
-        tabsRow.addView(makeHeaderTab(Page.SETTINGS, "SETTINGS", "系统设置"), rightMarginLp(8f));
-        tabsRow.addView(makeHeaderTab(Page.DIAGNOSTICS, "DIAGNOSTICS", "连接诊断"));
-        headerContainer.addView(tabsRow);
+        final LinearLayout pillGroup = new LinearLayout(this);
+        pillGroup.setOrientation(LinearLayout.HORIZONTAL);
+        pillGroup.setGravity(Gravity.CENTER_VERTICAL);
+        pillGroup.setPadding(dp(3f), dp(3f), dp(3f), dp(3f));
+        pillGroup.setBackground(StudioDrawables.pill(
+            this, palette.subtle, palette.softHairline, 0.8f));
+        pillGroup.addView(makeHeaderTab(Page.HOME, "连接"));
+        pillGroup.addView(makeHeaderTab(Page.SETTINGS, "设置"));
+        pillGroup.addView(makeHeaderTab(Page.DIAGNOSTICS, "诊断"));
+        headerContainer.addView(pillGroup);
     }
 
-    private View makeBrandTitle(boolean showSubtitle) {
-        final LinearLayout row = new LinearLayout(this);
-        row.setOrientation(LinearLayout.HORIZONTAL);
-        row.setGravity(Gravity.CENTER_VERTICAL);
+    private View makeStatusBadge() {
+        topStatusBadgeView = new LinearLayout(this);
+        topStatusBadgeView.setOrientation(LinearLayout.HORIZONTAL);
+        topStatusBadgeView.setGravity(Gravity.CENTER_VERTICAL);
+        topStatusBadgeView.setPadding(dp(10f), dp(4f), dp(10f), dp(4f));
 
         topStatusDotView = new View(this);
-        final LinearLayout.LayoutParams dotLp = new LinearLayout.LayoutParams(dp(5f), dp(5f));
-        dotLp.rightMargin = dp(8f);
-        row.addView(topStatusDotView, dotLp);
+        final LinearLayout.LayoutParams dotLp = new LinearLayout.LayoutParams(dp(6f), dp(6f));
+        dotLp.rightMargin = dp(6f);
+        topStatusBadgeView.addView(topStatusDotView, dotLp);
 
+        topStatusTextView = new TextView(this);
+        topStatusTextView.setTextSize(TypedValue.COMPLEX_UNIT_SP, 11f);
+        topStatusTextView.setTypeface(Typeface.DEFAULT_BOLD);
+        topStatusBadgeView.addView(topStatusTextView);
+        return topStatusBadgeView;
+    }
+
+    private View makeBrandTitle() {
         final TextView brand = new TextView(this);
-        brand.setText("DESKMATE");
-        brand.setTextSize(TypedValue.COMPLEX_UNIT_SP, showSubtitle ? 14f : 13.5f);
+        brand.setText("DeskMate");
+        brand.setTextSize(TypedValue.COMPLEX_UNIT_SP, 15f);
         brand.setTypeface(Typeface.DEFAULT_BOLD);
-        brand.setLetterSpacing(showSubtitle ? 0.14f : 0.12f);
-        brand.setTextColor(StudioDrawables.COLOR_INK);
-        row.addView(brand);
-
-        if (showSubtitle) {
-            final TextView sub = new TextView(this);
-            sub.setText("  // 扩展屏终端");
-            sub.setTextSize(TypedValue.COMPLEX_UNIT_SP, 11f);
-            sub.setTextColor(StudioDrawables.COLOR_INK_SUBTLE);
-            row.addView(sub);
-        }
-        return row;
+        brand.setTextColor(palette.ink);
+        return brand;
     }
 
     private View makeBackHeaderButton(int heightPx, int padHPx) {
@@ -791,67 +791,41 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
         btn.setOrientation(LinearLayout.HORIZONTAL);
         btn.setGravity(Gravity.CENTER_VERTICAL);
         btn.setPadding(padHPx, 0, padHPx, 0);
-        btn.setBackground(StudioDrawables.card(
-            this, StudioDrawables.COLOR_WHITE, StudioDrawables.COLOR_HAIRLINE, 3f, 0.8f));
+        btn.setBackground(StudioDrawables.pill(
+            this, palette.subtle, palette.hairline, 0.8f));
         btn.setLayoutParams(new LinearLayout.LayoutParams(
             ViewGroup.LayoutParams.WRAP_CONTENT, heightPx));
 
         final TextView arrow = new TextView(this);
         arrow.setText("←");
         arrow.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f);
-        arrow.setTextColor(StudioDrawables.COLOR_CRIMSON);
-        btn.addView(arrow, rightMarginLp(6f));
+        arrow.setTextColor(palette.accent);
+        btn.addView(arrow, rightMarginLp(5f));
 
         final TextView label = new TextView(this);
         label.setText("返回");
-        label.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f);
-        label.setTextColor(StudioDrawables.COLOR_INK);
+        label.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12.5f);
+        label.setTextColor(palette.ink);
         btn.addView(label);
 
         btn.setOnClickListener(v -> onBackPressed());
         return btn;
     }
 
-    private View makeHeaderTab(Page target, String en, String zh) {
+    private View makeHeaderTab(Page target, String labelText) {
         final boolean active = (page == target);
-        final LinearLayout col = new LinearLayout(this);
-        col.setOrientation(LinearLayout.VERTICAL);
-        col.setGravity(Gravity.CENTER_HORIZONTAL);
-        col.setPadding(dp(6f), dp(6f), dp(6f), dp(2f));
-
-        final LinearLayout topRow = new LinearLayout(this);
-        topRow.setOrientation(LinearLayout.HORIZONTAL);
-        topRow.setGravity(Gravity.CENTER);
-
-        final View dot = new View(this);
-        dot.setBackground(StudioDrawables.squareIndicator(
-            this,
-            active ? StudioDrawables.COLOR_CRIMSON : Color.TRANSPARENT,
-            active ? StudioDrawables.COLOR_CRIMSON : StudioDrawables.COLOR_INK_SUBTLE,
-            0.8f));
-        final LinearLayout.LayoutParams dotLp = new LinearLayout.LayoutParams(dp(4f), dp(4f));
-        dotLp.rightMargin = dp(6f);
-        topRow.addView(dot, dotLp);
-
-        final TextView label = new TextView(this);
-        label.setText(en + " / " + zh);
-        label.setTextSize(TypedValue.COMPLEX_UNIT_SP, 11.5f);
-        label.setTypeface(active ? Typeface.DEFAULT_BOLD : Typeface.DEFAULT);
-        label.setTextColor(active ? StudioDrawables.COLOR_CRIMSON : StudioDrawables.COLOR_INK_MUTED);
-        topRow.addView(label);
-
-        col.addView(topRow, new LinearLayout.LayoutParams(
-            ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));
-
-        final View underline = new View(this);
-        underline.setBackgroundColor(active ? StudioDrawables.COLOR_CRIMSON : Color.TRANSPARENT);
-        final LinearLayout.LayoutParams lineLp = new LinearLayout.LayoutParams(
-            ViewGroup.LayoutParams.MATCH_PARENT, Math.max(2, dp(1.5f)));
-        lineLp.topMargin = dp(5f);
-        col.addView(underline, lineLp);
-
-        col.setOnClickListener(v -> navigate(target));
-        return col;
+        final TextView tv = new TextView(this);
+        tv.setText(labelText);
+        tv.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f);
+        tv.setTypeface(active ? Typeface.DEFAULT_BOLD : Typeface.DEFAULT);
+        tv.setTextColor(active ? palette.ink : palette.inkSecondary);
+        tv.setGravity(Gravity.CENTER);
+        tv.setPadding(dp(14f), dp(6f), dp(14f), dp(6f));
+        if (active) {
+            tv.setBackground(StudioDrawables.pill(this, palette.surface, Color.TRANSPARENT, 0f));
+        }
+        tv.setOnClickListener(v -> navigate(target));
+        return tv;
     }
 
     private void buildScrollBody() {
@@ -902,14 +876,14 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
         final LinearLayout wrapper = new LinearLayout(this);
         wrapper.setOrientation(LinearLayout.HORIZONTAL);
         wrapper.setGravity(Gravity.CENTER_VERTICAL);
-        wrapper.setPadding(dp(28f), dp(18f), dp(28f), dp(18f));
+        wrapper.setPadding(dp(28f), dp(20f), dp(28f), dp(20f));
 
         final LinearLayout leftCol = new LinearLayout(this);
         leftCol.setOrientation(LinearLayout.VERTICAL);
         leftCol.addView(schematicView);
         final LinearLayout.LayoutParams leftLp = new LinearLayout.LayoutParams(
-            0, ViewGroup.LayoutParams.WRAP_CONTENT, 0.43f);
-        leftLp.rightMargin = dp(28f);
+            0, ViewGroup.LayoutParams.WRAP_CONTENT, 0.44f);
+        leftLp.rightMargin = dp(24f);
         wrapper.addView(leftCol, leftLp);
 
         final LinearLayout rightCol = new LinearLayout(this);
@@ -934,49 +908,34 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
         final LinearLayout quickRow = new LinearLayout(this);
         quickRow.setOrientation(LinearLayout.HORIZONTAL);
         quickRow.addView(makeSmallActionButton("编码与浮窗设置", false,
-            () -> navigate(Page.SETTINGS)), rightMarginLp(12f));
+            () -> navigate(Page.SETTINGS)), rightMarginLp(10f));
         quickRow.addView(makeSmallActionButton("查看连接诊断", true,
             () -> navigate(Page.DIAGNOSTICS)));
         rightCol.addView(quickRow);
 
         wrapper.addView(rightCol, new LinearLayout.LayoutParams(
-            0, ViewGroup.LayoutParams.WRAP_CONTENT, 0.57f));
+            0, ViewGroup.LayoutParams.WRAP_CONTENT, 0.56f));
 
         final LinearLayout.LayoutParams wrapLp = new LinearLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
         contentContainer.addView(wrapper, wrapLp);
-        clampMaxWidth(wrapper, 1040);
+        clampMaxWidth(wrapper, 1000);
     }
 
     private View buildStatusHeaderBlock(boolean compact) {
         final LinearLayout col = new LinearLayout(this);
         col.setOrientation(LinearLayout.VERTICAL);
 
-        final LinearLayout eyebrowRow = new LinearLayout(this);
-        eyebrowRow.setOrientation(LinearLayout.HORIZONTAL);
-        eyebrowRow.setGravity(Gravity.CENTER_VERTICAL);
-
-        eyebrowDotView = new View(this);
-        final LinearLayout.LayoutParams dotLp = new LinearLayout.LayoutParams(dp(5f), dp(5f));
-        dotLp.rightMargin = dp(7f);
-        eyebrowRow.addView(eyebrowDotView, dotLp);
-
-        eyebrowView = new TextView(this);
-        eyebrowView.setTextSize(TypedValue.COMPLEX_UNIT_SP, compact ? 10f : 10.5f);
-        eyebrowView.setTypeface(Typeface.DEFAULT_BOLD);
-        eyebrowView.setLetterSpacing(0.11f);
-        eyebrowRow.addView(eyebrowView);
-        col.addView(eyebrowRow, bottomMarginLp(8f));
-
         statusTitleView = new TextView(this);
-        statusTitleView.setTextSize(TypedValue.COMPLEX_UNIT_SP, compact ? 22f : 26f);
-        statusTitleView.setTextColor(StudioDrawables.COLOR_INK);
-        col.addView(statusTitleView, bottomMarginLp(8f));
+        statusTitleView.setTextSize(TypedValue.COMPLEX_UNIT_SP, compact ? 20f : 24f);
+        statusTitleView.setTypeface(Typeface.DEFAULT_BOLD);
+        statusTitleView.setTextColor(palette.ink);
+        col.addView(statusTitleView, bottomMarginLp(6f));
 
         statusDetailView = new TextView(this);
         statusDetailView.setTextSize(TypedValue.COMPLEX_UNIT_SP, compact ? 13f : 13.5f);
         statusDetailView.setLineSpacing(dp(3f), 1.0f);
-        statusDetailView.setTextColor(StudioDrawables.COLOR_INK_SECONDARY);
+        statusDetailView.setTextColor(palette.inkSecondary);
         col.addView(statusDetailView);
 
         return col;
@@ -986,13 +945,13 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
         final LinearLayout card = new LinearLayout(this);
         card.setOrientation(LinearLayout.VERTICAL);
         card.setBackground(StudioDrawables.card(
-            this, StudioDrawables.COLOR_WHITE, StudioDrawables.COLOR_HAIRLINE, 4f, 0.8f));
+            this, palette.surface, palette.hairline, 16f, 0.8f));
 
-        card.addView(makeStepRow("01", "确保 Mac 上的 DeskMate 已启动运行"));
-        card.addView(makeHairlineDivider(StudioDrawables.COLOR_SOFT_HAIRLINE, 0.75f));
-        card.addView(makeStepRow("02", "使用高速 USB 数据线连接 Mac 与" + deviceLabel()));
-        card.addView(makeHairlineDivider(StudioDrawables.COLOR_SOFT_HAIRLINE, 0.75f));
-        card.addView(makeStepRow("03", "弹出询问时点击允许访问 USB 配件"));
+        card.addView(makeStepRow("1", "确保电脑端的 DeskMate 已启动运行"));
+        card.addView(makeHairlineDivider(palette.softHairline, 0.8f));
+        card.addView(makeStepRow("2", "使用高速 USB-C 数据线连接电脑与" + deviceLabel()));
+        card.addView(makeHairlineDivider(palette.softHairline, 0.8f));
+        card.addView(makeStepRow("3", "系统弹出访问确认时点击允许 USB 配件连接"));
         return card;
     }
 
@@ -1000,19 +959,19 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
         final LinearLayout row = new LinearLayout(this);
         row.setOrientation(LinearLayout.HORIZONTAL);
         row.setGravity(Gravity.CENTER_VERTICAL);
-        row.setPadding(dp(12f), dp(9f), dp(12f), dp(9f));
+        row.setPadding(dp(14f), dp(10f), dp(14f), dp(10f));
 
         final TextView numView = new TextView(this);
         numView.setText(num);
-        numView.setTextSize(TypedValue.COMPLEX_UNIT_SP, 11f);
+        numView.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f);
         numView.setTypeface(Typeface.DEFAULT_BOLD);
-        numView.setTextColor(StudioDrawables.COLOR_CRIMSON);
-        row.addView(numView, new LinearLayout.LayoutParams(dp(34f), ViewGroup.LayoutParams.WRAP_CONTENT));
+        numView.setTextColor(palette.accent);
+        row.addView(numView, new LinearLayout.LayoutParams(dp(22f), ViewGroup.LayoutParams.WRAP_CONTENT));
 
         final TextView textView = new TextView(this);
         textView.setText(text);
-        textView.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13.5f);
-        textView.setTextColor(StudioDrawables.COLOR_INK_BODY);
+        textView.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f);
+        textView.setTextColor(palette.inkSecondary);
         row.addView(textView, new LinearLayout.LayoutParams(
             0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
         return row;
@@ -1021,52 +980,48 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
     private View buildLiveSpecCard() {
         final LinearLayout card = new LinearLayout(this);
         card.setOrientation(LinearLayout.VERTICAL);
-        card.setPadding(dp(12f), dp(12f), dp(12f), dp(12f));
         card.setBackground(StudioDrawables.card(
-            this, StudioDrawables.COLOR_WHITE, StudioDrawables.COLOR_HAIRLINE, 4f, 0.8f));
+            this, palette.surface, palette.hairline, 16f, 0.8f));
 
         final LinearLayout specRow = new LinearLayout(this);
         specRow.setOrientation(LinearLayout.HORIZONTAL);
         specRow.setGravity(Gravity.CENTER_VERTICAL);
+        specRow.setPadding(dp(14f), dp(11f), dp(14f), dp(11f));
 
         final TextView specLabel = new TextView(this);
         specLabel.setText("显示规格");
-        specLabel.setTextSize(TypedValue.COMPLEX_UNIT_SP, 11.5f);
-        specLabel.setTextColor(StudioDrawables.COLOR_INK_SUBTLE);
+        specLabel.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f);
+        specLabel.setTextColor(palette.inkMuted);
         specRow.addView(specLabel, new LinearLayout.LayoutParams(
             dp(68f), ViewGroup.LayoutParams.WRAP_CONTENT));
 
         liveSpecValueView = new TextView(this);
         liveSpecValueView.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f);
         liveSpecValueView.setTypeface(Typeface.DEFAULT_BOLD);
-        liveSpecValueView.setTextColor(StudioDrawables.COLOR_INK);
+        liveSpecValueView.setTextColor(palette.ink);
         specRow.addView(liveSpecValueView, new LinearLayout.LayoutParams(
             0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
         card.addView(specRow);
 
         if (frameReady) {
-            final View div = makeHairlineDivider(StudioDrawables.COLOR_SOFT_HAIRLINE, 0.75f);
-            final LinearLayout.LayoutParams divLp = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, Math.max(1, dp(0.75f)));
-            divLp.topMargin = dp(8f);
-            divLp.bottomMargin = dp(8f);
-            card.addView(div, divLp);
+            card.addView(makeHairlineDivider(palette.softHairline, 0.8f));
 
             livePerfRowView = new LinearLayout(this);
             livePerfRowView.setOrientation(LinearLayout.HORIZONTAL);
             livePerfRowView.setGravity(Gravity.CENTER_VERTICAL);
+            livePerfRowView.setPadding(dp(14f), dp(11f), dp(14f), dp(11f));
 
             final TextView perfLabel = new TextView(this);
             perfLabel.setText("实时性能");
-            perfLabel.setTextSize(TypedValue.COMPLEX_UNIT_SP, 11.5f);
-            perfLabel.setTextColor(StudioDrawables.COLOR_CRIMSON);
+            perfLabel.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f);
+            perfLabel.setTextColor(palette.accent);
             livePerfRowView.addView(perfLabel, new LinearLayout.LayoutParams(
                 dp(68f), ViewGroup.LayoutParams.WRAP_CONTENT));
 
             livePerfValueView = new TextView(this);
             livePerfValueView.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f);
             livePerfValueView.setTypeface(Typeface.DEFAULT_BOLD);
-            livePerfValueView.setTextColor(StudioDrawables.COLOR_INK);
+            livePerfValueView.setTextColor(palette.ink);
             livePerfRowView.addView(livePerfValueView, new LinearLayout.LayoutParams(
                 0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
             card.addView(livePerfRowView);
@@ -1088,7 +1043,7 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
         final LinearLayout wrapper = new LinearLayout(this);
         wrapper.setOrientation(LinearLayout.HORIZONTAL);
         wrapper.setGravity(Gravity.TOP);
-        wrapper.setPadding(dp(28f), dp(16f), dp(28f), dp(24f));
+        wrapper.setPadding(dp(28f), dp(18f), dp(28f), dp(24f));
 
         final LinearLayout leftCol = new LinearLayout(this);
         leftCol.setOrientation(LinearLayout.VERTICAL);
@@ -1097,89 +1052,88 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
 
         final LinearLayout prefCard = new LinearLayout(this);
         prefCard.setOrientation(LinearLayout.VERTICAL);
-        prefCard.setPadding(dp(12f), dp(12f), dp(12f), dp(12f));
+        prefCard.setPadding(dp(14f), dp(14f), dp(14f), dp(14f));
         prefCard.setBackground(StudioDrawables.card(
-            this, StudioDrawables.COLOR_WHITE, StudioDrawables.COLOR_HAIRLINE, 4f, 0.8f));
+            this, palette.surface, palette.hairline, 16f, 0.8f));
 
         final TextView prefLabel = new TextView(this);
         prefLabel.setText("当前编码偏好");
-        prefLabel.setTextSize(TypedValue.COMPLEX_UNIT_SP, 10.5f);
-        prefLabel.setTextColor(StudioDrawables.COLOR_INK_SUBTLE);
+        prefLabel.setTextSize(TypedValue.COMPLEX_UNIT_SP, 11f);
+        prefLabel.setTextColor(palette.inkMuted);
         prefCard.addView(prefLabel, bottomMarginLp(4f));
 
         settingsCodecStatusView = new TextView(this);
-        settingsCodecStatusView.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12.5f);
+        settingsCodecStatusView.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f);
         settingsCodecStatusView.setTypeface(Typeface.DEFAULT_BOLD);
-        settingsCodecStatusView.setTextColor(StudioDrawables.COLOR_INK);
+        settingsCodecStatusView.setTextColor(palette.ink);
         prefCard.addView(settingsCodecStatusView);
 
         leftCol.addView(prefCard);
         final LinearLayout.LayoutParams leftLp = new LinearLayout.LayoutParams(
-            0, ViewGroup.LayoutParams.WRAP_CONTENT, 0.34f);
-        leftLp.rightMargin = dp(26f);
+            0, ViewGroup.LayoutParams.WRAP_CONTENT, 0.35f);
+        leftLp.rightMargin = dp(24f);
         wrapper.addView(leftCol, leftLp);
 
         final LinearLayout rightCol = new LinearLayout(this);
         rightCol.setOrientation(LinearLayout.VERTICAL);
         appendSettingsFields(rightCol, false);
         wrapper.addView(rightCol, new LinearLayout.LayoutParams(
-            0, ViewGroup.LayoutParams.WRAP_CONTENT, 0.66f));
+            0, ViewGroup.LayoutParams.WRAP_CONTENT, 0.65f));
 
         contentContainer.addView(wrapper, new LinearLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
-        clampMaxWidth(wrapper, 1040);
+        clampMaxWidth(wrapper, 1000);
     }
 
     private void appendSettingsFields(LinearLayout parent, boolean compact) {
-        parent.addView(makePageHeader(
-            "SETTINGS // 显示与解码配置", "系统设置", compact ? 20f : 21f), bottomMarginLp(14f));
+        parent.addView(makePageHeader("系统设置", compact ? 19f : 20f), bottomMarginLp(14f));
 
         if (compact) {
             final LinearLayout compactSpecCard = new LinearLayout(this);
             compactSpecCard.setOrientation(LinearLayout.HORIZONTAL);
             compactSpecCard.setGravity(Gravity.CENTER_VERTICAL);
-            compactSpecCard.setPadding(dp(12f), dp(10f), dp(12f), dp(10f));
+            compactSpecCard.setPadding(dp(14f), dp(12f), dp(14f), dp(12f));
             compactSpecCard.setBackground(StudioDrawables.card(
-                this, StudioDrawables.COLOR_WHITE, StudioDrawables.COLOR_HAIRLINE, 4f, 0.8f));
+                this, palette.surface, palette.hairline, 16f, 0.8f));
 
             final TextView lbl = new TextView(this);
             lbl.setText("当前编码与规格");
-            lbl.setTextSize(TypedValue.COMPLEX_UNIT_SP, 11.5f);
-            lbl.setTextColor(StudioDrawables.COLOR_INK_SUBTLE);
+            lbl.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f);
+            lbl.setTextColor(palette.inkMuted);
             compactSpecCard.addView(lbl, new LinearLayout.LayoutParams(
                 0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
 
             settingsCodecStatusView = new TextView(this);
             settingsCodecStatusView.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12.5f);
             settingsCodecStatusView.setTypeface(Typeface.DEFAULT_BOLD);
-            settingsCodecStatusView.setTextColor(StudioDrawables.COLOR_INK);
+            settingsCodecStatusView.setTextColor(palette.ink);
             compactSpecCard.addView(settingsCodecStatusView);
 
             parent.addView(compactSpecCard, bottomMarginLp(14f));
         }
 
-        parent.addView(makeSectionHeader("DISPLAY", "画面与性能浮窗"), bottomMarginLp(10f));
+        parent.addView(makeSectionHeader("画面与性能浮窗"), bottomMarginLp(8f));
 
         final LinearLayout fpsCard = new LinearLayout(this);
         fpsCard.setOrientation(LinearLayout.HORIZONTAL);
         fpsCard.setGravity(Gravity.CENTER_VERTICAL);
-        fpsCard.setPadding(dp(14f), dp(10f), dp(14f), dp(10f));
+        fpsCard.setPadding(dp(16f), dp(12f), dp(16f), dp(12f));
         fpsCard.setBackground(StudioDrawables.card(
-            this, StudioDrawables.COLOR_WHITE, StudioDrawables.COLOR_HAIRLINE, 4f, 0.8f));
+            this, palette.surface, palette.hairline, 16f, 0.8f));
 
         final LinearLayout fpsLabels = new LinearLayout(this);
         fpsLabels.setOrientation(LinearLayout.VERTICAL);
         final TextView fpsTitle = new TextView(this);
         fpsTitle.setText("性能参数浮窗");
-        fpsTitle.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14.5f);
+        fpsTitle.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14f);
         fpsTitle.setTypeface(Typeface.DEFAULT_BOLD);
-        fpsTitle.setTextColor(StudioDrawables.COLOR_INK);
+        fpsTitle.setTextColor(palette.ink);
         fpsLabels.addView(fpsTitle, bottomMarginLp(3f));
 
         final TextView fpsSub = new TextView(this);
         fpsSub.setText("全屏投屏时在右上角显示帧率、码率、编码格式与丢帧统计");
         fpsSub.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f);
-        fpsSub.setTextColor(StudioDrawables.COLOR_INK_MUTED);
+        fpsSub.setTextColor(palette.inkSecondary);
         fpsLabels.addView(fpsSub);
 
         final LinearLayout.LayoutParams fpsLblLp = new LinearLayout.LayoutParams(
@@ -1202,32 +1156,32 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
         if (isPhone) {
             final LinearLayout oriCard = new LinearLayout(this);
             oriCard.setOrientation(LinearLayout.VERTICAL);
-            oriCard.setPadding(dp(14f), dp(10f), dp(14f), dp(10f));
+            oriCard.setPadding(dp(16f), dp(12f), dp(16f), dp(12f));
             oriCard.setBackground(StudioDrawables.card(
-                this, StudioDrawables.COLOR_WHITE, StudioDrawables.COLOR_HAIRLINE, 4f, 0.8f));
+                this, palette.surface, palette.hairline, 16f, 0.8f));
 
             final TextView oriTitle = new TextView(this);
             oriTitle.setText("横竖屏自动切换");
             oriTitle.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14f);
             oriTitle.setTypeface(Typeface.DEFAULT_BOLD);
-            oriTitle.setTextColor(StudioDrawables.COLOR_INK);
+            oriTitle.setTextColor(palette.ink);
             oriCard.addView(oriTitle, bottomMarginLp(3f));
 
             final TextView oriSub = new TextView(this);
             oriSub.setText("连接前保持竖屏便于配置，进入扩展画面后自动切换横屏并支持左右翻转");
             oriSub.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f);
             oriSub.setLineSpacing(dp(2f), 1.0f);
-            oriSub.setTextColor(StudioDrawables.COLOR_INK_MUTED);
+            oriSub.setTextColor(palette.inkSecondary);
             oriCard.addView(oriSub);
 
             parent.addView(oriCard, bottomMarginLp(14f));
         }
 
-        parent.addView(makeSectionHeader("CODEC", "视频编码格式"), bottomMarginLp(8f));
+        parent.addView(makeSectionHeader("视频编码格式"), bottomMarginLp(6f));
 
         settingsCodecHintView = new TextView(this);
         settingsCodecHintView.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f);
-        settingsCodecHintView.setTextColor(StudioDrawables.COLOR_INK_MUTED);
+        settingsCodecHintView.setTextColor(palette.inkSecondary);
         parent.addView(settingsCodecHintView, bottomMarginLp(10f));
 
         final LinearLayout codecRow = new LinearLayout(this);
@@ -1238,27 +1192,14 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
             card.setOrientation(LinearLayout.VERTICAL);
             card.setGravity(Gravity.CENTER_HORIZONTAL);
             card.setPadding(
-                dp(compact ? 6f : 10f), dp(10f),
-                dp(compact ? 6f : 10f), dp(10f));
-
-            final LinearLayout titleRow = new LinearLayout(this);
-            titleRow.setOrientation(LinearLayout.HORIZONTAL);
-            titleRow.setGravity(Gravity.CENTER_VERTICAL);
-
-            final View dot = new View(this);
-            final LinearLayout.LayoutParams dotLp = new LinearLayout.LayoutParams(dp(4f), dp(4f));
-            dotLp.rightMargin = dp(compact ? 4f : 6f);
-            titleRow.addView(dot, dotLp);
+                dp(compact ? 6f : 10f), dp(11f),
+                dp(compact ? 6f : 10f), dp(11f));
 
             final TextView titleTv = new TextView(this);
             titleTv.setText(CODEC_TITLES[index]);
             titleTv.setTextSize(TypedValue.COMPLEX_UNIT_SP, compact ? 13f : 14f);
-            titleRow.addView(titleTv);
-
-            final LinearLayout.LayoutParams titleRowLp = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-            titleRowLp.bottomMargin = dp(4f);
-            card.addView(titleRow, titleRowLp);
+            titleTv.setGravity(Gravity.CENTER_HORIZONTAL);
+            card.addView(titleTv, bottomMarginLp(4f));
 
             final TextView subTv = new TextView(this);
             subTv.setText(CODEC_SUBTITLES[index]);
@@ -1270,7 +1211,6 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
             card.setOnClickListener(v -> selectCodec(val));
 
             codecOptionCards.add(card);
-            codecOptionDots.add(dot);
             codecOptionTitles.add(titleTv);
             codecOptionSubtitles.add(subTv);
 
@@ -1287,14 +1227,14 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
             final LinearLayout banner = new LinearLayout(this);
             banner.setOrientation(LinearLayout.HORIZONTAL);
             banner.setGravity(Gravity.CENTER_VERTICAL);
-            banner.setPadding(dp(12f), dp(8f), dp(12f), dp(8f));
+            banner.setPadding(dp(14f), dp(10f), dp(14f), dp(10f));
             banner.setBackground(StudioDrawables.card(
-                this, StudioDrawables.COLOR_ROSE_WASH, StudioDrawables.COLOR_ROSE_BORDER, 3f, 0.8f));
+                this, palette.accentSoft, palette.accentBorder, 14f, 0.8f));
 
             final TextView msg = new TextView(this);
             msg.setText("编码偏好已更新，重新连接 USB 会话后生效");
             msg.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f);
-            msg.setTextColor(StudioDrawables.COLOR_CRIMSON);
+            msg.setTextColor(palette.accent);
             final LinearLayout.LayoutParams msgLp = new LinearLayout.LayoutParams(
                 0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
             msgLp.rightMargin = dp(12f);
@@ -1302,31 +1242,31 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
 
             final TextView reconnBtn = new TextView(this);
             reconnBtn.setText("立即重连");
-            reconnBtn.setTextSize(TypedValue.COMPLEX_UNIT_SP, 11.5f);
+            reconnBtn.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f);
             reconnBtn.setTypeface(Typeface.DEFAULT_BOLD);
-            reconnBtn.setTextColor(StudioDrawables.COLOR_WHITE);
+            reconnBtn.setTextColor(palette.accentFg);
             reconnBtn.setGravity(Gravity.CENTER);
-            reconnBtn.setPadding(dp(12f), 0, dp(12f), 0);
-            reconnBtn.setBackground(StudioDrawables.card(
-                this, StudioDrawables.COLOR_CRIMSON, StudioDrawables.COLOR_CRIMSON_PRESSED, 3f, 0.8f));
+            reconnBtn.setPadding(dp(14f), 0, dp(14f), 0);
+            reconnBtn.setBackground(StudioDrawables.pill(
+                this, palette.accent, Color.TRANSPARENT, 0f));
             reconnBtn.setOnClickListener(v -> {
                 codecChangedWhileConnected = false;
                 accessoryLink.reconnect();
             });
             banner.addView(reconnBtn, new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.WRAP_CONTENT, dp(30f)));
+                ViewGroup.LayoutParams.WRAP_CONTENT, dp(32f)));
 
             parent.addView(banner, bottomMarginLp(14f));
         }
 
-        parent.addView(makeSectionHeader("DIAGNOSTICS", "实时诊断"), bottomMarginLp(10f));
+        parent.addView(makeSectionHeader("连接诊断"), bottomMarginLp(8f));
 
         final LinearLayout diagEntry = new LinearLayout(this);
         diagEntry.setOrientation(LinearLayout.HORIZONTAL);
         diagEntry.setGravity(Gravity.CENTER_VERTICAL);
-        diagEntry.setPadding(dp(14f), dp(10f), dp(14f), dp(10f));
+        diagEntry.setPadding(dp(16f), dp(12f), dp(16f), dp(12f));
         diagEntry.setBackground(StudioDrawables.card(
-            this, StudioDrawables.COLOR_WHITE, StudioDrawables.COLOR_HAIRLINE, 4f, 0.8f));
+            this, palette.surface, palette.hairline, 16f, 0.8f));
 
         final LinearLayout diagLabels = new LinearLayout(this);
         diagLabels.setOrientation(LinearLayout.VERTICAL);
@@ -1334,22 +1274,22 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
         diagTitle.setText("查看连接与解码统计");
         diagTitle.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14f);
         diagTitle.setTypeface(Typeface.DEFAULT_BOLD);
-        diagTitle.setTextColor(StudioDrawables.COLOR_INK);
+        diagTitle.setTextColor(palette.ink);
         diagLabels.addView(diagTitle, bottomMarginLp(2f));
 
         final TextView diagSub = new TextView(this);
         diagSub.setText("检视 USB 状态、协商参数、码率与帧率统计");
         diagSub.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f);
-        diagSub.setTextColor(StudioDrawables.COLOR_INK_MUTED);
+        diagSub.setTextColor(palette.inkSecondary);
         diagLabels.addView(diagSub);
         diagEntry.addView(diagLabels, new LinearLayout.LayoutParams(
             0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
 
         final TextView viewLink = new TextView(this);
         viewLink.setText("查看 →");
-        viewLink.setTextSize(TypedValue.COMPLEX_UNIT_SP, 11.5f);
+        viewLink.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f);
         viewLink.setTypeface(Typeface.DEFAULT_BOLD);
-        viewLink.setTextColor(StudioDrawables.COLOR_CRIMSON);
+        viewLink.setTextColor(palette.accent);
         diagEntry.addView(viewLink);
 
         diagEntry.setOnClickListener(v -> navigate(Page.DIAGNOSTICS));
@@ -1361,10 +1301,9 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
             final LinearLayout col = new LinearLayout(this);
             col.setOrientation(LinearLayout.VERTICAL);
             col.setPadding(dp(16f), dp(14f), dp(16f), dp(20f));
-            col.addView(makePageHeader("DIAGNOSTICS // 会话与传输摘要", "连接与解码诊断", 20f), bottomMarginLp(12f));
-            col.addView(makeHairlineDivider(StudioDrawables.COLOR_HAIRLINE, 0.8f, 12f));
+            col.addView(makePageHeader("连接与解码诊断", 19f), bottomMarginLp(12f));
             col.addView(buildDiagnosticsCard(true), bottomMarginLp(12f));
-            col.addView(makeReconnectUsbButton(dp(40f)));
+            col.addView(makeReconnectUsbButton(dp(42f)));
             contentContainer.addView(col, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
             return;
@@ -1373,38 +1312,37 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
         final LinearLayout wrapper = new LinearLayout(this);
         wrapper.setOrientation(LinearLayout.HORIZONTAL);
         wrapper.setGravity(Gravity.TOP);
-        wrapper.setPadding(dp(28f), dp(16f), dp(28f), dp(24f));
+        wrapper.setPadding(dp(28f), dp(18f), dp(28f), dp(24f));
 
         final LinearLayout leftCol = new LinearLayout(this);
         leftCol.setOrientation(LinearLayout.VERTICAL);
         schematicView = new WiredLinkSchematicView(this);
         leftCol.addView(schematicView, bottomMarginLp(10f));
-        leftCol.addView(makeReconnectUsbButton(dp(34f)));
+        leftCol.addView(makeReconnectUsbButton(dp(38f)));
         final LinearLayout.LayoutParams leftLp = new LinearLayout.LayoutParams(
-            0, ViewGroup.LayoutParams.WRAP_CONTENT, 0.34f);
-        leftLp.rightMargin = dp(26f);
+            0, ViewGroup.LayoutParams.WRAP_CONTENT, 0.35f);
+        leftLp.rightMargin = dp(24f);
         wrapper.addView(leftCol, leftLp);
 
         final LinearLayout rightCol = new LinearLayout(this);
         rightCol.setOrientation(LinearLayout.VERTICAL);
-        rightCol.addView(makePageHeader("DIAGNOSTICS // 会话与传输摘要", "连接与解码诊断", 21f), bottomMarginLp(12f));
-        rightCol.addView(makeHairlineDivider(StudioDrawables.COLOR_HAIRLINE, 0.8f, 12f));
+        rightCol.addView(makePageHeader("连接与解码诊断", 20f), bottomMarginLp(12f));
         rightCol.addView(buildDiagnosticsCard(false), bottomMarginLp(12f));
 
         final LinearLayout btnRow = new LinearLayout(this);
         btnRow.setOrientation(LinearLayout.HORIZONTAL);
         btnRow.addView(makeSmallActionButton("← 返回系统设置", false,
-            () -> navigate(Page.SETTINGS)), rightMarginLp(12f));
+            () -> navigate(Page.SETTINGS)), rightMarginLp(10f));
         btnRow.addView(makeSmallActionButton("返回主页", true,
             () -> navigate(Page.HOME)));
         rightCol.addView(btnRow);
 
         wrapper.addView(rightCol, new LinearLayout.LayoutParams(
-            0, ViewGroup.LayoutParams.WRAP_CONTENT, 0.66f));
+            0, ViewGroup.LayoutParams.WRAP_CONTENT, 0.65f));
 
         contentContainer.addView(wrapper, new LinearLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
-        clampMaxWidth(wrapper, 1040);
+        clampMaxWidth(wrapper, 1000);
     }
 
     private View buildDiagnosticsCard(boolean compact) {
@@ -1416,27 +1354,27 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
         final LinearLayout card = new LinearLayout(this);
         card.setOrientation(LinearLayout.VERTICAL);
         card.setBackground(StudioDrawables.card(
-            this, StudioDrawables.COLOR_WHITE, StudioDrawables.COLOR_HAIRLINE, 4f, 0.8f));
+            this, palette.surface, palette.hairline, 16f, 0.8f));
 
         for (int index = 0; index < labels.length; index++) {
             if (index > 0) {
-                card.addView(makeHairlineDivider(StudioDrawables.COLOR_SOFT_HAIRLINE, 0.75f));
+                card.addView(makeHairlineDivider(palette.softHairline, 0.8f));
             }
             final LinearLayout row = new LinearLayout(this);
             row.setOrientation(LinearLayout.HORIZONTAL);
-            row.setPadding(dp(12f), dp(8f), dp(12f), dp(8f));
+            row.setPadding(dp(14f), dp(10f), dp(14f), dp(10f));
 
             final TextView lbl = new TextView(this);
             lbl.setText(labels[index]);
             lbl.setTextSize(TypedValue.COMPLEX_UNIT_SP, compact ? 12f : 12.5f);
-            lbl.setTextColor(StudioDrawables.COLOR_INK_MUTED);
+            lbl.setTextColor(palette.inkMuted);
             row.addView(lbl, new LinearLayout.LayoutParams(
                 dp(compact ? 78f : 96f), ViewGroup.LayoutParams.WRAP_CONTENT));
 
             final TextView val = new TextView(this);
             val.setTextSize(TypedValue.COMPLEX_UNIT_SP, compact ? 12f : 12.5f);
             val.setTypeface(Typeface.DEFAULT_BOLD);
-            val.setTextColor(StudioDrawables.COLOR_INK);
+            val.setTextColor(palette.ink);
             row.addView(val, new LinearLayout.LayoutParams(
                 0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
 
@@ -1449,12 +1387,12 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
     private View makeReconnectUsbButton(int heightPx) {
         final TextView btn = new TextView(this);
         btn.setText("重新握手 USB 连接");
-        btn.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f);
+        btn.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12.5f);
         btn.setTypeface(Typeface.DEFAULT_BOLD);
-        btn.setTextColor(StudioDrawables.COLOR_CRIMSON);
+        btn.setTextColor(palette.accent);
         btn.setGravity(Gravity.CENTER);
         btn.setBackground(StudioDrawables.card(
-            this, StudioDrawables.COLOR_ROSE_WASH, StudioDrawables.COLOR_ROSE_BORDER, 3f, 0.8f));
+            this, palette.accentSoft, palette.accentBorder, 11f, 0.8f));
         btn.setLayoutParams(new LinearLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT, heightPx));
         btn.setOnClickListener(v -> {
@@ -1469,19 +1407,19 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
 
     private void buildBottomBar() {
         bottomContainer.removeAllViews();
+        bottomContainer.setBackgroundColor(palette.surface);
+
         if (compactLayout) {
-            bottomContainer.setBackgroundColor(StudioDrawables.COLOR_SHELL_CHROME);
-            bottomContainer.addView(makeBottomTab(Page.HOME, "DISPLAY", "扩展显示"));
-            bottomContainer.addView(makeBottomTab(Page.SETTINGS, "SETTINGS", "系统设置"));
-            bottomContainer.addView(makeBottomTab(Page.DIAGNOSTICS, "DIAG", "连接诊断"));
+            bottomContainer.addView(makeBottomTab(Page.HOME, "连接"));
+            bottomContainer.addView(makeBottomTab(Page.SETTINGS, "设置"));
+            bottomContainer.addView(makeBottomTab(Page.DIAGNOSTICS, "诊断"));
             return;
         }
 
-        bottomContainer.setBackgroundColor(StudioDrawables.COLOR_HEADER_CHROME);
         final TextView leftNote = new TextView(this);
-        leftNote.setText("USB · AOA 硬件直连  //  自动 HiDPI 虚拟屏  //  多点与双指触控");
-        leftNote.setTextSize(TypedValue.COMPLEX_UNIT_SP, 10.5f);
-        leftNote.setTextColor(StudioDrawables.COLOR_INK_SUBTLE);
+        leftNote.setText("USB-C AOA 硬件直连 · 自动 HiDPI 虚拟屏 · 多点与双指触控");
+        leftNote.setTextSize(TypedValue.COMPLEX_UNIT_SP, 11f);
+        leftNote.setTextColor(palette.inkMuted);
         bottomContainer.addView(leftNote, new LinearLayout.LayoutParams(
             0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
 
@@ -1490,70 +1428,36 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
         rightGroup.setGravity(Gravity.CENTER_VERTICAL);
 
         whisperDotView = new View(this);
-        final LinearLayout.LayoutParams dotLp = new LinearLayout.LayoutParams(dp(4f), dp(4f));
+        final LinearLayout.LayoutParams dotLp = new LinearLayout.LayoutParams(dp(6f), dp(6f));
         dotLp.rightMargin = dp(6f);
         rightGroup.addView(whisperDotView, dotLp);
 
         whisperCodecView = new TextView(this);
-        whisperCodecView.setTextSize(TypedValue.COMPLEX_UNIT_SP, 10.5f);
-        whisperCodecView.setTextColor(StudioDrawables.COLOR_INK_SECONDARY);
+        whisperCodecView.setTextSize(TypedValue.COMPLEX_UNIT_SP, 11f);
+        whisperCodecView.setTextColor(palette.inkSecondary);
         rightGroup.addView(whisperCodecView);
 
         bottomContainer.addView(rightGroup);
     }
 
-    private View makeBottomTab(Page target, String en, String zh) {
+    private View makeBottomTab(Page target, String labelText) {
         final boolean active = (page == target);
-        final LinearLayout col = new LinearLayout(this);
-        col.setOrientation(LinearLayout.VERTICAL);
-        col.setGravity(Gravity.CENTER_HORIZONTAL);
-        col.setPadding(dp(4f), dp(6f), dp(4f), dp(8f));
-
-        final View bar = new View(this);
-        bar.setBackgroundColor(active ? StudioDrawables.COLOR_CRIMSON : Color.TRANSPARENT);
-        col.addView(bar, new LinearLayout.LayoutParams(dp(26f), Math.max(2, dp(2f))));
-
-        final LinearLayout enRow = new LinearLayout(this);
-        enRow.setOrientation(LinearLayout.HORIZONTAL);
-        enRow.setGravity(Gravity.CENTER);
-        final LinearLayout.LayoutParams enRowLp = new LinearLayout.LayoutParams(
-            ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        enRowLp.topMargin = dp(3f);
-        enRowLp.bottomMargin = dp(2f);
-
-        final View dot = new View(this);
-        dot.setBackground(StudioDrawables.squareIndicator(
-            this,
-            active ? StudioDrawables.COLOR_CRIMSON : Color.TRANSPARENT,
-            active ? StudioDrawables.COLOR_CRIMSON : StudioDrawables.COLOR_INK_SUBTLE,
-            0.8f));
-        final LinearLayout.LayoutParams dotLp = new LinearLayout.LayoutParams(dp(4f), dp(4f));
-        dotLp.rightMargin = dp(4f);
-        enRow.addView(dot, dotLp);
-
-        final TextView enTv = new TextView(this);
-        enTv.setText(en);
-        enTv.setTextSize(TypedValue.COMPLEX_UNIT_SP, 9f);
-        enTv.setTypeface(Typeface.DEFAULT_BOLD);
-        enTv.setLetterSpacing(0.08f);
-        enTv.setTextColor(active ? StudioDrawables.COLOR_CRIMSON : StudioDrawables.COLOR_INK_SUBTLE);
-        enRow.addView(enTv);
-        col.addView(enRow, enRowLp);
-
-        final TextView zhTv = new TextView(this);
-        zhTv.setText(zh);
-        zhTv.setTextSize(TypedValue.COMPLEX_UNIT_SP, 11.5f);
-        zhTv.setGravity(Gravity.CENTER_HORIZONTAL);
-        zhTv.setTypeface(active ? Typeface.DEFAULT_BOLD : Typeface.DEFAULT);
-        zhTv.setTextColor(active ? StudioDrawables.COLOR_INK : StudioDrawables.COLOR_INK_MUTED);
-        col.addView(zhTv, new LinearLayout.LayoutParams(
-            ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));
-
-        col.setOnClickListener(v -> navigate(target));
+        final TextView tv = new TextView(this);
+        tv.setText(labelText);
+        tv.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f);
+        tv.setGravity(Gravity.CENTER);
+        tv.setTypeface(active ? Typeface.DEFAULT_BOLD : Typeface.DEFAULT);
+        tv.setTextColor(active ? palette.accent : palette.inkSecondary);
+        tv.setPadding(dp(8f), dp(8f), dp(8f), dp(8f));
+        if (active) {
+            tv.setBackground(StudioDrawables.pill(
+                this, palette.accentSoft, Color.TRANSPARENT, 0f));
+        }
+        tv.setOnClickListener(v -> navigate(target));
         final LinearLayout.LayoutParams tabLp = new LinearLayout.LayoutParams(
             0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
-        col.setLayoutParams(tabLp);
-        return col;
+        tv.setLayoutParams(tabLp);
+        return tv;
     }
 
     private static void setTextIfChanged(TextView view, String text) {
@@ -1563,21 +1467,41 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
     }
 
     private void updateShellLiveValues() {
-        final int accent = statusAccent();
+        final int dotColor = statusAccentColor();
         if (topStatusDotView != null) {
-            topStatusDotView.setBackgroundColor(accent);
+            topStatusDotView.setBackground(StudioDrawables.circleDot(dotColor));
         }
         if (topStatusBadgeView != null && topStatusTextView != null) {
-            final boolean highlight = (frameReady || link.state == AccessoryLink.State.ERROR);
+            final String badgeKey = palette.dark + "|" + shortStatusLabel() + "|" + link.state.name() + "|" + frameReady;
             setTextIfChanged(topStatusTextView, shortStatusLabel());
-            if (lastBadgeHighlight == null || lastBadgeHighlight != highlight) {
-                lastBadgeHighlight = highlight;
-                topStatusTextView.setTextColor(highlight ? StudioDrawables.COLOR_CRIMSON : StudioDrawables.COLOR_INK_SECONDARY);
-                topStatusBadgeView.setBackground(StudioDrawables.card(
-                    this,
-                    highlight ? StudioDrawables.COLOR_ROSE_WASH : StudioDrawables.COLOR_SUBTLE,
-                    highlight ? StudioDrawables.COLOR_ROSE_BORDER : StudioDrawables.COLOR_HAIRLINE,
-                    3f, 0.8f));
+            if (!badgeKey.equals(lastBadgeStateKey)) {
+                lastBadgeStateKey = badgeKey;
+                final int fg;
+                final int bg;
+                final int br;
+                if (frameReady) {
+                    fg = palette.accent;
+                    bg = palette.accentSoft;
+                    br = palette.accentBorder;
+                } else if (link.state == AccessoryLink.State.CONNECTED) {
+                    fg = palette.positive;
+                    bg = palette.positiveSoft;
+                    br = palette.positiveBorder;
+                } else if (link.state == AccessoryLink.State.AUTHORIZING) {
+                    fg = palette.warning;
+                    bg = palette.warningSoft;
+                    br = palette.warningBorder;
+                } else if (link.state == AccessoryLink.State.ERROR) {
+                    fg = palette.danger;
+                    bg = palette.dangerSoft;
+                    br = palette.dangerBorder;
+                } else {
+                    fg = palette.inkSecondary;
+                    bg = palette.subtle;
+                    br = palette.hairline;
+                }
+                topStatusTextView.setTextColor(fg);
+                topStatusBadgeView.setBackground(StudioDrawables.pill(this, bg, br, 0.8f));
             }
         }
 
@@ -1592,13 +1516,6 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
                 isPhone);
         }
 
-        if (eyebrowDotView != null) {
-            eyebrowDotView.setBackgroundColor(accent);
-        }
-        if (eyebrowView != null) {
-            setTextIfChanged(eyebrowView, statusEyebrow());
-            eyebrowView.setTextColor(accent);
-        }
         setTextIfChanged(statusTitleView, statusTitle());
         setTextIfChanged(statusDetailView, statusDetail());
 
@@ -1628,23 +1545,19 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
                 setTextIfChanged(settingsCodecHintView, "选择传输编码偏好，默认自动优先使用 HEVC 硬件解码");
             }
         }
-        if (!preferredCodec.equals(lastSelectedCodecCard)) {
-            lastSelectedCodecCard = preferredCodec;
+        final String codecRenderKey = palette.dark + "|" + preferredCodec;
+        if (!codecRenderKey.equals(lastSelectedCodecCard)) {
+            lastSelectedCodecCard = codecRenderKey;
             for (int index = 0; index < codecOptionCards.size() && index < CODEC_VALUES.length; index++) {
                 final boolean selected = preferredCodec.equals(CODEC_VALUES[index]);
                 codecOptionCards.get(index).setBackground(StudioDrawables.card(
                     this,
-                    selected ? StudioDrawables.COLOR_ROSE_WASH : StudioDrawables.COLOR_WHITE,
-                    selected ? StudioDrawables.COLOR_ROSE_BORDER : StudioDrawables.COLOR_HAIRLINE,
-                    3f, 0.8f));
-                codecOptionDots.get(index).setBackground(StudioDrawables.squareIndicator(
-                    this,
-                    selected ? StudioDrawables.COLOR_CRIMSON : Color.TRANSPARENT,
-                    selected ? StudioDrawables.COLOR_CRIMSON : StudioDrawables.COLOR_INK_SUBTLE,
-                    0.8f));
+                    selected ? palette.accentSoft : palette.surface,
+                    selected ? palette.accentBorder : palette.hairline,
+                    11f, 0.8f));
                 codecOptionTitles.get(index).setTypeface(selected ? Typeface.DEFAULT_BOLD : Typeface.DEFAULT);
-                codecOptionTitles.get(index).setTextColor(selected ? StudioDrawables.COLOR_CRIMSON : StudioDrawables.COLOR_INK);
-                codecOptionSubtitles.get(index).setTextColor(selected ? StudioDrawables.COLOR_CRIMSON : StudioDrawables.COLOR_INK_MUTED);
+                codecOptionTitles.get(index).setTextColor(selected ? palette.accent : palette.ink);
+                codecOptionSubtitles.get(index).setTextColor(selected ? palette.accent : palette.inkMuted);
             }
         }
 
@@ -1656,7 +1569,7 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
         }
 
         if (whisperDotView != null) {
-            whisperDotView.setBackgroundColor(accent);
+            whisperDotView.setBackground(StudioDrawables.circleDot(dotColor));
         }
         if (whisperCodecView != null) {
             final String codecPart = !activeCodec.isEmpty() ? activeCodec : preferredCodec.toUpperCase(Locale.US);
@@ -1728,55 +1641,45 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
             return "等待 USB 配件授权";
         }
         if (link.state == AccessoryLink.State.CONNECTED) {
-            return frameReady ? "扩展显示运行中" : "正在准备画面";
+            return frameReady ? "扩展桌面已就绪" : "正在准备画面";
         }
-        return "等待 USB 有线接入";
+        return "连接数据线即可扩展";
     }
 
     private String statusDetail() {
         if (link.state == AccessoryLink.State.ERROR) {
             return link.message.contains("permission")
                 ? "点按下方重试，并在系统提示弹窗中允许 USB 配件连接。"
-                : "请检查 Mac 端 DeskMate 状态与 USB 数据线连接后重试。";
+                : "请检查电脑端 DeskMate 状态与 USB 数据线连接后重试。";
         }
         if (link.state == AccessoryLink.State.AUTHORIZING) {
             return "请在系统提示弹窗中点击允许，建立高速 USB 配件通信通道。";
         }
         if (link.state == AccessoryLink.State.CONNECTED) {
             return frameReady
-                ? "扩展桌面已建立并保持实时推流，可随时进入全屏扩展画面。"
+                ? "已建立低延迟有线扩展桌面，可随时进入全屏画面与反向触控。"
                 : "USB 已连接，正在协商编码格式与虚拟显示器首帧画面。";
         }
         if (isPhone) {
-            return "连接 Mac 后将自动匹配手机比例创建虚拟扩展屏，进入连接后自动横屏，支持低延迟画面与反向触控。";
+            return "连接电脑后将自动匹配手机比例创建虚拟扩展屏，出画后自动切换横屏，支持低延迟画面与反向触控。";
         }
-        return "连接 Mac 后将自动匹配平板比例创建虚拟扩展屏，支持低延迟画面与反向触控。";
+        return "连接电脑后将自动匹配平板比例创建虚拟扩展屏，支持低延迟画面与反向触控。";
     }
 
-    private String statusEyebrow() {
+    private int statusAccentColor() {
+        if (frameReady) {
+            return palette.accent;
+        }
         if (link.state == AccessoryLink.State.CONNECTED) {
-            return frameReady ? "STREAMING // 画面就绪" : "USB LINKED // 已连接";
+            return palette.positive;
+        }
+        if (link.state == AccessoryLink.State.AUTHORIZING) {
+            return palette.warning;
         }
         if (link.state == AccessoryLink.State.ERROR) {
-            return "FAULT // 连接异常";
+            return palette.danger;
         }
-        if (link.state == AccessoryLink.State.AUTHORIZING) {
-            return "AUTH // 等待配件授权";
-        }
-        return "STANDBY // 等待 USB 接入";
-    }
-
-    private int statusAccent() {
-        if (frameReady) {
-            return StudioDrawables.COLOR_JADE;
-        }
-        if (link.state == AccessoryLink.State.ERROR || link.state == AccessoryLink.State.CONNECTED) {
-            return StudioDrawables.COLOR_CRIMSON;
-        }
-        if (link.state == AccessoryLink.State.AUTHORIZING) {
-            return StudioDrawables.COLOR_AMBER;
-        }
-        return StudioDrawables.COLOR_INK_SUBTLE;
+        return palette.inkMuted;
     }
 
     private String codecDisplayName(String value) {
@@ -1796,66 +1699,33 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
         return "auto";
     }
 
-    private View makePageHeader(String eyebrow, String titleText, float titleSp) {
-        final LinearLayout col = new LinearLayout(this);
-        col.setOrientation(LinearLayout.VERTICAL);
-
-        final TextView eye = new TextView(this);
-        eye.setText(eyebrow);
-        eye.setTextSize(TypedValue.COMPLEX_UNIT_SP, 10f);
-        eye.setTypeface(Typeface.DEFAULT_BOLD);
-        eye.setLetterSpacing(0.11f);
-        eye.setTextColor(StudioDrawables.COLOR_CRIMSON);
-        col.addView(eye, bottomMarginLp(4f));
-
+    private View makePageHeader(String titleText, float titleSp) {
         final TextView title = new TextView(this);
         title.setText(titleText);
         title.setTextSize(TypedValue.COMPLEX_UNIT_SP, titleSp);
-        title.setTextColor(StudioDrawables.COLOR_INK);
-        col.addView(title);
-        return col;
+        title.setTypeface(Typeface.DEFAULT_BOLD);
+        title.setTextColor(palette.ink);
+        return title;
     }
 
-    private View makeSectionHeader(String en, String zh) {
-        final LinearLayout row = new LinearLayout(this);
-        row.setOrientation(LinearLayout.HORIZONTAL);
-        row.setGravity(Gravity.CENTER_VERTICAL);
-        row.setPadding(0, dp(4f), 0, dp(2f));
-
-        final TextView enTv = new TextView(this);
-        enTv.setText(en);
-        enTv.setTextSize(TypedValue.COMPLEX_UNIT_SP, 10.5f);
-        enTv.setTypeface(Typeface.DEFAULT_BOLD);
-        enTv.setLetterSpacing(0.11f);
-        enTv.setTextColor(StudioDrawables.COLOR_CRIMSON);
-        row.addView(enTv, rightMarginLp(6f));
-
-        final TextView slash = new TextView(this);
-        slash.setText("/");
-        slash.setTextSize(TypedValue.COMPLEX_UNIT_SP, 10.5f);
-        slash.setTextColor(StudioDrawables.COLOR_HAIRLINE);
-        row.addView(slash, rightMarginLp(6f));
-
-        final TextView zhTv = new TextView(this);
-        zhTv.setText(zh);
-        zhTv.setTextSize(TypedValue.COMPLEX_UNIT_SP, 11.5f);
-        zhTv.setTypeface(Typeface.DEFAULT_BOLD);
-        zhTv.setTextColor(StudioDrawables.COLOR_INK);
-        row.addView(zhTv, rightMarginLp(10f));
-
-        final View line = makeHairlineDivider(StudioDrawables.COLOR_HAIRLINE, 0.8f);
-        row.addView(line, new LinearLayout.LayoutParams(0, Math.max(1, dp(0.8f)), 1f));
-        return row;
+    private View makeSectionHeader(String titleText) {
+        final TextView tv = new TextView(this);
+        tv.setText(titleText);
+        tv.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f);
+        tv.setTypeface(Typeface.DEFAULT_BOLD);
+        tv.setTextColor(palette.ink);
+        tv.setPadding(0, dp(4f), 0, dp(2f));
+        return tv;
     }
 
     private View makePrimaryButton(String label, boolean fullWidth, Runnable onTap) {
         final LinearLayout btn = new LinearLayout(this);
         btn.setOrientation(LinearLayout.HORIZONTAL);
         btn.setGravity(Gravity.CENTER);
-        btn.setBackground(StudioDrawables.primaryButton(this));
+        btn.setBackground(StudioDrawables.primaryButton(this, palette));
         btn.setPadding(
-            dp(fullWidth ? 18f : 20f), dp(fullWidth ? 12f : 10f),
-            dp(fullWidth ? 18f : 20f), dp(fullWidth ? 13f : 11f));
+            dp(fullWidth ? 18f : 22f), dp(fullWidth ? 12f : 10f),
+            dp(fullWidth ? 18f : 22f), dp(fullWidth ? 12f : 10f));
         btn.setLayoutParams(new LinearLayout.LayoutParams(
             fullWidth ? ViewGroup.LayoutParams.MATCH_PARENT : ViewGroup.LayoutParams.WRAP_CONTENT,
             ViewGroup.LayoutParams.WRAP_CONTENT));
@@ -1864,44 +1734,42 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
         tv.setText(label);
         tv.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13.5f);
         tv.setTypeface(Typeface.DEFAULT_BOLD);
-        tv.setLetterSpacing(0.04f);
-        tv.setTextColor(StudioDrawables.COLOR_WHITE);
-        btn.addView(tv, rightMarginLp(10f));
+        tv.setTextColor(palette.accentFg);
+        btn.addView(tv, rightMarginLp(8f));
 
         final TextView arrow = new TextView(this);
         arrow.setText("→");
         arrow.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13.5f);
-        arrow.setTextColor(StudioDrawables.COLOR_WHITE);
+        arrow.setTextColor(palette.accentFg);
         btn.addView(arrow);
 
         btn.setOnClickListener(v -> onTap.run());
         return btn;
     }
 
-    private View makeSmallActionButton(String label, boolean roseAccent, Runnable onTap) {
+    private View makeSmallActionButton(String label, boolean accentTone, Runnable onTap) {
         final TextView btn = new TextView(this);
         btn.setText(label);
-        btn.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f);
-        btn.setTypeface(roseAccent ? Typeface.DEFAULT_BOLD : Typeface.DEFAULT);
-        btn.setTextColor(roseAccent ? StudioDrawables.COLOR_CRIMSON : StudioDrawables.COLOR_INK);
+        btn.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12.5f);
+        btn.setTypeface(accentTone ? Typeface.DEFAULT_BOLD : Typeface.DEFAULT);
+        btn.setTextColor(accentTone ? palette.accent : palette.ink);
         btn.setGravity(Gravity.CENTER);
-        btn.setPadding(dp(12f), 0, dp(12f), 0);
+        btn.setPadding(dp(14f), 0, dp(14f), 0);
         btn.setBackground(StudioDrawables.card(
             this,
-            roseAccent ? StudioDrawables.COLOR_ROSE_WASH : StudioDrawables.COLOR_WHITE,
-            roseAccent ? StudioDrawables.COLOR_ROSE_BORDER : StudioDrawables.COLOR_HAIRLINE,
-            3f, 0.8f));
+            accentTone ? palette.accentSoft : palette.surface,
+            accentTone ? palette.accentBorder : palette.hairline,
+            11f, 0.8f));
         btn.setLayoutParams(new LinearLayout.LayoutParams(
-            ViewGroup.LayoutParams.WRAP_CONTENT, dp(34f)));
+            ViewGroup.LayoutParams.WRAP_CONTENT, dp(36f)));
         btn.setOnClickListener(v -> onTap.run());
         return btn;
     }
 
     private void styleSwitch(Switch sw, boolean checked) {
-        sw.setThumbTintList(ColorStateList.valueOf(
-            checked ? StudioDrawables.COLOR_WHITE : StudioDrawables.COLOR_SUBTLE));
+        sw.setThumbTintList(ColorStateList.valueOf(Color.WHITE));
         sw.setTrackTintList(ColorStateList.valueOf(
-            checked ? StudioDrawables.COLOR_CRIMSON : StudioDrawables.COLOR_HAIRLINE));
+            checked ? palette.accent : palette.hairline));
     }
 
     private TextView makeHudText(String text, int color, float sp, boolean bold) {

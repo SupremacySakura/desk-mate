@@ -428,7 +428,6 @@ final class AppController: NSObject, NSApplicationDelegate {
         let popover = NSPopover()
         popover.behavior = .transient
         popover.animates = true
-        popover.appearance = NSAppearance(named: .aqua)
         popover.contentViewController = NSHostingController(rootView: MenuBarPopoverView(
             model: windowModel,
             setVideo: { [weak self] enabled in self?.setVideo(enabled) },
@@ -785,7 +784,7 @@ final class AppController: NSObject, NSApplicationDelegate {
     }
 
     private func installWindow() {
-        let frame = NSRect(x: 0, y: 0, width: 960, height: 620)
+        let frame = NSRect(x: 0, y: 0, width: 960, height: 660)
         let window = NSWindow(
             contentRect: frame,
             styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
@@ -796,9 +795,13 @@ final class AppController: NSObject, NSApplicationDelegate {
         window.titleVisibility = .hidden
         window.titlebarAppearsTransparent = true
         window.isMovableByWindowBackground = true
-        window.appearance = NSAppearance(named: .aqua)
-        window.backgroundColor = NSColor(srgbRed: 0.988, green: 0.984, blue: 0.973, alpha: 1.0)
-        window.contentMinSize = NSSize(width: 820, height: 520)
+        window.backgroundColor = NSColor(name: nil) { appearance in
+            let isDark = appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+            return isDark
+                ? NSColor(srgbRed: 0.067, green: 0.071, blue: 0.078, alpha: 1.0) // #111214
+                : NSColor(srgbRed: 0.961, green: 0.961, blue: 0.953, alpha: 1.0) // #F5F5F3
+        }
+        window.contentMinSize = NSSize(width: 820, height: 540)
         window.isReleasedWhenClosed = false
         window.center()
 

@@ -115,15 +115,6 @@ struct HostWindow: View {
         case devices = "设备"
         case settings = "设置"
         case diagnostics = "诊断"
-
-        var englishTag: String {
-            switch self {
-            case .display: return "DISPLAY"
-            case .devices: return "DEVICES"
-            case .settings: return "SETTINGS"
-            case .diagnostics: return "LOGS"
-            }
-        }
     }
 
     @ObservedObject var model: HostWindowModel
@@ -169,10 +160,12 @@ struct HostWindow: View {
 
     private var badgeTone: StudioTone {
         if state.badge == "会话已建立" || state.badge.contains("运行中") || state.badge == "测试模式" {
-            return .crimson
+            return .accent
         }
         switch state.badge {
-        case "出错", "待授权", "未就绪", "已拦截":
+        case "出错":
+            return .danger
+        case "待授权", "未就绪", "已拦截":
             return .warning
         case "USB 已连接":
             return .positive
@@ -193,65 +186,75 @@ struct HostWindow: View {
 
                 Rectangle()
                     .fill(StudioPalette.hairline)
-                    .frame(height: 0.75)
+                    .frame(height: 1.0)
 
-                HStack(alignment: .top, spacing: 24) {
-                    leftTopologyColumn
-                        .frame(width: 368)
-
-                    rightContentColumn
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                ScrollView(.vertical, showsIndicators: false) {
+                    VStack(alignment: .leading, spacing: 16) {
+                        switch model.page {
+                        case .display:
+                            displayOverviewContent
+                        case .devices:
+                            devicesContent
+                        case .settings:
+                            settingsContent
+                        case .diagnostics:
+                            diagnosticsContent
+                        }
+                    }
+                    .frame(maxWidth: model.page == .display ? 940 : 800, alignment: .leading)
+                    .padding(.horizontal, 24)
+                    .padding(.vertical, 18)
+                    .frame(maxWidth: .infinity)
                 }
-                .padding(.horizontal, 24)
-                .padding(.top, 14)
-                .padding(.bottom, 12)
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
 
                 Rectangle()
                     .fill(StudioPalette.hairline)
-                    .frame(height: 0.75)
+                    .frame(height: 1.0)
 
                 whisperBar
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
-        .frame(minWidth: 820, minHeight: 520)
+        .frame(minWidth: 820, minHeight: 540)
     }
 
-    // MARK: - Top Navigation Bar
+    // MARK: - Top Bar (Quiet Squircle Centered Pill Nav)
 
     private var topBar: some View {
-        HStack(spacing: 16) {
+        ZStack {
             HStack(spacing: 12) {
-                DualDisplayGlyph(linked: state.linked, streaming: streaming, size: 34)
+                HStack(spacing: 10) {
+                    DualDisplayGlyph(linked: state.linked, streaming: streaming, size: 32)
 
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("DESKMATE // USB HOST")
-                        .font(.system(size: 9.5, weight: .semibold, design: .monospaced))
-                        .tracking(1.4)
-                        .foregroundStyle(StudioPalette.inkMuted)
+                    Text("DeskMate")
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundStyle(StudioPalette.ink)
 
-                    HStack(spacing: 10) {
-                        Text("桌面副屏工作台")
-                            .font(.system(size: 14.5, weight: .medium))
-                            .foregroundStyle(StudioPalette.ink)
-
-                        StudioStatusBadge(text: state.badge, tone: badgeTone)
-                    }
+                    StudioStatusBadge(text: state.badge, tone: badgeTone)
                 }
+
+                Spacer(minLength: 16)
+
+                Text(usbChannelText)
+                    .font(.system(size: 11.5))
+                    .foregroundStyle(StudioPalette.inkMuted)
+                    .lineLimit(1)
             }
 
-            Spacer(minLength: 16)
-
-            HStack(spacing: 18) {
+            // Centered pill navigation
+            HStack(spacing: 2) {
                 ForEach(Page.allCases, id: \.self) { tab in
                     topTabButton(tab)
                 }
             }
+            .padding(3)
+            .background(Capsule().fill(StudioPalette.subtleSurface))
+            .overlay(Capsule().stroke(StudioPalette.softHairline, lineWidth: 1.0))
         }
-        .padding(.horizontal, 24)
+        .padding(.leading, 78)
+        .padding(.trailing, 20)
         .padding(.vertical, 10)
-        .background(StudioPalette.cardSurface.opacity(0.75))
+        .background(StudioPalette.cardSurface)
     }
 
     private func topTabButton(_ tab: Page) -> some View {
@@ -259,32 +262,47 @@ struct HostWindow: View {
         return Button {
             model.page = tab
         } label: {
-            VStack(spacing: 5) {
-                HStack(spacing: 5) {
-                    Rectangle()
-                        .fill(active ? StudioPalette.crimson : Color.clear)
-                        .frame(width: 4, height: 4)
-
-                    Text("\(tab.englishTag) / \(tab.rawValue)")
-                        .font(.system(size: 11, weight: active ? .semibold : .regular))
-                        .foregroundStyle(active ? StudioPalette.crimson : StudioPalette.inkMuted)
-                        .lineLimit(1)
-                        .fixedSize(horizontal: true, vertical: false)
-                }
-
-                Rectangle()
-                    .fill(active ? StudioPalette.crimson : Color.clear)
-                    .frame(height: 1.5)
-            }
-            .contentShape(Rectangle())
+            Text(tab.rawValue)
+                .font(.system(size: 12, weight: .medium))
+                .foregroundStyle(active ? StudioPalette.ink : StudioPalette.inkSecondary)
+                .padding(.horizontal, 14)
+                .padding(.vertical, 5.5)
+                .background(
+                    Capsule()
+                        .fill(active ? StudioPalette.cardSurface : Color.clear)
+                        .shadow(color: active ? Color.black.opacity(0.06) : Color.clear, radius: 2, x: 0, y: 1)
+                )
+                .contentShape(Capsule())
         }
         .buttonStyle(.plain)
     }
 
-    // MARK: - Left Topology Column
+    private var usbChannelText: String {
+        if !state.serviceRunning {
+            return "服务已停止"
+        }
+        if let blocked = state.blockedDeviceName, !blocked.isEmpty, state.activeSessions.isEmpty {
+            return "\(blocked) · 已拦截"
+        }
+        if state.activeSessions.count > 1 {
+            return "已接入 \(state.activeSessions.count) 台设备"
+        }
+        if state.linked {
+            if let name = state.connectedDeviceName, !name.isEmpty {
+                return "\(name) · USB-C 直连"
+            }
+            return "USB-C 直连就绪"
+        }
+        return "等待 USB 接入"
+    }
 
-    private var leftTopologyColumn: some View {
-        VStack(spacing: 9) {
+    // MARK: - Overview Page (Canvas-First + Twin Flat Control Dock)
+
+    private var displayOverviewContent: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            actionCalloutIfNeeded
+            updateCalloutIfNeeded
+
             SpatialDisplayArrangerView(
                 interaction: model.topologyInteraction,
                 linked: state.linked,
@@ -304,191 +322,106 @@ struct HostWindow: View {
                 onRefreshDisplays: refreshDisplays
             )
 
-            // Compact runtime summary strip below topology schematic
-            VStack(spacing: 0) {
-                metaRow(label: "USB 通道", value: usbChannelText, highlight: state.linked)
-                Rectangle().fill(StudioPalette.softHairline).frame(height: 0.75)
-                metaRow(label: "画面管线", value: state.video, highlight: streaming)
-                Rectangle().fill(StudioPalette.softHairline).frame(height: 0.75)
-                metaRow(label: "触控通道", value: state.input, highlight: state.inputEnabled && state.inputPermission)
-            }
-            .background(StudioPalette.cardSurface)
-            .clipShape(RoundedRectangle(cornerRadius: StudioPalette.cardRadius, style: .continuous))
-            .overlay(
-                RoundedRectangle(cornerRadius: StudioPalette.cardRadius, style: .continuous)
-                    .stroke(StudioPalette.hairline, lineWidth: 0.75)
-            )
-
-            Spacer(minLength: 0)
-        }
-    }
-
-    private var usbChannelText: String {
-        if !state.serviceRunning {
-            return "服务已停止"
-        }
-        if let blocked = state.blockedDeviceName, !blocked.isEmpty, state.activeSessions.isEmpty {
-            return "\(blocked) · 已拦截"
-        }
-        if state.activeSessions.count > 1 {
-            return "已接入 \(state.activeSessions.count) 台设备"
-        }
-        if state.linked {
-            if let name = state.connectedDeviceName, !name.isEmpty {
-                return "\(name) · AOA 直连"
-            }
-            return "AOA 直连已就绪"
-        }
-        return "等待设备接入"
-    }
-
-    private func metaRow(label: String, value: String, highlight: Bool) -> some View {
-        HStack(spacing: 8) {
-            Text(label)
-                .font(.system(size: 11))
-                .foregroundStyle(StudioPalette.inkMuted)
-            Spacer(minLength: 8)
-            Text(value)
-                .font(.system(size: 11.5, weight: highlight ? .medium : .regular))
-                .foregroundStyle(highlight ? StudioPalette.ink : StudioPalette.inkSecondary)
-                .lineLimit(1)
-                .truncationMode(.tail)
-        }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 6.5)
-    }
-
-    // MARK: - Right Content Column
-
-    @ViewBuilder
-    private var rightContentColumn: some View {
-        ScrollView(.vertical, showsIndicators: false) {
-            VStack(alignment: .leading, spacing: 18) {
-                switch model.page {
-                case .display:
-                    displayOverviewContent
-                case .devices:
-                    devicesContent
-                case .settings:
-                    settingsContent
-                case .diagnostics:
-                    diagnosticsContent
-                }
-            }
-            .padding(.bottom, 8)
-        }
-    }
-
-    // MARK: - Overview Page
-
-    private var displayOverviewContent: some View {
-        VStack(alignment: .leading, spacing: 13) {
-            // Editorial state headline
-            VStack(alignment: .leading, spacing: 4) {
-                Text("SESSION // 运行状态")
-                    .font(.system(size: 10, weight: .semibold, design: .monospaced))
-                    .tracking(1.4)
-                    .foregroundStyle(StudioPalette.crimson)
-
-                Text(state.title)
-                    .font(.system(size: 21, weight: .light))
-                    .foregroundStyle(StudioPalette.ink)
-                    .fixedSize(horizontal: false, vertical: true)
-
-                Text(state.guidance)
-                    .font(.system(size: 12))
-                    .foregroundStyle(StudioPalette.inkSecondary)
-                    .lineSpacing(2.5)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-
-            // Contextual action / authorization bar when needed
-            actionCalloutIfNeeded
-
-            updateCalloutIfNeeded
-
             if !state.activeSessions.isEmpty {
                 activeSessionsSection
             }
 
-            // Telemetry bar
-            VStack(alignment: .leading, spacing: 8) {
-                StudioSectionHeader(english: "TELEMETRY", chinese: "实时性能")
+            // 3-column live telemetry bar
+            HStack(spacing: 0) {
+                metricCell(
+                    title: "实时帧率",
+                    value: state.liveFps > 0 ? "\(state.liveFps)" : "—",
+                    unit: state.liveFps > 0 ? "FPS" : "待机",
+                    accent: streaming && state.liveFps > 0
+                )
 
-                HStack(spacing: 0) {
-                    metricCell(
-                        title: "帧率 FPS",
-                        value: state.liveFps > 0 ? "\(state.liveFps)" : "—",
-                        unit: state.liveFps > 0 ? "fps" : "待机",
-                        accent: streaming && state.liveFps > 0
-                    )
+                Rectangle()
+                    .fill(StudioPalette.softHairline)
+                    .frame(width: 1.0, height: 34)
 
-                    Rectangle()
-                        .fill(StudioPalette.softHairline)
-                        .frame(width: 0.75, height: 36)
+                metricCell(
+                    title: "传输码率",
+                    value: state.liveBitrateMbps > 0 ? String(format: "%.1f", state.liveBitrateMbps) : "—",
+                    unit: state.liveBitrateMbps > 0 ? "Mbps" : "待机",
+                    accent: false
+                )
 
-                    metricCell(
-                        title: "码率 BITRATE",
-                        value: state.liveBitrateMbps > 0 ? String(format: "%.1f", state.liveBitrateMbps) : "—",
-                        unit: state.liveBitrateMbps > 0 ? "Mbps" : "待机",
-                        accent: false
-                    )
+                Rectangle()
+                    .fill(StudioPalette.softHairline)
+                    .frame(width: 1.0, height: 34)
 
-                    Rectangle()
-                        .fill(StudioPalette.softHairline)
-                        .frame(width: 0.75, height: 36)
-
-                    metricCell(
-                        title: "反向触控",
-                        value: state.inputEnabled ? "\(state.inputEventCount)" : "关闭",
-                        unit: state.inputEnabled ? "次事件" : "已禁用",
-                        accent: false
-                    )
-                }
-                .padding(.vertical, 9.5)
-                .background(StudioPalette.cardSurface)
-                .clipShape(RoundedRectangle(cornerRadius: StudioPalette.cardRadius, style: .continuous))
-                .overlay(
-                    RoundedRectangle(cornerRadius: StudioPalette.cardRadius, style: .continuous)
-                        .stroke(StudioPalette.hairline, lineWidth: 0.75)
+                metricCell(
+                    title: "反向触控",
+                    value: state.inputEnabled ? "\(state.inputEventCount)" : "关闭",
+                    unit: state.inputEnabled ? "次事件" : "已禁用",
+                    accent: false
                 )
             }
+            .padding(.vertical, 12)
+            .background(StudioPalette.cardSurface)
+            .clipShape(RoundedRectangle(cornerRadius: StudioPalette.cardRadius, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: StudioPalette.cardRadius, style: .continuous)
+                    .stroke(StudioPalette.hairline, lineWidth: 1.0)
+            )
 
-            // Quick controls
-            VStack(alignment: .leading, spacing: 8) {
-                StudioSectionHeader(english: "CONTROLS", chinese: "快速控制")
-
+            // Twin Flat Control Dock
+            HStack(alignment: .top, spacing: 14) {
+                // Left column: Video + Touch toggles + pipeline summary
                 VStack(spacing: 0) {
                     controlToggleRow(
-                        title: "视频画面推流",
-                        subtitle: "将虚拟显示器或指定画面编码发送至平板",
+                        title: "画面推流",
+                        subtitle: "编码发送扩展桌面至设备",
                         isOn: state.videoEnabled,
                         action: { setVideo(!state.videoEnabled) }
                     )
 
-                    Rectangle().fill(StudioPalette.softHairline).frame(height: 0.75)
+                    Rectangle().fill(StudioPalette.softHairline).frame(height: 1.0)
 
                     controlToggleRow(
                         title: "平板触控回传",
-                        subtitle: "当前模式：\(state.touchInputMode.displayName) · 可在「设置」中切换",
+                        subtitle: state.touchInputMode.displayName,
                         isOn: state.inputEnabled,
                         action: { setInput(!state.inputEnabled) }
                     )
 
-                    Rectangle().fill(StudioPalette.softHairline).frame(height: 0.75)
+                    Rectangle().fill(StudioPalette.softHairline).frame(height: 1.0)
 
-                    VStack(alignment: .leading, spacing: 7) {
-                        HStack(spacing: 8) {
-                            Text(state.activeSessions.count > 1 ? "当前选中副屏方位" : "虚拟副屏方位")
+                    HStack(spacing: 10) {
+                        Text("画面管线")
+                            .font(.system(size: 11.5))
+                            .foregroundStyle(StudioPalette.inkMuted)
+                        Spacer()
+                        Text(state.video)
+                            .font(.system(size: 11.5, weight: .medium))
+                            .foregroundStyle(streaming ? StudioPalette.ink : StudioPalette.inkSecondary)
+                            .lineLimit(1)
+                    }
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 10)
+                }
+                .frame(maxWidth: .infinity)
+                .background(StudioPalette.cardSurface)
+                .clipShape(RoundedRectangle(cornerRadius: StudioPalette.cardRadius, style: .continuous))
+                .overlay(
+                    RoundedRectangle(cornerRadius: StudioPalette.cardRadius, style: .continuous)
+                        .stroke(StudioPalette.hairline, lineWidth: 1.0)
+                )
+
+                // Right column: Position + Frame rate segments
+                VStack(alignment: .leading, spacing: 14) {
+                    VStack(alignment: .leading, spacing: 8) {
+                        HStack {
+                            Text(state.activeSessions.count > 1 ? "当前选中副屏方位" : "扩展方位")
                                 .font(.system(size: 12.5, weight: .medium))
                                 .foregroundStyle(StudioPalette.ink)
-                            Spacer(minLength: 8)
-                            Text("支持点选左侧拓扑图或下方快速切换")
-                                .font(.system(size: 10.5))
+                            Spacer()
+                            Text("主屏\(state.position.shortLabel)")
+                                .font(.system(size: 11))
                                 .foregroundStyle(StudioPalette.inkMuted)
                         }
 
-                        HStack(spacing: 8) {
+                        HStack(spacing: 6) {
                             ForEach(DisplayPosition.allCases, id: \.self) { pos in
                                 StudioSegmentOption(
                                     title: pos.shortLabel,
@@ -499,18 +432,40 @@ struct HostWindow: View {
                             }
                         }
                     }
-                    .padding(.horizontal, 14)
-                    .padding(.vertical, 9)
 
-                    Rectangle().fill(StudioPalette.softHairline).frame(height: 0.75)
+                    Rectangle().fill(StudioPalette.softHairline).frame(height: 1.0)
 
-                    frameRateControlRow
+                    VStack(alignment: .leading, spacing: 8) {
+                        HStack {
+                            Text("输出帧率上限")
+                                .font(.system(size: 12.5, weight: .medium))
+                                .foregroundStyle(StudioPalette.ink)
+                            Spacer()
+                            Text(frameRateSubtitleText)
+                                .font(.system(size: 11))
+                                .foregroundStyle(state.preferredFrameRateHz > 0 ? StudioPalette.accent : StudioPalette.inkMuted)
+                                .lineLimit(1)
+                        }
+
+                        HStack(spacing: 6) {
+                            ForEach(FrameRateOption.allCases) { opt in
+                                StudioSegmentOption(
+                                    title: opt.shortLabel,
+                                    active: state.preferredFrameRateHz == opt.rawValue,
+                                    expand: true,
+                                    action: { setPreferredFrameRate(opt.rawValue) }
+                                )
+                            }
+                        }
+                    }
                 }
+                .padding(14)
+                .frame(maxWidth: .infinity)
                 .background(StudioPalette.cardSurface)
                 .clipShape(RoundedRectangle(cornerRadius: StudioPalette.cardRadius, style: .continuous))
                 .overlay(
                     RoundedRectangle(cornerRadius: StudioPalette.cardRadius, style: .continuous)
-                        .stroke(StudioPalette.hairline, lineWidth: 0.75)
+                        .stroke(StudioPalette.hairline, lineWidth: 1.0)
                 )
             }
         }
@@ -518,10 +473,7 @@ struct HostWindow: View {
 
     private var activeSessionsSection: some View {
         VStack(alignment: .leading, spacing: 8) {
-            StudioSectionHeader(
-                english: "ACTIVE DISPLAYS",
-                chinese: "在线副屏（\(state.activeSessions.count)）"
-            )
+            StudioSectionHeader(title: "在线副屏（\(state.activeSessions.count)）", detail: "点选或拖动拓扑块切换目标")
 
             VStack(spacing: 8) {
                 ForEach(state.activeSessions) { session in
@@ -533,92 +485,90 @@ struct HostWindow: View {
 
     private func activeSessionCard(_ session: ActiveDisplaySessionState) -> some View {
         let isSelected = (state.selectedLinkID == session.linkID)
-        let sessionTone: StudioTone = session.streaming ? .crimson : (session.error != nil ? .warning : .positive)
+        let sessionTone: StudioTone = session.streaming ? .accent : (session.error != nil ? .warning : .positive)
 
-        return VStack(spacing: 0) {
-            HStack(spacing: 10) {
-                StudioDeviceGlyph(active: session.streaming || isSelected, allowed: true, size: 28)
+        return HStack(spacing: 12) {
+            StudioDeviceGlyph(active: session.streaming || isSelected, allowed: true, size: 32)
 
-                VStack(alignment: .leading, spacing: 3) {
-                    HStack(spacing: 7) {
-                        Text(session.deviceName)
-                            .font(.system(size: 12.5, weight: .medium))
-                            .foregroundStyle(StudioPalette.ink)
-                            .lineLimit(1)
+            VStack(alignment: .leading, spacing: 3) {
+                HStack(spacing: 7) {
+                    Text(session.deviceName)
+                        .font(.system(size: 13, weight: .medium))
+                        .foregroundStyle(StudioPalette.ink)
+                        .lineLimit(1)
 
-                        StudioStatusBadge(text: session.badge, tone: sessionTone)
+                    StudioStatusBadge(text: session.badge, tone: sessionTone)
 
-                        if isSelected && state.activeSessions.count > 1 {
-                            Text("已选中")
-                                .font(.system(size: 9.5, weight: .medium))
-                                .foregroundStyle(StudioPalette.crimson)
-                                .padding(.horizontal, 5)
-                                .padding(.vertical, 1.5)
-                                .background(StudioPalette.roseWash)
-                                .clipShape(RoundedRectangle(cornerRadius: 2, style: .continuous))
-                        }
-                    }
-
-                    HStack(spacing: 8) {
-                        if !session.streamSummary.isEmpty {
-                            Text(session.streamSummary)
-                                .font(.system(size: 10, design: .monospaced))
-                                .foregroundStyle(StudioPalette.inkSecondary)
-                        }
-                        if session.streaming && session.liveFps > 0 {
-                            Text(session.liveBitrateMbps > 0
-                                 ? String(format: "%d FPS · %.1f Mbps", session.liveFps, session.liveBitrateMbps)
-                                 : "\(session.liveFps) FPS")
-                                .font(.system(size: 10, weight: .semibold, design: .monospaced))
-                                .foregroundStyle(StudioPalette.crimson)
-                        }
-                        if let displayID = session.displayID {
-                            Text("#\(displayID)")
-                                .font(.system(size: 10, design: .monospaced))
-                                .foregroundStyle(StudioPalette.inkMuted)
-                        }
+                    if isSelected && state.activeSessions.count > 1 {
+                        Text("已选中")
+                            .font(.system(size: 10, weight: .medium))
+                            .foregroundStyle(StudioPalette.accent)
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 2)
+                            .background(Capsule().fill(StudioPalette.accentSoft))
                     }
                 }
 
-                Spacer(minLength: 6)
-
-                HStack(spacing: 4) {
-                    ForEach(DisplayPosition.allCases, id: \.self) { pos in
-                        let active = (session.position == pos)
-                        Button {
-                            setLinkPosition(session.linkID, pos)
-                        } label: {
-                            Text(pos.shortLabel)
-                                .font(.system(size: 10, weight: active ? .semibold : .regular))
-                                .foregroundStyle(active ? StudioPalette.crimson : StudioPalette.inkMuted)
-                                .padding(.horizontal, 6)
-                                .padding(.vertical, 3.5)
-                                .background(
-                                    RoundedRectangle(cornerRadius: 2.5, style: .continuous)
-                                        .fill(active ? StudioPalette.roseWash : StudioPalette.subtleSurface)
-                                )
-                                .overlay(
-                                    RoundedRectangle(cornerRadius: 2.5, style: .continuous)
-                                        .stroke(active ? StudioPalette.roseBorder : StudioPalette.hairline, lineWidth: 0.6)
-                                )
-                        }
-                        .buttonStyle(.plain)
+                HStack(spacing: 8) {
+                    if !session.streamSummary.isEmpty {
+                        Text(session.streamSummary)
+                            .font(.system(size: 11, design: .monospaced))
+                            .foregroundStyle(StudioPalette.inkSecondary)
+                    }
+                    if session.streaming && session.liveFps > 0 {
+                        Text(session.liveBitrateMbps > 0
+                             ? String(format: "%d FPS · %.1f Mbps", session.liveFps, session.liveBitrateMbps)
+                             : "\(session.liveFps) FPS")
+                            .font(.system(size: 11, weight: .medium, design: .monospaced))
+                            .monospacedDigit()
+                            .foregroundStyle(StudioPalette.accent)
+                    }
+                    if let displayID = session.displayID {
+                        Text("#\(displayID)")
+                            .font(.system(size: 11, design: .monospaced))
+                            .foregroundStyle(StudioPalette.inkMuted)
                     }
                 }
-
-                Button("断开") {
-                    disconnectLink(session.linkID)
-                }
-                .buttonStyle(StudioSecondaryButtonStyle())
             }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 9)
+
+            Spacer(minLength: 8)
+
+            HStack(spacing: 4) {
+                ForEach(DisplayPosition.allCases, id: \.self) { pos in
+                    let active = (session.position == pos)
+                    Button {
+                        setLinkPosition(session.linkID, pos)
+                    } label: {
+                        Text(pos.shortLabel)
+                            .font(.system(size: 10.5, weight: .medium))
+                            .foregroundStyle(active ? StudioPalette.accent : StudioPalette.inkSecondary)
+                            .padding(.horizontal, 7)
+                            .padding(.vertical, 4)
+                            .background(
+                                RoundedRectangle(cornerRadius: 7, style: .continuous)
+                                    .fill(active ? StudioPalette.accentSoft : StudioPalette.subtleSurface)
+                            )
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 7, style: .continuous)
+                                    .stroke(active ? StudioPalette.accentBorder : StudioPalette.softHairline, lineWidth: 1.0)
+                            )
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+
+            Button("断开") {
+                disconnectLink(session.linkID)
+            }
+            .buttonStyle(StudioSecondaryButtonStyle())
         }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 10)
         .background(StudioPalette.cardSurface)
         .clipShape(RoundedRectangle(cornerRadius: StudioPalette.cardRadius, style: .continuous))
         .overlay(
             RoundedRectangle(cornerRadius: StudioPalette.cardRadius, style: .continuous)
-                .stroke(isSelected ? StudioPalette.roseBorder : StudioPalette.hairline, lineWidth: isSelected ? 1.0 : 0.75)
+                .stroke(isSelected ? StudioPalette.accentBorder : StudioPalette.hairline, lineWidth: isSelected ? 1.4 : 1.0)
         )
         .contentShape(Rectangle())
         .onTapGesture {
@@ -635,57 +585,57 @@ struct HostWindow: View {
 
         if stopped {
             HStack(spacing: 12) {
-                VStack(alignment: .leading, spacing: 3) {
+                VStack(alignment: .leading, spacing: 2) {
                     Text("串流服务当前处于停止状态")
-                        .font(.system(size: 12, weight: .semibold))
+                        .font(.system(size: 12.5, weight: .semibold))
                         .foregroundStyle(StudioPalette.ink)
                     Text("启动服务后将监听 USB 接入并按偏好创建虚拟显示器。")
-                        .font(.system(size: 11))
+                        .font(.system(size: 11.5))
                         .foregroundStyle(StudioPalette.inkSecondary)
                 }
                 Spacer(minLength: 10)
                 Button("启动串流服务") { setServiceRunning(true) }
                     .buttonStyle(StudioPrimaryButtonStyle())
             }
-            .padding(.horizontal, 14)
-            .padding(.vertical, 10)
+            .padding(.horizontal, 16)
+            .padding(.vertical, 12)
             .background(
                 RoundedRectangle(cornerRadius: StudioPalette.cardRadius, style: .continuous)
                     .fill(StudioPalette.subtleSurface)
             )
             .overlay(
                 RoundedRectangle(cornerRadius: StudioPalette.cardRadius, style: .continuous)
-                    .stroke(StudioPalette.hairline, lineWidth: 0.75)
+                    .stroke(StudioPalette.hairline, lineWidth: 1.0)
             )
         } else if hasBlocked, let blocked = state.blockedDeviceName {
             HStack(spacing: 12) {
-                VStack(alignment: .leading, spacing: 3) {
+                VStack(alignment: .leading, spacing: 2) {
                     Text("已阻止连接：\(blocked)")
-                        .font(.system(size: 12, weight: .semibold))
+                        .font(.system(size: 12.5, weight: .semibold))
                         .foregroundStyle(StudioPalette.ink)
-                    Text("该设备已在「已配对设备」中设为禁止连接。")
-                        .font(.system(size: 11))
+                    Text("该设备已在「设备」列表中设为禁止连接。")
+                        .font(.system(size: 11.5))
                         .foregroundStyle(StudioPalette.inkSecondary)
                 }
                 Spacer(minLength: 10)
                 Button("前往设备列表") { model.page = .devices }
                     .buttonStyle(StudioSecondaryButtonStyle())
             }
-            .padding(.horizontal, 14)
-            .padding(.vertical, 10)
+            .padding(.horizontal, 16)
+            .padding(.vertical, 12)
             .background(
                 RoundedRectangle(cornerRadius: StudioPalette.cardRadius, style: .continuous)
-                    .fill(StudioPalette.amberWash)
+                    .fill(StudioPalette.warningWash)
             )
             .overlay(
                 RoundedRectangle(cornerRadius: StudioPalette.cardRadius, style: .continuous)
-                    .stroke(StudioTone.warning.border, lineWidth: 0.75)
+                    .stroke(StudioPalette.warningBorder, lineWidth: 1.0)
             )
         } else if missingScreen || missingInput || state.canRetry {
             HStack(spacing: 12) {
-                VStack(alignment: .leading, spacing: 3) {
+                VStack(alignment: .leading, spacing: 2) {
                     Text(missingScreen ? "需要屏幕录制权限" : (missingInput ? "需要辅助功能权限" : "连接维护"))
-                        .font(.system(size: 12, weight: .semibold))
+                        .font(.system(size: 12.5, weight: .semibold))
                         .foregroundStyle(StudioPalette.ink)
 
                     Text(
@@ -693,7 +643,7 @@ struct HostWindow: View {
                         ? (state.needsRestart ? "如已在系统设置中勾选，请重新打开 DeskMate 使其生效。" : "DeskMate 需要截取扩展屏幕并编码传输至平板。")
                         : (missingInput ? "开启触控回传需要辅助功能权限以注入鼠标与滚轮事件。" : "可手动重新握手 USB 通道并同步虚拟显示器。")
                     )
-                    .font(.system(size: 11))
+                    .font(.system(size: 11.5))
                     .foregroundStyle(StudioPalette.inkSecondary)
                     .fixedSize(horizontal: false, vertical: true)
                 }
@@ -725,48 +675,47 @@ struct HostWindow: View {
                     }
                 }
             }
-            .padding(.horizontal, 14)
-            .padding(.vertical, 11)
+            .padding(.horizontal, 16)
+            .padding(.vertical, 12)
             .background(
                 RoundedRectangle(cornerRadius: StudioPalette.cardRadius, style: .continuous)
-                    .fill((missingScreen || missingInput) ? StudioPalette.amberWash : StudioPalette.subtleSurface)
+                    .fill((missingScreen || missingInput) ? StudioPalette.warningWash : StudioPalette.cardSurface)
             )
             .overlay(
                 RoundedRectangle(cornerRadius: StudioPalette.cardRadius, style: .continuous)
-                    .stroke((missingScreen || missingInput) ? StudioTone.warning.border : StudioPalette.hairline, lineWidth: 0.75)
+                    .stroke((missingScreen || missingInput) ? StudioPalette.warningBorder : StudioPalette.hairline, lineWidth: 1.0)
             )
         }
     }
 
     private func metricCell(title: String, value: String, unit: String, accent: Bool) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
+        VStack(alignment: .leading, spacing: 3) {
             Text(title)
-                .font(.system(size: 9.5, weight: .medium, design: .monospaced))
-                .tracking(0.8)
+                .font(.system(size: 11))
                 .foregroundStyle(StudioPalette.inkMuted)
 
             HStack(alignment: .firstTextBaseline, spacing: 4) {
                 Text(value)
-                    .font(.system(size: 20, weight: .medium, design: .monospaced))
+                    .font(.system(size: 20, weight: .semibold, design: .monospaced))
                     .monospacedDigit()
-                    .foregroundStyle(accent ? StudioPalette.crimson : StudioPalette.ink)
+                    .foregroundStyle(accent ? StudioPalette.accent : StudioPalette.ink)
                 Text(unit)
-                    .font(.system(size: 10.5))
+                    .font(.system(size: 11))
                     .foregroundStyle(StudioPalette.inkMuted)
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(.horizontal, 14)
+        .padding(.horizontal, 16)
     }
 
     private func controlToggleRow(title: String, subtitle: String, isOn: Bool, action: @escaping () -> Void) -> some View {
         HStack(spacing: 12) {
             VStack(alignment: .leading, spacing: 2) {
                 Text(title)
-                    .font(.system(size: 12.5, weight: .medium))
+                    .font(.system(size: 13, weight: .medium))
                     .foregroundStyle(StudioPalette.ink)
                 Text(subtitle)
-                    .font(.system(size: 11))
+                    .font(.system(size: 11.5))
                     .foregroundStyle(StudioPalette.inkMuted)
                     .fixedSize(horizontal: false, vertical: true)
             }
@@ -775,8 +724,8 @@ struct HostWindow: View {
 
             StudioHairlineToggle(isOn: isOn, action: action)
         }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 9)
+        .padding(.horizontal, 16)
+        .padding(.vertical, 11)
     }
 
     private var frameRateSubtitleText: String {
@@ -784,71 +733,39 @@ struct HostWindow: View {
             if state.negotiatedRefreshHz > 0 {
                 return "跟随设备协商（当前 \(state.negotiatedRefreshHz) Hz）"
             }
-            return "默认跟随设备协商帧率"
+            return "默认跟随设备协商"
         }
         if state.negotiatedRefreshHz > 0 {
             if state.preferredFrameRateHz > state.negotiatedRefreshHz {
-                return "已按协商上限 \(state.negotiatedRefreshHz) Hz 输出（请求 \(state.preferredFrameRateHz) Hz）"
+                return "协商上限 \(state.negotiatedRefreshHz) Hz（请求 \(state.preferredFrameRateHz) Hz）"
             }
-            return "手动锁定 \(state.preferredFrameRateHz) Hz（协商 \(state.negotiatedRefreshHz) Hz）"
+            return "锁定 \(state.preferredFrameRateHz) Hz（协商 \(state.negotiatedRefreshHz) Hz）"
         }
-        return "手动锁定 \(state.preferredFrameRateHz) Hz"
-    }
-
-    private var frameRateControlRow: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack(spacing: 8) {
-                Text("画面帧率")
-                    .font(.system(size: 12.5, weight: .medium))
-                    .foregroundStyle(StudioPalette.ink)
-                Spacer(minLength: 8)
-                Text(frameRateSubtitleText)
-                    .font(.system(size: 10.5))
-                    .foregroundStyle(state.preferredFrameRateHz > 0 ? StudioPalette.crimson : StudioPalette.inkMuted)
-            }
-
-            HStack(spacing: 8) {
-                ForEach(FrameRateOption.allCases) { opt in
-                    StudioSegmentOption(
-                        title: opt.shortLabel,
-                        active: state.preferredFrameRateHz == opt.rawValue,
-                        expand: true,
-                        action: { setPreferredFrameRate(opt.rawValue) }
-                    )
-                }
-            }
-        }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 9)
+        return "锁定 \(state.preferredFrameRateHz) Hz"
     }
 
     // MARK: - Paired Devices Page
 
     private var devicesContent: some View {
-        VStack(alignment: .leading, spacing: 15) {
-            VStack(alignment: .leading, spacing: 4) {
-                Text("DEVICES // 客户端设备管理")
-                    .font(.system(size: 10, weight: .semibold, design: .monospaced))
-                    .tracking(1.4)
-                    .foregroundStyle(StudioPalette.crimson)
+        VStack(alignment: .leading, spacing: 14) {
+            HStack(alignment: .center, spacing: 12) {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("已配对客户端设备")
+                        .font(.system(size: 17, weight: .semibold))
+                        .foregroundStyle(StudioPalette.ink)
 
-                Text("已配对设备")
-                    .font(.system(size: 20, weight: .light))
-                    .foregroundStyle(StudioPalette.ink)
+                    Text("管理允许通过 USB 连接此 Mac 的平板或手机；关闭授权将禁止自动接管并立即断开会话。")
+                        .font(.system(size: 12))
+                        .foregroundStyle(StudioPalette.inkSecondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
 
-                Text("管理允许通过 USB 连接此 Mac 的平板设备；关闭授权将禁止自动接管并立即断开当前会话。")
-                    .font(.system(size: 11.5))
-                    .foregroundStyle(StudioPalette.inkSecondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
+                Spacer(minLength: 12)
 
-            HStack(spacing: 10) {
                 StudioStatusBadge(
                     text: "\(state.pairedDevices.count) 台设备",
                     tone: state.pairedDevices.isEmpty ? .neutral : .positive
                 )
-
-                Spacer()
 
                 Button {
                     refreshDevices()
@@ -865,21 +782,21 @@ struct HostWindow: View {
             if state.pairedDevices.isEmpty {
                 VStack(alignment: .leading, spacing: 6) {
                     Text("暂无已配对的客户端设备")
-                        .font(.system(size: 12.5, weight: .medium))
+                        .font(.system(size: 13, weight: .medium))
                         .foregroundStyle(StudioPalette.ink)
                     Text("使用 USB 数据线连接平板并打开 DeskMate 后，设备会自动记录在这里；也可点击右上角「刷新」手动扫描已接入设备。")
-                        .font(.system(size: 11.5))
+                        .font(.system(size: 12))
                         .foregroundStyle(StudioPalette.inkMuted)
                         .lineSpacing(2.5)
                         .fixedSize(horizontal: false, vertical: true)
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(16)
+                .padding(18)
                 .background(StudioPalette.cardSurface)
                 .clipShape(RoundedRectangle(cornerRadius: StudioPalette.cardRadius, style: .continuous))
                 .overlay(
                     RoundedRectangle(cornerRadius: StudioPalette.cardRadius, style: .continuous)
-                        .stroke(StudioPalette.hairline, lineWidth: 0.75)
+                        .stroke(StudioPalette.hairline, lineWidth: 1.0)
                 )
             } else {
                 VStack(spacing: 10) {
@@ -898,17 +815,17 @@ struct HostWindow: View {
 
         return VStack(spacing: 0) {
             HStack(spacing: 12) {
-                StudioDeviceGlyph(active: isConnected, allowed: device.allowed, size: 32)
+                StudioDeviceGlyph(active: isConnected, allowed: device.allowed, size: 36)
 
                 VStack(alignment: .leading, spacing: 4) {
                     Text(device.displayName)
-                        .font(.system(size: 13, weight: .medium))
+                        .font(.system(size: 13.5, weight: .medium))
                         .foregroundStyle(StudioPalette.ink)
                         .lineLimit(1)
 
                     HStack(spacing: 8) {
                         if isConnected {
-                            StudioStatusBadge(text: "当前连接", tone: .crimson)
+                            StudioStatusBadge(text: "当前连接", tone: .accent)
                         } else if !device.allowed {
                             StudioStatusBadge(text: "已禁止连接", tone: .warning)
                         } else if isOnline {
@@ -919,20 +836,15 @@ struct HostWindow: View {
 
                         if let prefPos = device.preferredPosition {
                             Text("默认\(prefPos.shortLabel)")
-                                .font(.system(size: 10, weight: .medium))
+                                .font(.system(size: 10.5, weight: .medium))
                                 .foregroundStyle(StudioPalette.inkSecondary)
-                                .padding(.horizontal, 6)
+                                .padding(.horizontal, 7)
                                 .padding(.vertical, 2)
-                                .background(StudioPalette.subtleSurface)
-                                .clipShape(RoundedRectangle(cornerRadius: 2, style: .continuous))
-                                .overlay(
-                                    RoundedRectangle(cornerRadius: 2, style: .continuous)
-                                        .stroke(StudioPalette.hairline, lineWidth: 0.6)
-                                )
+                                .background(Capsule().fill(StudioPalette.subtleSurface))
                         }
 
                         Text("最近连接 \(PairedDeviceStore.relativeTimeText(from: device.lastConnectedAt))")
-                            .font(.system(size: 11))
+                            .font(.system(size: 11.5))
                             .foregroundStyle(StudioPalette.inkMuted)
                             .lineLimit(1)
                             .fixedSize(horizontal: true, vertical: false)
@@ -940,7 +852,8 @@ struct HostWindow: View {
 
                     if let resolution = device.lastResolution, !resolution.isEmpty {
                         Text(resolution)
-                            .font(.system(size: 10, design: .monospaced))
+                            .font(.system(size: 11, design: .monospaced))
+                            .monospacedDigit()
                             .foregroundStyle(StudioPalette.inkMuted)
                             .lineLimit(1)
                     }
@@ -1001,41 +914,41 @@ struct HostWindow: View {
                         }
                     } label: {
                         Image(systemName: "ellipsis")
-                            .font(.system(size: 11.5, weight: .medium))
+                            .font(.system(size: 12, weight: .medium))
                             .foregroundStyle(StudioPalette.inkSecondary)
-                            .frame(width: 24, height: 24)
+                            .frame(width: 28, height: 28)
                             .background(
-                                RoundedRectangle(cornerRadius: StudioPalette.cornerRadius, style: .continuous)
+                                RoundedRectangle(cornerRadius: 8, style: .continuous)
                                     .fill(StudioPalette.subtleSurface)
                             )
                             .overlay(
-                                RoundedRectangle(cornerRadius: StudioPalette.cornerRadius, style: .continuous)
-                                    .stroke(StudioPalette.hairline, lineWidth: 0.75)
+                                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                    .stroke(StudioPalette.hairline, lineWidth: 1.0)
                             )
                     }
                     .menuStyle(.borderlessButton)
                     .fixedSize()
                 }
             }
-            .padding(.horizontal, 14)
-            .padding(.vertical, 11)
+            .padding(.horizontal, 16)
+            .padding(.vertical, 12)
 
             if isRenaming {
-                Rectangle().fill(StudioPalette.softHairline).frame(height: 0.75)
+                Rectangle().fill(StudioPalette.softHairline).frame(height: 1.0)
 
                 HStack(spacing: 8) {
                     TextField("输入自定义设备名称（留空恢复默认）", text: $model.renameDraft)
                         .textFieldStyle(.plain)
-                        .font(.system(size: 11.5))
-                        .padding(.horizontal, 9)
-                        .padding(.vertical, 5.5)
+                        .font(.system(size: 12))
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 6.5)
                         .background(
-                            RoundedRectangle(cornerRadius: StudioPalette.cornerRadius, style: .continuous)
+                            RoundedRectangle(cornerRadius: 9, style: .continuous)
                                 .fill(StudioPalette.cardSurface)
                         )
                         .overlay(
-                            RoundedRectangle(cornerRadius: StudioPalette.cornerRadius, style: .continuous)
-                                .stroke(StudioPalette.hairline, lineWidth: 0.75)
+                            RoundedRectangle(cornerRadius: 9, style: .continuous)
+                                .stroke(StudioPalette.hairline, lineWidth: 1.0)
                         )
 
                     Button("保存") {
@@ -1049,8 +962,8 @@ struct HostWindow: View {
                     }
                     .buttonStyle(StudioSecondaryButtonStyle())
                 }
-                .padding(.horizontal, 14)
-                .padding(.vertical, 9)
+                .padding(.horizontal, 16)
+                .padding(.vertical, 10)
                 .background(StudioPalette.subtleSurface)
             }
         }
@@ -1058,7 +971,7 @@ struct HostWindow: View {
         .clipShape(RoundedRectangle(cornerRadius: StudioPalette.cardRadius, style: .continuous))
         .overlay(
             RoundedRectangle(cornerRadius: StudioPalette.cardRadius, style: .continuous)
-                .stroke(isConnected ? StudioPalette.roseBorder : StudioPalette.hairline, lineWidth: isConnected ? 1.0 : 0.75)
+                .stroke(isConnected ? StudioPalette.accentBorder : StudioPalette.hairline, lineWidth: isConnected ? 1.4 : 1.0)
         )
     }
 
@@ -1066,20 +979,13 @@ struct HostWindow: View {
 
     private var settingsContent: some View {
         VStack(alignment: .leading, spacing: 18) {
-            VStack(alignment: .leading, spacing: 4) {
-                Text("SETTINGS // 显示与控制配置")
-                    .font(.system(size: 10, weight: .semibold, design: .monospaced))
-                    .tracking(1.4)
-                    .foregroundStyle(StudioPalette.crimson)
+            Text("显示与启动设置")
+                .font(.system(size: 17, weight: .semibold))
+                .foregroundStyle(StudioPalette.ink)
 
-                Text("显示与启动设置")
-                    .font(.system(size: 20, weight: .light))
-                    .foregroundStyle(StudioPalette.ink)
-            }
-
-            // Startup Behavior section
-            VStack(alignment: .leading, spacing: 10) {
-                StudioSectionHeader(english: "STARTUP", chinese: "启动行为")
+            // Startup Behavior
+            VStack(alignment: .leading, spacing: 8) {
+                StudioSectionHeader(title: "启动行为")
 
                 VStack(spacing: 0) {
                     controlToggleRow(
@@ -1090,17 +996,17 @@ struct HostWindow: View {
                     )
 
                     if state.loginItemNeedsApproval || (state.loginItemError?.isEmpty == false) {
-                        Rectangle().fill(StudioPalette.softHairline).frame(height: 0.75)
+                        Rectangle().fill(StudioPalette.softHairline).frame(height: 1.0)
 
                         HStack(spacing: 10) {
                             VStack(alignment: .leading, spacing: 2) {
                                 Text(state.loginItemNeedsApproval ? "需要在系统登录项中批准" : "登录项注册错误")
-                                    .font(.system(size: 11.5, weight: .semibold))
+                                    .font(.system(size: 12, weight: .semibold))
                                     .foregroundStyle(StudioPalette.ink)
 
                                 if let err = state.loginItemError, !err.isEmpty {
                                     Text(err)
-                                        .font(.system(size: 10.5, design: .monospaced))
+                                        .font(.system(size: 11, design: .monospaced))
                                         .foregroundStyle(StudioPalette.inkSecondary)
                                         .fixedSize(horizontal: false, vertical: true)
                                 }
@@ -1113,12 +1019,12 @@ struct HostWindow: View {
                             }
                             .buttonStyle(StudioSecondaryButtonStyle())
                         }
-                        .padding(.horizontal, 14)
-                        .padding(.vertical, 9)
-                        .background(StudioPalette.amberWash)
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 10)
+                        .background(StudioPalette.warningWash)
                     }
 
-                    Rectangle().fill(StudioPalette.softHairline).frame(height: 0.75)
+                    Rectangle().fill(StudioPalette.softHairline).frame(height: 1.0)
 
                     controlToggleRow(
                         title: "打开应用后自动启动服务",
@@ -1127,13 +1033,13 @@ struct HostWindow: View {
                         action: { setAutoStartService(!state.autoStartService) }
                     )
 
-                    Rectangle().fill(StudioPalette.softHairline).frame(height: 0.75)
+                    Rectangle().fill(StudioPalette.softHairline).frame(height: 1.0)
 
                     HStack(spacing: 12) {
                         VStack(alignment: .leading, spacing: 2) {
                             HStack(spacing: 8) {
                                 Text("当前串流服务")
-                                    .font(.system(size: 12.5, weight: .medium))
+                                    .font(.system(size: 13, weight: .medium))
                                     .foregroundStyle(StudioPalette.ink)
 
                                 StudioStatusBadge(
@@ -1143,7 +1049,7 @@ struct HostWindow: View {
                             }
 
                             Text(state.serviceRunning ? "正在监听 USB 平板连接并管理虚拟显示器" : "服务已停止，不会自动接管 USB 设备")
-                                .font(.system(size: 11))
+                                .font(.system(size: 11.5))
                                 .foregroundStyle(StudioPalette.inkMuted)
                         }
 
@@ -1157,23 +1063,22 @@ struct HostWindow: View {
                                 .buttonStyle(StudioPrimaryButtonStyle())
                         }
                     }
-                    .padding(.horizontal, 14)
-                    .padding(.vertical, 9)
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 11)
                 }
                 .background(StudioPalette.cardSurface)
                 .clipShape(RoundedRectangle(cornerRadius: StudioPalette.cardRadius, style: .continuous))
                 .overlay(
                     RoundedRectangle(cornerRadius: StudioPalette.cardRadius, style: .continuous)
-                        .stroke(StudioPalette.hairline, lineWidth: 0.75)
+                        .stroke(StudioPalette.hairline, lineWidth: 1.0)
                 )
             }
 
-            // Touch Input Mode section
             touchInputSection
 
-            // Virtual Display & Source section
-            VStack(alignment: .leading, spacing: 10) {
-                StudioSectionHeader(english: "VIRTUAL DISPLAY", chinese: "虚拟显示器与输入源")
+            // Virtual Display & Source
+            VStack(alignment: .leading, spacing: 8) {
+                StudioSectionHeader(title: "虚拟显示器与输入源")
 
                 VStack(spacing: 0) {
                     controlToggleRow(
@@ -1183,16 +1088,16 @@ struct HostWindow: View {
                         action: { setAutoVirtual(!state.autoVirtualDisplay) }
                     )
 
-                    Rectangle().fill(StudioPalette.softHairline).frame(height: 0.75)
+                    Rectangle().fill(StudioPalette.softHairline).frame(height: 1.0)
 
                     VStack(alignment: .leading, spacing: 8) {
                         HStack(spacing: 8) {
                             Text("默认扩展位置")
-                                .font(.system(size: 12.5, weight: .medium))
+                                .font(.system(size: 13, weight: .medium))
                                 .foregroundStyle(StudioPalette.ink)
                             Spacer(minLength: 8)
                             Text("相对 Mac 主屏的对齐方向")
-                                .font(.system(size: 10.5))
+                                .font(.system(size: 11))
                                 .foregroundStyle(StudioPalette.inkMuted)
                         }
 
@@ -1207,24 +1112,47 @@ struct HostWindow: View {
                             }
                         }
                     }
-                    .padding(.horizontal, 14)
-                    .padding(.vertical, 10)
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 11)
 
-                    Rectangle().fill(StudioPalette.softHairline).frame(height: 0.75)
+                    Rectangle().fill(StudioPalette.softHairline).frame(height: 1.0)
 
-                    frameRateControlRow
+                    VStack(alignment: .leading, spacing: 8) {
+                        HStack(spacing: 8) {
+                            Text("画面帧率")
+                                .font(.system(size: 13, weight: .medium))
+                                .foregroundStyle(StudioPalette.ink)
+                            Spacer(minLength: 8)
+                            Text(frameRateSubtitleText)
+                                .font(.system(size: 11))
+                                .foregroundStyle(state.preferredFrameRateHz > 0 ? StudioPalette.accent : StudioPalette.inkMuted)
+                        }
+
+                        HStack(spacing: 8) {
+                            ForEach(FrameRateOption.allCases) { opt in
+                                StudioSegmentOption(
+                                    title: opt.shortLabel,
+                                    active: state.preferredFrameRateHz == opt.rawValue,
+                                    expand: true,
+                                    action: { setPreferredFrameRate(opt.rawValue) }
+                                )
+                            }
+                        }
+                    }
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 11)
 
                     if !state.autoVirtualDisplay {
-                        Rectangle().fill(StudioPalette.softHairline).frame(height: 0.75)
+                        Rectangle().fill(StudioPalette.softHairline).frame(height: 1.0)
 
                         VStack(alignment: .leading, spacing: 8) {
                             HStack {
                                 Text(state.fixedSource ? "固定输出显示源" : "选择现有物理 / 虚拟显示器")
-                                    .font(.system(size: 12, weight: .medium))
+                                    .font(.system(size: 12.5, weight: .medium))
                                     .foregroundStyle(StudioPalette.ink)
                                 Spacer()
                                 Text(state.source)
-                                    .font(.system(size: 11, design: .monospaced))
+                                    .font(.system(size: 11.5, design: .monospaced))
                                     .foregroundStyle(StudioPalette.inkSecondary)
                             }
 
@@ -1236,35 +1164,35 @@ struct HostWindow: View {
                                             chooseSource(choice.id)
                                         } label: {
                                             HStack(spacing: 8) {
-                                                Rectangle()
-                                                    .fill(selected ? StudioPalette.crimson : Color.clear)
-                                                    .frame(width: 5, height: 5)
+                                                Circle()
+                                                    .fill(selected ? StudioPalette.accent : Color.clear)
+                                                    .frame(width: 7, height: 7)
                                                     .overlay(
-                                                        Rectangle()
-                                                            .stroke(selected ? StudioPalette.crimson : StudioPalette.inkMuted, lineWidth: 0.75)
+                                                        Circle()
+                                                            .stroke(selected ? StudioPalette.accent : StudioPalette.inkMuted, lineWidth: 1.0)
                                                     )
 
                                                 Text(choice.title)
-                                                    .font(.system(size: 11.5, weight: selected ? .medium : .regular))
-                                                    .foregroundStyle(selected ? StudioPalette.crimson : StudioPalette.ink)
+                                                    .font(.system(size: 12, weight: selected ? .medium : .regular))
+                                                    .foregroundStyle(selected ? StudioPalette.accent : StudioPalette.ink)
 
                                                 Spacer()
 
                                                 if selected {
                                                     Text("当前使用")
-                                                        .font(.system(size: 10))
-                                                        .foregroundStyle(StudioPalette.crimson)
+                                                        .font(.system(size: 11, weight: .medium))
+                                                        .foregroundStyle(StudioPalette.accent)
                                                 }
                                             }
-                                            .padding(.horizontal, 10)
-                                            .padding(.vertical, 7)
+                                            .padding(.horizontal, 12)
+                                            .padding(.vertical, 8)
                                             .background(
                                                 RoundedRectangle(cornerRadius: StudioPalette.cornerRadius, style: .continuous)
-                                                    .fill(selected ? StudioPalette.roseWash : StudioPalette.subtleSurface)
+                                                    .fill(selected ? StudioPalette.accentSoft : StudioPalette.subtleSurface)
                                             )
                                             .overlay(
                                                 RoundedRectangle(cornerRadius: StudioPalette.cornerRadius, style: .continuous)
-                                                    .stroke(selected ? StudioPalette.roseBorder : StudioPalette.hairline, lineWidth: 0.75)
+                                                    .stroke(selected ? StudioPalette.accentBorder : StudioPalette.softHairline, lineWidth: 1.0)
                                             )
                                             .contentShape(Rectangle())
                                         }
@@ -1273,21 +1201,21 @@ struct HostWindow: View {
                                 }
                             }
                         }
-                        .padding(.horizontal, 14)
-                        .padding(.vertical, 11)
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 12)
                     }
                 }
                 .background(StudioPalette.cardSurface)
                 .clipShape(RoundedRectangle(cornerRadius: StudioPalette.cardRadius, style: .continuous))
                 .overlay(
                     RoundedRectangle(cornerRadius: StudioPalette.cardRadius, style: .continuous)
-                        .stroke(StudioPalette.hairline, lineWidth: 0.75)
+                        .stroke(StudioPalette.hairline, lineWidth: 1.0)
                 )
             }
 
-            // Permissions Section
-            VStack(alignment: .leading, spacing: 10) {
-                StudioSectionHeader(english: "PERMISSIONS", chinese: "系统授权状态")
+            // Permissions
+            VStack(alignment: .leading, spacing: 8) {
+                StudioSectionHeader(title: "系统权限")
 
                 VStack(spacing: 0) {
                     permissionRow(
@@ -1300,13 +1228,13 @@ struct HostWindow: View {
                         action: { openPermission(true) }
                     )
 
-                    Rectangle().fill(StudioPalette.softHairline).frame(height: 0.75)
+                    Rectangle().fill(StudioPalette.softHairline).frame(height: 1.0)
 
                     HStack(spacing: 12) {
                         VStack(alignment: .leading, spacing: 2) {
                             HStack(spacing: 8) {
                                 Text("辅助功能")
-                                    .font(.system(size: 12.5, weight: .medium))
+                                    .font(.system(size: 13, weight: .medium))
                                     .foregroundStyle(StudioPalette.ink)
 
                                 StudioStatusBadge(
@@ -1318,7 +1246,7 @@ struct HostWindow: View {
                             Text(state.inputPermission
                                 ? "已授予输入事件注入权限"
                                 : "一键弹窗注册权限并直达系统设置勾选 DeskMate；重编覆盖后若失效可点重置。")
-                                .font(.system(size: 11))
+                                .font(.system(size: 11.5))
                                 .foregroundStyle(StudioPalette.inkMuted)
                         }
 
@@ -1343,18 +1271,17 @@ struct HostWindow: View {
                             }
                         }
                     }
-                    .padding(.horizontal, 14)
-                    .padding(.vertical, 9)
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 11)
                 }
                 .background(StudioPalette.cardSurface)
                 .clipShape(RoundedRectangle(cornerRadius: StudioPalette.cardRadius, style: .continuous))
                 .overlay(
                     RoundedRectangle(cornerRadius: StudioPalette.cardRadius, style: .continuous)
-                        .stroke(StudioPalette.hairline, lineWidth: 0.75)
+                        .stroke(StudioPalette.hairline, lineWidth: 1.0)
                 )
             }
 
-            // Software Update Section
             updateSettingsSection
         }
     }
@@ -1369,12 +1296,12 @@ struct HostWindow: View {
                 VStack(alignment: .leading, spacing: 3) {
                     HStack(spacing: 8) {
                         Text(u.availableVersion.map { "发现新版本 v\($0)" } ?? "软件更新")
-                            .font(.system(size: 12, weight: .semibold))
+                            .font(.system(size: 12.5, weight: .semibold))
                             .foregroundStyle(StudioPalette.ink)
-                        StudioStatusBadge(text: "v\(u.currentVersion) → v\(u.availableVersion ?? "")", tone: .crimson)
+                        StudioStatusBadge(text: "v\(u.currentVersion) → v\(u.availableVersion ?? "")", tone: .accent)
                     }
                     Text(u.statusText)
-                        .font(.system(size: 11))
+                        .font(.system(size: 11.5))
                         .foregroundStyle(StudioPalette.inkSecondary)
                         .lineLimit(1)
                 }
@@ -1393,19 +1320,20 @@ struct HostWindow: View {
                     .buttonStyle(StudioPrimaryButtonStyle())
                 } else {
                     Text("\(Int((u.progress * 100.0).rounded()))%")
-                        .font(.system(size: 11, weight: .semibold, design: .monospaced))
-                        .foregroundStyle(StudioPalette.crimson)
+                        .font(.system(size: 12, weight: .semibold, design: .monospaced))
+                        .monospacedDigit()
+                        .foregroundStyle(StudioPalette.accent)
                 }
             }
-            .padding(.horizontal, 14)
-            .padding(.vertical, 10)
+            .padding(.horizontal, 16)
+            .padding(.vertical, 11)
             .background(
                 RoundedRectangle(cornerRadius: StudioPalette.cardRadius, style: .continuous)
-                    .fill(StudioPalette.roseWash)
+                    .fill(StudioPalette.accentSoft)
             )
             .overlay(
                 RoundedRectangle(cornerRadius: StudioPalette.cardRadius, style: .continuous)
-                    .stroke(StudioPalette.roseBorder, lineWidth: 0.75)
+                    .stroke(StudioPalette.accentBorder, lineWidth: 1.0)
             )
         }
     }
@@ -1419,30 +1347,30 @@ struct HostWindow: View {
             case .idle: return ("v\(u.currentVersion)", .neutral)
             case .checking: return ("检查中", .neutral)
             case .upToDate: return ("已是最新", .positive)
-            case .available: return ("v\(u.availableVersion ?? "") 可用", .crimson)
-            case .downloading: return ("下载中 \(Int((u.progress * 100.0).rounded()))%", .crimson)
-            case .verifying: return ("校验签名中", .crimson)
-            case .installing: return ("正在安装", .crimson)
+            case .available: return ("v\(u.availableVersion ?? "") 可用", .accent)
+            case .downloading: return ("下载中 \(Int((u.progress * 100.0).rounded()))%", .accent)
+            case .verifying: return ("校验签名中", .accent)
+            case .installing: return ("正在安装", .accent)
             case .failed: return ("更新失败", .warning)
             }
         }()
 
-        return VStack(alignment: .leading, spacing: 10) {
-            StudioSectionHeader(english: "UPDATES", chinese: "软件更新")
+        return VStack(alignment: .leading, spacing: 8) {
+            StudioSectionHeader(title: "软件更新")
 
             VStack(spacing: 0) {
                 HStack(spacing: 12) {
                     VStack(alignment: .leading, spacing: 3) {
                         HStack(spacing: 8) {
                             Text("当前版本 v\(u.currentVersion)")
-                                .font(.system(size: 12.5, weight: .medium))
+                                .font(.system(size: 13, weight: .medium))
                                 .foregroundStyle(StudioPalette.ink)
                             StudioStatusBadge(text: badgeInfo.0, tone: badgeInfo.1)
                         }
 
                         Text(u.errorMessage ?? u.statusText)
-                            .font(.system(size: 11))
-                            .foregroundStyle(u.phase == .failed ? StudioPalette.amber : StudioPalette.inkMuted)
+                            .font(.system(size: 11.5))
+                            .foregroundStyle(u.phase == .failed ? StudioPalette.warning : StudioPalette.inkMuted)
                             .fixedSize(horizontal: false, vertical: true)
                     }
 
@@ -1472,41 +1400,39 @@ struct HostWindow: View {
                         }
                     }
                 }
-                .padding(.horizontal, 14)
-                .padding(.vertical, 10)
+                .padding(.horizontal, 16)
+                .padding(.vertical, 12)
 
                 if u.phase == .downloading || u.phase == .verifying || u.phase == .installing {
-                    VStack(alignment: .leading, spacing: 5) {
-                        GeometryReader { geo in
-                            ZStack(alignment: .leading) {
-                                RoundedRectangle(cornerRadius: 2, style: .continuous)
-                                    .fill(StudioPalette.softHairline)
-                                    .frame(height: 4)
-                                RoundedRectangle(cornerRadius: 2, style: .continuous)
-                                    .fill(StudioPalette.crimson)
-                                    .frame(width: max(4, geo.size.width * CGFloat(min(1.0, max(0.0, u.progress)))), height: 4)
-                            }
+                    GeometryReader { geo in
+                        ZStack(alignment: .leading) {
+                            Capsule()
+                                .fill(StudioPalette.softHairline)
+                                .frame(height: 5)
+                            Capsule()
+                                .fill(StudioPalette.accent)
+                                .frame(width: max(6, geo.size.width * CGFloat(min(1.0, max(0.0, u.progress)))), height: 5)
                         }
-                        .frame(height: 4)
                     }
-                    .padding(.horizontal, 14)
-                    .padding(.bottom, 10)
+                    .frame(height: 5)
+                    .padding(.horizontal, 16)
+                    .padding(.bottom, 12)
                 }
 
                 if u.phase == .available && !u.releaseNotes.isEmpty {
-                    Rectangle().fill(StudioPalette.softHairline).frame(height: 0.75)
+                    Rectangle().fill(StudioPalette.softHairline).frame(height: 1.0)
 
                     Text(u.releaseNotes)
-                        .font(.system(size: 11))
+                        .font(.system(size: 11.5))
                         .foregroundStyle(StudioPalette.inkSecondary)
                         .lineLimit(3)
                         .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(.horizontal, 14)
-                        .padding(.vertical, 8)
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 9)
                         .background(StudioPalette.subtleSurface)
                 }
 
-                Rectangle().fill(StudioPalette.softHairline).frame(height: 0.75)
+                Rectangle().fill(StudioPalette.softHairline).frame(height: 1.0)
 
                 controlToggleRow(
                     title: "启动时自动检查更新",
@@ -1515,32 +1441,32 @@ struct HostWindow: View {
                     action: { setAutoCheckUpdates(!u.autoCheckEnabled) }
                 )
 
-                Rectangle().fill(StudioPalette.softHairline).frame(height: 0.75)
+                Rectangle().fill(StudioPalette.softHairline).frame(height: 1.0)
 
                 VStack(alignment: .leading, spacing: 6) {
                     HStack(spacing: 8) {
                         Text("GitHub 加速前缀（可选）")
-                            .font(.system(size: 12, weight: .medium))
+                            .font(.system(size: 12.5, weight: .medium))
                             .foregroundStyle(StudioPalette.ink)
                         Spacer()
                         Text("通过 Ed25519 校验完整性，留空即直连")
-                            .font(.system(size: 10.5))
+                            .font(.system(size: 11))
                             .foregroundStyle(StudioPalette.inkMuted)
                     }
 
                     HStack(spacing: 8) {
                         TextField("例如 https://ghfast.top/", text: $model.mirrorDraft)
                             .textFieldStyle(.plain)
-                            .font(.system(size: 11.5, design: .monospaced))
-                            .padding(.horizontal, 9)
-                            .padding(.vertical, 6)
+                            .font(.system(size: 12, design: .monospaced))
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 6.5)
                             .background(
-                                RoundedRectangle(cornerRadius: StudioPalette.cornerRadius, style: .continuous)
+                                RoundedRectangle(cornerRadius: 9, style: .continuous)
                                     .fill(StudioPalette.subtleSurface)
                             )
                             .overlay(
-                                RoundedRectangle(cornerRadius: StudioPalette.cornerRadius, style: .continuous)
-                                    .stroke(StudioPalette.hairline, lineWidth: 0.75)
+                                RoundedRectangle(cornerRadius: 9, style: .continuous)
+                                    .stroke(StudioPalette.hairline, lineWidth: 1.0)
                             )
                             .onAppear {
                                 model.mirrorDraft = state.update.mirrorPrefix
@@ -1565,21 +1491,21 @@ struct HostWindow: View {
                         }
                     }
                 }
-                .padding(.horizontal, 14)
-                .padding(.vertical, 10)
+                .padding(.horizontal, 16)
+                .padding(.vertical, 12)
             }
             .background(StudioPalette.cardSurface)
             .clipShape(RoundedRectangle(cornerRadius: StudioPalette.cardRadius, style: .continuous))
             .overlay(
                 RoundedRectangle(cornerRadius: StudioPalette.cardRadius, style: .continuous)
-                    .stroke(StudioPalette.hairline, lineWidth: 0.75)
+                    .stroke(StudioPalette.hairline, lineWidth: 1.0)
             )
         }
     }
 
     private var touchInputSection: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            StudioSectionHeader(english: "TOUCH INPUT", chinese: "触控输入")
+        VStack(alignment: .leading, spacing: 8) {
+            StudioSectionHeader(title: "触控输入")
 
             VStack(spacing: 0) {
                 controlToggleRow(
@@ -1589,15 +1515,15 @@ struct HostWindow: View {
                     action: { setInput(!state.inputEnabled) }
                 )
 
-                Rectangle().fill(StudioPalette.softHairline).frame(height: 0.75)
+                Rectangle().fill(StudioPalette.softHairline).frame(height: 1.0)
 
                 HStack(spacing: 12) {
                     VStack(alignment: .leading, spacing: 2) {
                         Text("输入模式")
-                            .font(.system(size: 12.5, weight: .medium))
+                            .font(.system(size: 13, weight: .medium))
                             .foregroundStyle(StudioPalette.ink)
                         Text("选择单指、多指手势或原生/妙控板映射方式")
-                            .font(.system(size: 11))
+                            .font(.system(size: 11.5))
                             .foregroundStyle(StudioPalette.inkMuted)
                     }
 
@@ -1617,27 +1543,27 @@ struct HostWindow: View {
                         }
                     } label: {
                         Text(state.touchInputMode.displayName)
-                            .font(.system(size: 11.5, weight: .medium))
+                            .font(.system(size: 12, weight: .medium))
                             .foregroundStyle(StudioPalette.ink)
                             .lineLimit(1)
-                            .padding(.horizontal, 11)
-                            .padding(.vertical, 6)
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 6.5)
                             .background(
-                                RoundedRectangle(cornerRadius: StudioPalette.cornerRadius, style: .continuous)
+                                RoundedRectangle(cornerRadius: 9, style: .continuous)
                                     .fill(StudioPalette.subtleSurface)
                             )
                             .overlay(
-                                RoundedRectangle(cornerRadius: StudioPalette.cornerRadius, style: .continuous)
-                                    .stroke(StudioPalette.hairline, lineWidth: 0.75)
+                                RoundedRectangle(cornerRadius: 9, style: .continuous)
+                                    .stroke(StudioPalette.hairline, lineWidth: 1.0)
                             )
                     }
                     .menuStyle(.borderlessButton)
                     .fixedSize()
                 }
-                .padding(.horizontal, 14)
-                .padding(.vertical, 9)
+                .padding(.horizontal, 16)
+                .padding(.vertical, 11)
 
-                Rectangle().fill(StudioPalette.softHairline).frame(height: 0.75)
+                Rectangle().fill(StudioPalette.softHairline).frame(height: 1.0)
 
                 touchModeDetailPanel
             }
@@ -1645,7 +1571,7 @@ struct HostWindow: View {
             .clipShape(RoundedRectangle(cornerRadius: StudioPalette.cardRadius, style: .continuous))
             .overlay(
                 RoundedRectangle(cornerRadius: StudioPalette.cardRadius, style: .continuous)
-                    .stroke(StudioPalette.hairline, lineWidth: 0.75)
+                    .stroke(StudioPalette.hairline, lineWidth: 1.0)
             )
         }
     }
@@ -1672,11 +1598,11 @@ struct HostWindow: View {
                 .padding(.vertical, 9)
                 .background(
                     RoundedRectangle(cornerRadius: StudioPalette.cornerRadius, style: .continuous)
-                        .fill(StudioPalette.amberWash)
+                        .fill(StudioPalette.warningWash)
                 )
                 .overlay(
                     RoundedRectangle(cornerRadius: StudioPalette.cornerRadius, style: .continuous)
-                        .stroke(StudioTone.warning.border, lineWidth: 0.75)
+                        .stroke(StudioPalette.warningBorder, lineWidth: 1.0)
                 )
             }
 
@@ -1690,7 +1616,7 @@ struct HostWindow: View {
                     )
 
                     Text(state.touchCapability.activeBackendLabel)
-                        .font(.system(size: 10.5, design: .monospaced))
+                        .font(.system(size: 11, design: .monospaced))
                         .foregroundStyle(StudioPalette.inkMuted)
                         .lineLimit(1)
 
@@ -1711,7 +1637,7 @@ struct HostWindow: View {
             }
 
             Text(state.touchInputMode.summaryText)
-                .font(.system(size: 11.5))
+                .font(.system(size: 12))
                 .foregroundStyle(StudioPalette.inkSecondary)
                 .lineSpacing(2)
                 .fixedSize(horizontal: false, vertical: true)
@@ -1721,12 +1647,12 @@ struct HostWindow: View {
                     ForEach(state.touchInputMode.compatibleGestureRows, id: \.fingers) { row in
                         HStack(alignment: .firstTextBaseline, spacing: 12) {
                             Text(row.fingers)
-                                .font(.system(size: 11.5, weight: .medium))
+                                .font(.system(size: 12, weight: .medium))
                                 .foregroundStyle(StudioPalette.ink)
                                 .frame(width: 82, alignment: .leading)
 
                             Text(row.description)
-                                .font(.system(size: 11.5))
+                                .font(.system(size: 12))
                                 .foregroundStyle(StudioPalette.inkSecondary)
                                 .fixedSize(horizontal: false, vertical: true)
 
@@ -1739,13 +1665,13 @@ struct HostWindow: View {
                 VStack(alignment: .leading, spacing: 5) {
                     ForEach(state.touchInputMode.trackpadGuidanceLines, id: \.self) { line in
                         Text(line)
-                            .font(.system(size: 11))
+                            .font(.system(size: 11.5))
                             .foregroundStyle(StudioPalette.inkMuted)
                             .lineSpacing(2)
                             .fixedSize(horizontal: false, vertical: true)
                     }
                 }
-                .padding(10)
+                .padding(12)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .background(
                     RoundedRectangle(cornerRadius: StudioPalette.cornerRadius, style: .continuous)
@@ -1753,13 +1679,13 @@ struct HostWindow: View {
                 )
                 .overlay(
                     RoundedRectangle(cornerRadius: StudioPalette.cornerRadius, style: .continuous)
-                        .stroke(StudioPalette.softHairline, lineWidth: 0.75)
+                        .stroke(StudioPalette.softHairline, lineWidth: 1.0)
                 )
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(.horizontal, 14)
-        .padding(.vertical, 11)
+        .padding(.horizontal, 16)
+        .padding(.vertical, 12)
     }
 
     private func permissionRow(title: String, granted: Bool, detail: String, actionTitle: String, action: @escaping () -> Void) -> some View {
@@ -1767,7 +1693,7 @@ struct HostWindow: View {
             VStack(alignment: .leading, spacing: 2) {
                 HStack(spacing: 8) {
                     Text(title)
-                        .font(.system(size: 12.5, weight: .medium))
+                        .font(.system(size: 13, weight: .medium))
                         .foregroundStyle(StudioPalette.ink)
 
                     StudioStatusBadge(
@@ -1777,7 +1703,7 @@ struct HostWindow: View {
                 }
 
                 Text(detail)
-                    .font(.system(size: 11))
+                    .font(.system(size: 11.5))
                     .foregroundStyle(StudioPalette.inkMuted)
             }
 
@@ -1786,27 +1712,32 @@ struct HostWindow: View {
             Button(actionTitle, action: action)
                 .buttonStyle(StudioSecondaryButtonStyle())
         }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 9)
+        .padding(.horizontal, 16)
+        .padding(.vertical, 11)
     }
 
     // MARK: - Diagnostics Page
 
     private var diagnosticsContent: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            VStack(alignment: .leading, spacing: 4) {
-                Text("DIAGNOSTICS // 连接与编码摘要")
-                    .font(.system(size: 10, weight: .semibold, design: .monospaced))
-                    .tracking(1.4)
-                    .foregroundStyle(StudioPalette.crimson)
+        VStack(alignment: .leading, spacing: 14) {
+            HStack(alignment: .center, spacing: 10) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("运行诊断日志")
+                        .font(.system(size: 17, weight: .semibold))
+                        .foregroundStyle(StudioPalette.ink)
+                    Text("实时查看 USB AOA 链路、编码器协商与触控注入快照。")
+                        .font(.system(size: 12))
+                        .foregroundStyle(StudioPalette.inkSecondary)
+                }
 
-                Text("运行诊断日志")
-                    .font(.system(size: 20, weight: .light))
-                    .foregroundStyle(StudioPalette.ink)
-            }
+                Spacer()
 
-            HStack(spacing: 10) {
-                Button(model.copiedDiagnostics ? "✓ 已复制到剪贴板" : "复制诊断信息") {
+                if state.canRetry {
+                    Button("重新建立连接") { retry() }
+                        .buttonStyle(StudioSecondaryButtonStyle())
+                }
+
+                Button(model.copiedDiagnostics ? "已复制到剪贴板" : "复制诊断信息") {
                     copy()
                     model.copiedDiagnostics = true
                     DispatchQueue.main.asyncAfter(deadline: .now() + 1.8) {
@@ -1814,34 +1745,23 @@ struct HostWindow: View {
                     }
                 }
                 .buttonStyle(StudioPrimaryButtonStyle())
-
-                if state.canRetry {
-                    Button("重新建立连接") { retry() }
-                        .buttonStyle(StudioSecondaryButtonStyle())
-                }
-
-                Spacer()
             }
 
-            VStack(alignment: .leading, spacing: 8) {
-                StudioSectionHeader(english: "LOG OUTPUT", chinese: "状态快照")
-
-                ScrollView(.vertical, showsIndicators: true) {
-                    Text(diagnosticText)
-                        .font(.system(size: 11, design: .monospaced))
-                        .foregroundStyle(StudioPalette.inkSecondary)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(14)
-                        .textSelection(.enabled)
-                }
-                .frame(minHeight: 230, maxHeight: 310)
-                .background(StudioPalette.subtleSurface)
-                .clipShape(RoundedRectangle(cornerRadius: StudioPalette.cardRadius, style: .continuous))
-                .overlay(
-                    RoundedRectangle(cornerRadius: StudioPalette.cardRadius, style: .continuous)
-                        .stroke(StudioPalette.hairline, lineWidth: 0.75)
-                )
+            ScrollView(.vertical, showsIndicators: true) {
+                Text(diagnosticText)
+                    .font(.system(size: 11.5, design: .monospaced))
+                    .foregroundStyle(StudioPalette.inkSecondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(16)
+                    .textSelection(.enabled)
             }
+            .frame(minHeight: 280, maxHeight: 380)
+            .background(StudioPalette.cardSurface)
+            .clipShape(RoundedRectangle(cornerRadius: StudioPalette.cardRadius, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: StudioPalette.cardRadius, style: .continuous)
+                    .stroke(StudioPalette.hairline, lineWidth: 1.0)
+            )
         }
     }
 
@@ -1869,8 +1789,8 @@ struct HostWindow: View {
 
     private var whisperBar: some View {
         HStack(spacing: 12) {
-            Text("USB-C AOA 直连  //  \(state.autoVirtualDisplay ? "自动 HiDPI 虚拟屏" : state.source)")
-                .font(.system(size: 10.5, design: .monospaced))
+            Text("USB-C AOA 硬件直连 · \(state.autoVirtualDisplay ? "自动 HiDPI 虚拟屏" : state.source)")
+                .font(.system(size: 11))
                 .foregroundStyle(StudioPalette.inkMuted)
                 .lineLimit(1)
 
@@ -1878,7 +1798,8 @@ struct HostWindow: View {
 
             if !state.streamSummary.isEmpty {
                 Text(state.streamSummary)
-                    .font(.system(size: 10.5, design: .monospaced))
+                    .font(.system(size: 11, design: .monospaced))
+                    .monospacedDigit()
                     .foregroundStyle(StudioPalette.inkSecondary)
                     .lineLimit(1)
             }
@@ -1890,14 +1811,14 @@ struct HostWindow: View {
                     model.copiedDiagnostics = false
                 }
             } label: {
-                Text(model.copiedDiagnostics ? "✓ 已复制" : "复制摘要")
-                    .font(.system(size: 10.5, weight: .medium))
-                    .foregroundStyle(model.copiedDiagnostics ? StudioPalette.crimson : StudioPalette.inkSecondary)
+                Text(model.copiedDiagnostics ? "已复制" : "复制摘要")
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(model.copiedDiagnostics ? StudioPalette.accent : StudioPalette.inkSecondary)
             }
             .buttonStyle(StudioFlatActionStyle())
         }
-        .padding(.horizontal, 24)
-        .frame(height: 30)
-        .background(StudioPalette.cardSurface.opacity(0.85))
+        .padding(.horizontal, 20)
+        .frame(height: 32)
+        .background(StudioPalette.cardSurface)
     }
 }
