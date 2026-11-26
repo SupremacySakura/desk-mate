@@ -32,7 +32,7 @@ enum UpdatePhase: Equatable {
 }
 
 struct UpdateStateSnapshot: Equatable {
-    var currentVersion: String = "1.5.0"
+    var currentVersion: String = "1.6.0"
     var phase: UpdatePhase = .idle
     var availableVersion: String? = nil
     var releaseNotes: String = ""
@@ -129,7 +129,7 @@ final class UpdateManager: NSObject, URLSessionDownloadDelegate {
 
     override init() {
         super.init()
-        let ver = (Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String) ?? "1.5.0"
+        let ver = (Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String) ?? "1.6.0"
         state.currentVersion = ver
         if UserDefaults.standard.object(forKey: Self.autoCheckPref) != nil {
             state.autoCheckEnabled = UserDefaults.standard.bool(forKey: Self.autoCheckPref)

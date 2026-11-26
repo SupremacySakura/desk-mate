@@ -69,7 +69,7 @@ sed 's|<manifest xmlns:android="http://schemas.android.com/apk/res/android">|&|'
   --java "$WORK/gen" \
   --min-sdk-version "$API" \
   --target-sdk-version 35 \
-  --version-code "${VERSION_CODE:-6}" --version-name "${VERSION_NAME:-1.5.0}" \
+  --version-code "${VERSION_CODE:-7}" --version-name "${VERSION_NAME:-1.6.0}" \
   "$WORK/res.zip"
 
 echo "==> javac"
@@ -131,7 +131,7 @@ fi
   --out "$OUT/app-debug.apk" "$WORK/aligned.apk"
 
 DIST_ANDROID="$REPO/dist/android"
-DIST_APK="$DIST_ANDROID/DeskMate-v${VERSION_NAME:-1.5.0}-android-debug.apk"
+DIST_APK="$DIST_ANDROID/DeskMate-v${VERSION_NAME:-1.6.0}-android-debug.apk"
 mkdir -p "$DIST_ANDROID"
 cp -f "$OUT/app-debug.apk" "$DIST_APK"
 

@@ -552,6 +552,139 @@ bool test_refresh_rate_reconfigure_and_advertisement() {
   return true;
 }
 
+bool test_android_aoa_discovery_and_endpoints() {
+  // 1. User's connected OPPO Android phone signature: 0x18D1:0x4EE8 with
+  // Audio Control (01/01/00) and MIDI Streaming (01/03/00) interfaces only.
+  const std::array<InterfaceInfo, 2> oppo_midi_ifaces{
+      InterfaceInfo{0, 0x01, 0x01, 0x00, -1, -1},
+      InterfaceInfo{1, 0x01, 0x03, 0x00, 0x81, 0x01},
+  };
+  if (is_accessory_info(0x18D1, 0x4EE8, oppo_midi_ifaces) ||
+      !is_aoa_switch_candidate_info(0x18D1, 0x4EE8, 0x00, oppo_midi_ifaces)) {
+    std::fprintf(stderr, "FAIL OPPO 18D1:4EE8 Audio/MIDI phone not recognized as AOA candidate\n");
+    return false;
+  }
+
+  // 2. Known Android OEMs with MTP (06/01/01) or zero interfaces (charging-only).
+  const std::array<InterfaceInfo, 1> mtp_ifaces{
+      InterfaceInfo{0, 0x06, 0x01, 0x01, 0x81, 0x01},
+  };
+  const std::array<std::uint16_t, 8> oem_vids{
+      0x22D9, 0x2717, 0x04E8, 0x2D95, 0x3511, 0x2A70, 0x05C6, 0x0E8D};
+  for (const auto vid : oem_vids) {
+    if (!is_aoa_switch_candidate_info(vid, 0x1001, 0x00, mtp_ifaces) ||
+        !is_aoa_switch_candidate_info(vid, 0x1002, 0x00, {})) {
+      std::fprintf(stderr, "FAIL Android OEM VID 0x%04x rejected for MTP or empty interfaces\n", vid);
+      return false;
+    }
+  }
+
+  // 3. Unknown VID with ADB (FF/42/01) or HDC (FF/50/01), plus Huawei HDC (12D1:5000).
+  const std::array<InterfaceInfo, 1> adb_ifaces{
+      InterfaceInfo{0, 0xFF, 0x42, 0x01, 0x82, 0x02},
+  };
+  const std::array<InterfaceInfo, 1> hdc_ifaces{
+      InterfaceInfo{0, 0xFF, 0x50, 0x01, 0x82, 0x02},
+  };
+  if (!is_aoa_switch_candidate_info(0x9999, 0x0001, 0x00, adb_ifaces) ||
+      !is_aoa_switch_candidate_info(0x9999, 0x0002, 0x00, hdc_ifaces) ||
+      !is_aoa_switch_candidate_info(0x12D1, 0x5000, 0x00, hdc_ifaces)) {
+    std::fprintf(stderr, "FAIL ADB/HDC interface device not recognized as AOA candidate\n");
+    return false;
+  }
+
+  // 4. Already-in-AOA devices (18D1:2D00..2D05 and 12D1 with FF/FF/00 bulk IN+OUT).
+  const std::array<InterfaceInfo, 1> aoa_ifaces{
+      InterfaceInfo{0, 0xFF, 0xFF, 0x00, 0x81, 0x01},
+  };
+  for (std::uint16_t pid = 0x2D00; pid <= 0x2D05; ++pid) {
+    if (!is_accessory_info(0x18D1, pid, aoa_ifaces) ||
+        is_aoa_switch_candidate_info(0x18D1, pid, 0x00, aoa_ifaces)) {
+      std::fprintf(stderr, "FAIL AOA accessory 18D1:%04x misclassified\n", pid);
+      return false;
+    }
+  }
+  if (!is_accessory_info(0x12D1, 0x5000, aoa_ifaces) ||
+      is_aoa_switch_candidate_info(0x12D1, 0x5000, 0x00, aoa_ifaces)) {
+    std::fprintf(stderr, "FAIL Huawei AOA-in-place FF/FF/00 misclassified\n");
+    return false;
+  }
+
+  // 5. Reject Hubs, HID-only, Mass-Storage-only, Printer-only, and unknown non-mobile VIDs.
+  const std::array<InterfaceInfo, 1> hid_ifaces{
+      InterfaceInfo{0, LIBUSB_CLASS_HID, 0x01, 0x02, -1, -1},
+  };
+  const std::array<InterfaceInfo, 1> msc_ifaces{
+      InterfaceInfo{0, LIBUSB_CLASS_MASS_STORAGE, 0x06, 0x50, 0x81, 0x02},
+  };
+  const std::array<InterfaceInfo, 1> printer_ifaces{
+      InterfaceInfo{0, LIBUSB_CLASS_PRINTER, 0x01, 0x02, 0x81, 0x02},
+  };
+  const std::array<InterfaceInfo, 1> ecm_ifaces{
+      InterfaceInfo{0, 0x02, 0x06, 0x00, -1, -1},
+  };
+  if (is_aoa_switch_candidate_info(0x17EF, 0x1001, LIBUSB_CLASS_HUB, {}) ||
+      is_aoa_switch_candidate_info(0x17EF, 0x1002, 0x00, hid_ifaces) ||
+      is_aoa_switch_candidate_info(0x04E8, 0x61F5, 0x00, msc_ifaces) ||
+      is_aoa_switch_candidate_info(0x04E8, 0x3301, 0x00, printer_ifaces) ||
+      is_aoa_switch_candidate_info(0x0BDA, 0x8156, 0x00, ecm_ifaces)) {
+    std::fprintf(stderr, "FAIL non-mobile peripheral was misclassified as AOA candidate\n");
+    return false;
+  }
+
+  // 6. Prefer AOA FF/FF/00 over an earlier ADB FF/42/01 interface.
+  const std::array<InterfaceInfo, 2> adb_then_aoa{
+      InterfaceInfo{0, 0xFF, 0x42, 0x01, 0x81, 0x01},
+      InterfaceInfo{1, 0xFF, 0xFF, 0x00, 0x82, 0x02},
+  };
+  BulkEndpoints picked{};
+  if (!select_bulk_endpoints_info(adb_then_aoa, picked) ||
+      picked.interface_number != 1 || picked.endpoint_in != 0x82 ||
+      picked.endpoint_out != 0x02) {
+    std::fprintf(stderr, "FAIL composite AOA endpoint selection chose wrong interface %d\n",
+                 picked.interface_number);
+    return false;
+  }
+
+  // 7. Identity resolution preserves Android phone name/manufacturer across AOA switch.
+  DMBridge *bridge = dm_bridge_create(nullptr);
+  if (bridge == nullptr) {
+    return false;
+  }
+  UsbDeviceIdentity pre_switch{};
+  pre_switch.vendor_id = 0x18D1;
+  pre_switch.product_id = 0x4EE8;
+  pre_switch.port_path = "1:1.2";
+  pre_switch.serial = "4a75941d";
+  pre_switch.manufacturer = "OPPO";
+  pre_switch.name = "SDM778G-IDP _SN:4A75941D";
+  pre_switch.in_accessory_mode = false;
+  resolve_device_identity(bridge, pre_switch);
+
+  UsbDeviceIdentity post_switch{};
+  post_switch.vendor_id = 0x18D1;
+  post_switch.product_id = 0x2D00;
+  post_switch.port_path = "1:1.2";
+  post_switch.serial = "4a75941d";
+  post_switch.name = "Android";
+  post_switch.in_accessory_mode = true;
+  resolve_device_identity(bridge, post_switch);
+
+  if (pre_switch.id != "usb:4a75941d" || post_switch.id != "usb:4a75941d" ||
+      post_switch.name != "SDM778G-IDP _SN:4A75941D" ||
+      post_switch.manufacturer != "OPPO") {
+    std::fprintf(stderr, "FAIL Android identity did not carry across AOA switch: id=%s name=%s mfg=%s\n",
+                 post_switch.id.c_str(), post_switch.name.c_str(),
+                 post_switch.manufacturer.c_str());
+    dm_bridge_destroy(bridge);
+    return false;
+  }
+
+  dm_bridge_destroy(bridge);
+  std::puts("PASS Android AOA discovery classification, endpoint selection, and identity preservation");
+  return true;
+}
+
 int main() {
   using deskmate::protocol::IoStatus;
   std::atomic<std::uint64_t> rx{}, tx{}, errors{};
@@ -580,5 +713,9 @@ int main() {
   const bool policy = test_device_blocklist_and_disconnect();
   const bool multi = test_multi_device_links_and_policy();
   const bool refresh_reconf = test_refresh_rate_reconfigure_and_advertisement();
-  return partial_read && streaming && high_fps && policy && multi && refresh_reconf ? 0 : 1;
+  const bool android_aoa = test_android_aoa_discovery_and_endpoints();
+  return partial_read && streaming && high_fps && policy && multi &&
+                 refresh_reconf && android_aoa
+             ? 0
+             : 1;
 }

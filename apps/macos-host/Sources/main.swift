@@ -1107,7 +1107,7 @@ final class AppController: NSObject, NSApplicationDelegate {
                 onlineDeviceIDs.insert(snap.deviceId)
             }
             channel.deviceName = pairedStore.displayName(for: snap.deviceId) ??
-                (snap.deviceName.isEmpty ? "HarmonyOS 设备" : snap.deviceName)
+                (snap.deviceName.isEmpty ? "DeskMate 设备" : snap.deviceName)
             if isNewDevice, let preferred = pairedStore.preferredPosition(for: snap.deviceId) {
                 if channel.position != preferred {
                     channel.position = preferred
@@ -1188,7 +1188,7 @@ final class AppController: NSObject, NSApplicationDelegate {
             return ActiveDisplaySessionState(
                 linkID: channel.linkID,
                 deviceID: channel.deviceID,
-                deviceName: channel.deviceName.isEmpty ? "HarmonyOS 设备 #\(channel.linkID)" : channel.deviceName,
+                deviceName: channel.deviceName.isEmpty ? "DeskMate 设备 #\(channel.linkID)" : channel.deviceName,
                 state: channel.bridgeState,
                 badge: summary.badge,
                 linked: summary.linked,

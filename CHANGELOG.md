@@ -7,6 +7,21 @@
 
 ---
 
+## [v1.6.0] - 2026-11-26
+
+相对 `v1.5.0` 的主要差异：
+
+### ✨ 界面与视觉焕新
+- **四端 UI 全面重构（Quiet Squircle · 浅/深双色自适应）**：同步重构 macOS Host、Windows Host、HarmonyOS NEXT 与 Android 四端界面。桌面端采用顶部居中胶囊切换与高比例连续圆角布局，移动端自适应平板/手机排版并统一底部或顶部胶囊导航；全端支持跟随系统深浅色切换、主强调色统一为克制钴蓝（`#2563EB` / `#4F8BFF`），去除冗余双语斜杠装饰与硬边框。
+- **四端应用图标焕新**：重新设计并替换 macOS（`.icns`）、Windows（`.ico`）、HarmonyOS NEXT（`app_icon.png`）与 Android（Adaptive 前景/背景与全套 Mipmap）应用图标，采用纯平几何双屏与有线 USB-C 连接弧造型，各尺寸下辨识度统一。
+
+### 🐛 问题修复
+- **修复 macOS Host 无法发现 Android 手机并触发授权提醒的问题**：macOS USB 探测不再只匹配华为 HDC（`12D1:5000`）或已进入 AOA 模式的设备，扩展至与 Windows 端一致的 Android / 移动设备厂商与 ADB/HDC 接口识别规则（包含仅暴露 Audio/MIDI 接口的机型）；同时在复合 AOA 设备下优先选择 `FF/FF/00` Bulk 端点，并对不支持 AOA 的外设进行实例级退避，连接 Android 手机后可正常弹出 USB 配件授权弹窗。
+
+安装与驱动说明请见 [README.zh-CN.md](./README.zh-CN.md)。
+
+---
+
 ## [v1.5.0] - 2026-11-26
 
 相对 `v1.4.0` 的主要差异：

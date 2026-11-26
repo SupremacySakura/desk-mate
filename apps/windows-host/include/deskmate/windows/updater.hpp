@@ -10,7 +10,7 @@
 
 namespace deskmate::windows {
 
-inline constexpr const char* kWindowsHostVersion = "1.5.0";
+inline constexpr const char* kWindowsHostVersion = "1.6.0";
 
 struct LegacyUpdateArtifact {
   std::string path;

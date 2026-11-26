@@ -21,6 +21,7 @@
 #include <functional>
 #include <memory>
 #include <mutex>
+#include <span>
 #include <sstream>
 #include <string>
 #include <thread>
@@ -63,6 +64,118 @@ bool is_accessory(std::uint16_t vendor_id, std::uint16_t product_id) {
 
 bool is_hdc_device(std::uint16_t vendor_id, std::uint16_t product_id) {
   return vendor_id == kHdcVendorId && product_id == kHdcProductId;
+}
+
+bool is_known_mobile_vendor(std::uint16_t vendor_id) noexcept {
+  switch (vendor_id) {
+    case 0x12D1:  // Huawei / Honor (HDC / HiSuite / MTP)
+    case 0x18D1:  // Google / Android
+    case 0x04E8:  // Samsung
+    case 0x2717:  // Xiaomi
+    case 0x22D9:  // OPPO / Realme
+    case 0x2A70:  // OnePlus
+    case 0x2D95:  // vivo
+    case 0x3511:  // Honor
+    case 0x22B8:  // Motorola
+    case 0x0FCE:  // Sony
+    case 0x2970:  // ZUK / Lenovo mobile
+    case 0x2A45:  // Meizu
+    case 0x17EF:  // Lenovo
+    case 0x0B05:  // ASUS
+    case 0x19D2:  // ZTE
+    case 0x0E8D:  // MediaTek Android
+    case 0x05C6:  // Qualcomm Android
+    case 0x1004:  // LG
+    case 0x0BB4:  // HTC
+    case 0x1949:  // Amazon
+    case 0x2AE5:  // Fairphone
+    case 0x29A9:  // Smartisan
+      return true;
+    default:
+      return false;
+  }
+}
+
+struct InterfaceInfo {
+  int interface_number = -1;
+  std::uint8_t cls = 0;
+  std::uint8_t sub_cls = 0;
+  std::uint8_t proto = 0;
+  int bulk_in = -1;
+  int bulk_out = -1;
+};
+
+bool has_adb_or_hdc_interface_info(std::span<const InterfaceInfo> ifaces) noexcept {
+  for (const auto &iface : ifaces) {
+    // ADB: FF/42/01, Fastboot: FF/42/03, HDC: FF/50/01
+    if (iface.cls == 0xFF &&
+        ((iface.sub_cls == 0x42 &&
+          (iface.proto == 0x01 || iface.proto == 0x03)) ||
+         (iface.sub_cls == 0x50 && iface.proto == 0x01))) {
+      return true;
+    }
+  }
+  return false;
+}
+
+bool has_aoa_bulk_interface_info(std::span<const InterfaceInfo> ifaces) noexcept {
+  for (const auto &iface : ifaces) {
+    if (iface.cls == 0xFF && iface.sub_cls == 0xFF && iface.proto == 0x00 &&
+        iface.bulk_in >= 0 && iface.bulk_out >= 0) {
+      return true;
+    }
+  }
+  return false;
+}
+
+bool is_non_mobile_peripheral_info(
+    std::uint8_t device_class, std::span<const InterfaceInfo> ifaces) noexcept {
+  if (device_class == LIBUSB_CLASS_HUB) {
+    return true;
+  }
+  // Charging-only phones may expose zero interfaces; never exclude those.
+  if (ifaces.empty()) {
+    return false;
+  }
+  // Do NOT exclude Audio/MIDI (0x01): Android devices (e.g. OPPO 18D1:4EE8)
+  // can expose Audio/MIDI-only configurations while still supporting AOA EP0.
+  for (const auto &iface : ifaces) {
+    switch (iface.cls) {
+      case LIBUSB_CLASS_HID:
+      case LIBUSB_CLASS_HUB:
+      case LIBUSB_CLASS_MASS_STORAGE:
+      case LIBUSB_CLASS_PRINTER:
+      case LIBUSB_CLASS_SMART_CARD:
+        break;
+      default:
+        return false;
+    }
+  }
+  return true;
+}
+
+bool is_accessory_info(std::uint16_t vendor_id, std::uint16_t product_id,
+                       std::span<const InterfaceInfo> ifaces) noexcept {
+  return is_accessory(vendor_id, product_id) ||
+         (vendor_id == kHdcVendorId && has_aoa_bulk_interface_info(ifaces));
+}
+
+bool is_aoa_switch_candidate_info(
+    std::uint16_t vendor_id, std::uint16_t product_id,
+    std::uint8_t device_class, std::span<const InterfaceInfo> ifaces) noexcept {
+  if (is_accessory_info(vendor_id, product_id, ifaces)) {
+    return false;
+  }
+  if (is_hdc_device(vendor_id, product_id)) {
+    return true;
+  }
+  if (has_adb_or_hdc_interface_info(ifaces)) {
+    return true;
+  }
+  if (is_non_mobile_peripheral_info(device_class, ifaces)) {
+    return false;
+  }
+  return is_known_mobile_vendor(vendor_id);
 }
 
 std::string libusb_text(int rc) { return libusb_error_name(rc); }
@@ -263,24 +376,28 @@ struct BulkEndpoints {
   std::uint8_t endpoint_out = 0;
 };
 
-bool find_bulk_endpoints(libusb_device *device, BulkEndpoints &out,
-                         std::string &error) {
+std::vector<InterfaceInfo> read_interface_infos(libusb_device *device) {
+  std::vector<InterfaceInfo> out;
+  if (device == nullptr) {
+    return out;
+  }
   libusb_config_descriptor *config = nullptr;
   int rc = libusb_get_active_config_descriptor(device, &config);
   if (rc != LIBUSB_SUCCESS) {
     rc = libusb_get_config_descriptor(device, 0, &config);
   }
   if (rc != LIBUSB_SUCCESS || config == nullptr) {
-    error = "cannot read accessory configuration: " + libusb_text(rc);
-    return false;
+    return out;
   }
-  bool found = false;
-  for (uint8_t index = 0; index < config->bNumInterfaces && !found; ++index) {
+  for (uint8_t index = 0; index < config->bNumInterfaces; ++index) {
     const libusb_interface &iface = config->interface[index];
-    for (int alt = 0; alt < iface.num_altsetting && !found; ++alt) {
+    for (int alt = 0; alt < iface.num_altsetting; ++alt) {
       const libusb_interface_descriptor &descriptor = iface.altsetting[alt];
-      int candidate_in = -1;
-      int candidate_out = -1;
+      InterfaceInfo info;
+      info.interface_number = descriptor.bInterfaceNumber;
+      info.cls = descriptor.bInterfaceClass;
+      info.sub_cls = descriptor.bInterfaceSubClass;
+      info.proto = descriptor.bInterfaceProtocol;
       for (uint8_t endpoint_index = 0;
            endpoint_index < descriptor.bNumEndpoints; ++endpoint_index) {
         const libusb_endpoint_descriptor &endpoint =
@@ -289,26 +406,76 @@ bool find_bulk_endpoints(libusb_device *device, BulkEndpoints &out,
           continue;
         }
         if ((endpoint.bEndpointAddress & LIBUSB_ENDPOINT_DIR_MASK) != 0) {
-          if (candidate_in < 0) {
-            candidate_in = endpoint.bEndpointAddress;
+          if (info.bulk_in < 0) {
+            info.bulk_in = endpoint.bEndpointAddress;
           }
-        } else if (candidate_out < 0) {
-          candidate_out = endpoint.bEndpointAddress;
+        } else if (info.bulk_out < 0) {
+          info.bulk_out = endpoint.bEndpointAddress;
         }
       }
-      if (candidate_in >= 0 && candidate_out >= 0) {
-        out.interface_number = descriptor.bInterfaceNumber;
-        out.endpoint_in = static_cast<std::uint8_t>(candidate_in);
-        out.endpoint_out = static_cast<std::uint8_t>(candidate_out);
-        found = true;
-      }
+      out.push_back(info);
     }
   }
   libusb_free_config_descriptor(config);
-  if (!found) {
-    error = "accessory interface has no paired bulk IN/OUT endpoints";
+  return out;
+}
+
+bool select_bulk_endpoints_info(std::span<const InterfaceInfo> ifaces,
+                                BulkEndpoints &out) {
+  // Pass 1: prefer the AOA vendor-specific interface (FF/FF/00) so composite
+  // devices such as 18D1:2D01 (AOA + ADB) never claim ADB by mistake.
+  for (const auto &iface : ifaces) {
+    if (iface.cls == 0xFF && iface.sub_cls == 0xFF && iface.proto == 0x00 &&
+        iface.bulk_in >= 0 && iface.bulk_out >= 0) {
+      out.interface_number = iface.interface_number;
+      out.endpoint_in = static_cast<std::uint8_t>(iface.bulk_in);
+      out.endpoint_out = static_cast<std::uint8_t>(iface.bulk_out);
+      return true;
+    }
   }
-  return found;
+  // Pass 2: fall back to the first interface with paired bulk IN/OUT endpoints.
+  for (const auto &iface : ifaces) {
+    if (iface.bulk_in >= 0 && iface.bulk_out >= 0) {
+      out.interface_number = iface.interface_number;
+      out.endpoint_in = static_cast<std::uint8_t>(iface.bulk_in);
+      out.endpoint_out = static_cast<std::uint8_t>(iface.bulk_out);
+      return true;
+    }
+  }
+  return false;
+}
+
+bool is_accessory_device(libusb_device *device,
+                         const libusb_device_descriptor &desc) {
+  if (is_accessory(desc.idVendor, desc.idProduct)) {
+    return true;
+  }
+  if (desc.idVendor != kHdcVendorId) {
+    return false;
+  }
+  const auto ifaces = read_interface_infos(device);
+  return is_accessory_info(desc.idVendor, desc.idProduct, ifaces);
+}
+
+bool is_aoa_switch_candidate(libusb_device *device,
+                             const libusb_device_descriptor &desc) {
+  const auto ifaces = read_interface_infos(device);
+  return is_aoa_switch_candidate_info(desc.idVendor, desc.idProduct,
+                                      desc.bDeviceClass, ifaces);
+}
+
+bool find_bulk_endpoints(libusb_device *device, BulkEndpoints &out,
+                         std::string &error) {
+  const auto ifaces = read_interface_infos(device);
+  if (ifaces.empty()) {
+    error = "cannot read accessory configuration or no interfaces present";
+    return false;
+  }
+  if (!select_bulk_endpoints_info(ifaces, out)) {
+    error = "accessory interface has no paired bulk IN/OUT endpoints";
+    return false;
+  }
+  return true;
 }
 
 bool is_accessory_present_at(libusb_context *context, std::uint8_t bus,
@@ -330,7 +497,7 @@ bool is_accessory_present_at(libusb_context *context, std::uint8_t bus,
     libusb_device_descriptor descriptor{};
     if (libusb_get_device_descriptor(devices[index], &descriptor) ==
             LIBUSB_SUCCESS &&
-        is_accessory(descriptor.idVendor, descriptor.idProduct)) {
+        is_accessory_device(devices[index], descriptor)) {
       found = true;
     }
     break;
@@ -408,7 +575,19 @@ bool is_generic_device_name(const std::string &name) {
   return name.empty() || name == "Android" || name == "Accessory" ||
          name == "AOA" || name == "DeskMate" ||
          name == "DeskMate Extended Display" ||
-         name == "HarmonyOS 设备" || name == "DeskMate 设备";
+         name == "DeskMate accessory" || name == "DeskMate device" ||
+         name == "HarmonyOS 设备" || name == "HarmonyOS / Android 设备" ||
+         name == "DeskMate 设备";
+}
+
+std::string format_device_instance_key(std::uint8_t bus, std::uint8_t address,
+                                       std::uint16_t vendor_id,
+                                       std::uint16_t product_id) {
+  char buf[48] = {};
+  std::snprintf(buf, sizeof(buf), "addr:%u:%u:%04x:%04x",
+                static_cast<unsigned>(bus), static_cast<unsigned>(address),
+                vendor_id, product_id);
+  return std::string(buf);
 }
 
 std::string format_usb_fallback_id(std::uint16_t vendor_id,
@@ -578,6 +757,8 @@ struct DMBridge {
   std::chrono::steady_clock::time_point last_hdc_seen_at{};
   std::unordered_map<std::string, std::chrono::steady_clock::time_point>
       aoa_switch_cooldown;
+  std::unordered_map<std::string, std::chrono::steady_clock::time_point>
+      aoa_unsupported_until;
   std::unordered_map<std::string, TimedIdentity> expected_identity_by_port;
 
   std::mutex snapshot_mutex;
@@ -758,7 +939,7 @@ void resolve_device_identity(DMBridge *bridge, UsbDeviceIdentity &identity) {
     if (is_generic_device_name(identity.name)) {
       identity.name = !identity.manufacturer.empty()
                           ? (identity.manufacturer + " 设备")
-                          : "HarmonyOS 设备";
+                          : "HarmonyOS / Android 设备";
     }
     if (bridge != nullptr) {
       std::lock_guard lock(bridge->device_policy_mutex);
@@ -848,7 +1029,7 @@ void inspect_usb_device(DMBridge *bridge, libusb_device *device,
   identity.bus = libusb_get_bus_number(device);
   identity.address = libusb_get_device_address(device);
   identity.port_path = format_port_path(device, identity.bus);
-  identity.in_accessory_mode = is_accessory(desc.idVendor, desc.idProduct);
+  identity.in_accessory_mode = is_accessory_device(device, desc);
 
   if (bridge != nullptr) {
     const auto current_links = snapshot_links(bridge);
@@ -911,12 +1092,16 @@ void merge_expected_identity(UsbDeviceIdentity &target,
   }
 }
 
-bool trigger_aoa_switch(DMBridge *bridge, libusb_device *hdc_device,
+bool trigger_aoa_switch(DMBridge *bridge, libusb_device *candidate_device,
                         const UsbDeviceIdentity &identity,
-                        std::string &error) {
+                        std::string &error, bool &unsupported_out,
+                        bool &open_failed_out) {
+  unsupported_out = false;
+  open_failed_out = false;
   libusb_device_handle *handle = nullptr;
-  const int open_rc = libusb_open(hdc_device, &handle);
+  const int open_rc = libusb_open(candidate_device, &handle);
   if (open_rc != LIBUSB_SUCCESS || handle == nullptr) {
+    open_failed_out = true;
     error = "libusb_open failed: " + libusb_text(open_rc);
     return false;
   }
@@ -928,6 +1113,8 @@ bool trigger_aoa_switch(DMBridge *bridge, libusb_device *hdc_device,
           LIBUSB_ENDPOINT_IN,
       51, 0, 0, protocol_bytes, sizeof(protocol_bytes), kControlTimeoutMs);
   if (protocol_rc < 0) {
+    unsupported_out = (protocol_rc == LIBUSB_ERROR_PIPE ||
+                       protocol_rc == LIBUSB_ERROR_NOT_SUPPORTED);
     error = "AOA GET_PROTOCOL failed: " + libusb_text(protocol_rc) +
             " (device may not implement AOA)";
     libusb_close(handle);
@@ -937,6 +1124,7 @@ bool trigger_aoa_switch(DMBridge *bridge, libusb_device *hdc_device,
                                  static_cast<std::uint16_t>(protocol_bytes[1])
                                      << 8;
   if (protocol < 1) {
+    unsupported_out = true;
     error = "AOA GET_PROTOCOL returned version 0";
     libusb_close(handle);
     return false;
@@ -951,6 +1139,7 @@ bool trigger_aoa_switch(DMBridge *bridge, libusb_device *hdc_device,
       return false;
     }
   }
+  std::this_thread::sleep_for(std::chrono::milliseconds(10));
   std::uint8_t no_data = 0;
   const int start_rc = libusb_control_transfer(
       handle,
@@ -958,15 +1147,25 @@ bool trigger_aoa_switch(DMBridge *bridge, libusb_device *hdc_device,
           LIBUSB_ENDPOINT_OUT,
       53, 0, 0, &no_data, 0, kControlTimeoutMs);
   libusb_close(handle);
-  if (start_rc < 0) {
+  // Devices may immediately reset/drop off the bus on AOA START before completing
+  // the control status stage, returning NO_DEVICE, IO, or PIPE on success.
+  if (start_rc < 0 && start_rc != LIBUSB_ERROR_NO_DEVICE &&
+      start_rc != LIBUSB_ERROR_IO && start_rc != LIBUSB_ERROR_PIPE) {
     error = "AOA START failed: " + libusb_text(start_rc);
     return false;
   }
 
-  if (bridge != nullptr && !identity.port_path.empty()) {
-    std::lock_guard lock(bridge->device_policy_mutex);
-    bridge->expected_identity_by_port[identity.port_path] = {
-        identity, std::chrono::steady_clock::now() + kExpectedIdentityTtl};
+  if (bridge != nullptr) {
+    char vid_pid[24] = {};
+    std::snprintf(vid_pid, sizeof(vid_pid), "%04x:%04x", identity.vendor_id,
+                  identity.product_id);
+    bridge->log("[discovery] sent AOA START to " + identity.name + " (" +
+                vid_pid + ", port=" + identity.port_path + ")");
+    if (!identity.port_path.empty()) {
+      std::lock_guard lock(bridge->device_policy_mutex);
+      bridge->expected_identity_by_port[identity.port_path] = {
+          identity, std::chrono::steady_clock::now() + kExpectedIdentityTtl};
+    }
   }
   return true;
 }
@@ -1617,9 +1816,10 @@ void discovery_main(DMBridge *bridge) {
       if (libusb_get_device_descriptor(dev, &desc) != LIBUSB_SUCCESS) {
         continue;
       }
-      const bool hdc = is_hdc_device(desc.idVendor, desc.idProduct);
-      const bool accessory = is_accessory(desc.idVendor, desc.idProduct);
-      if (!hdc && !accessory) {
+      const bool accessory = is_accessory_device(dev, desc);
+      const bool switch_candidate =
+          !accessory && is_aoa_switch_candidate(dev, desc);
+      if (!accessory && !switch_candidate) {
         continue;
       }
       const std::uint8_t bus = libusb_get_bus_number(dev);
@@ -1665,6 +1865,9 @@ void discovery_main(DMBridge *bridge) {
             !candidate.identity.port_path.empty()
                 ? ("port:" + candidate.identity.port_path)
                 : candidate.identity.id;
+        const std::string instance_key = format_device_instance_key(
+            candidate.identity.bus, candidate.identity.address,
+            candidate.desc.idVendor, candidate.desc.idProduct);
         bool in_cooldown = false;
         {
           std::lock_guard lock(bridge->device_policy_mutex);
@@ -1672,19 +1875,46 @@ void discovery_main(DMBridge *bridge) {
           if (it != bridge->aoa_switch_cooldown.end() && now < it->second) {
             in_cooldown = true;
           }
+          auto unsup = bridge->aoa_unsupported_until.find(instance_key);
+          if (unsup != bridge->aoa_unsupported_until.end() &&
+              now < unsup->second) {
+            in_cooldown = true;
+          }
         }
         if (!in_cooldown) {
           std::string error;
+          bool unsupported = false;
+          bool open_failed = false;
           if (trigger_aoa_switch(bridge, candidate.device, candidate.identity,
-                                 error)) {
+                                 error, unsupported, open_failed)) {
             std::lock_guard lock(bridge->device_policy_mutex);
             bridge->aoa_switch_cooldown[cooldown_key] = now + kAoaSwitchCooldown;
+            bridge->aoa_unsupported_until.erase(instance_key);
             bridge->clear_discovery_error();
-          } else if (!error.empty()) {
-            bridge->set_discovery_error(error);
-            std::lock_guard lock(bridge->device_policy_mutex);
-            bridge->aoa_switch_cooldown[cooldown_key] =
-                now + std::chrono::seconds(2);
+          } else {
+            const bool is_hdc = is_hdc_device(candidate.desc.idVendor,
+                                              candidate.desc.idProduct);
+            if (is_hdc || (!unsupported && !open_failed)) {
+              if (!error.empty()) {
+                bridge->set_discovery_error(error);
+              }
+              std::lock_guard lock(bridge->device_policy_mutex);
+              bridge->aoa_switch_cooldown[cooldown_key] =
+                  now + std::chrono::seconds(2);
+            } else {
+              bridge->log(
+                  unsupported
+                      ? ("[discovery] skipping non-AOA device " +
+                         candidate.identity.name + " (" + instance_key +
+                         "): " + error)
+                      : ("[discovery] cannot probe candidate " +
+                         candidate.identity.name + " (" + instance_key +
+                         "): " + error));
+              std::lock_guard lock(bridge->device_policy_mutex);
+              bridge->aoa_unsupported_until[instance_key] =
+                  now + (unsupported ? std::chrono::seconds(30)
+                                     : std::chrono::seconds(10));
+            }
           }
         }
       }
@@ -2401,18 +2631,28 @@ char *dm_bridge_scan_devices(DMBridge *bridge) {
     const ssize_t count = libusb_get_device_list(ctx, &devices);
     if (count >= 0) {
       for (ssize_t index = 0; index < count; ++index) {
+        libusb_device *dev = devices[index];
         libusb_device_descriptor desc{};
-        if (libusb_get_device_descriptor(devices[index], &desc) !=
-            LIBUSB_SUCCESS) {
+        if (libusb_get_device_descriptor(dev, &desc) != LIBUSB_SUCCESS) {
           continue;
         }
-        if (!is_hdc_device(desc.idVendor, desc.idProduct) &&
-            !is_accessory(desc.idVendor, desc.idProduct)) {
+        const bool accessory = is_accessory_device(dev, desc);
+        if (!accessory && !is_aoa_switch_candidate(dev, desc)) {
           continue;
+        }
+        if (!accessory && bridge != nullptr) {
+          const std::string instance_key = format_device_instance_key(
+              libusb_get_bus_number(dev), libusb_get_device_address(dev),
+              desc.idVendor, desc.idProduct);
+          std::lock_guard lock(bridge->device_policy_mutex);
+          auto unsup = bridge->aoa_unsupported_until.find(instance_key);
+          if (unsup != bridge->aoa_unsupported_until.end() &&
+              std::chrono::steady_clock::now() < unsup->second) {
+            continue;
+          }
         }
         UsbDeviceIdentity identity;
-        inspect_usb_device(bridge, devices[index], desc, nullptr, true,
-                           identity);
+        inspect_usb_device(bridge, dev, desc, nullptr, true, identity);
         if (!identity.id.empty()) {
           found.push_back(std::move(identity));
         }

@@ -49,8 +49,8 @@ final class PairedDeviceStore {
         guard !cleanID.isEmpty else { return false }
 
         let fallbackName = manufacturer.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            ? "HarmonyOS 平板"
-            : "\(manufacturer.trimmingCharacters(in: .whitespacesAndNewlines)) 平板"
+            ? "DeskMate 设备"
+            : "\(manufacturer.trimmingCharacters(in: .whitespacesAndNewlines)) 设备"
         let resolvedName = name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? fallbackName : name
         let now = Date()
         var changed = false
@@ -179,7 +179,8 @@ final class PairedDeviceStore {
             trimmed == "DeskMate 平板设备" ||
             trimmed == "DeskMate 设备" ||
             trimmed == "HarmonyOS 平板" ||
-            trimmed == "HarmonyOS 设备"
+            trimmed == "HarmonyOS 设备" ||
+            trimmed == "HarmonyOS / Android 设备"
     }
 
     private func sortDevices() {
