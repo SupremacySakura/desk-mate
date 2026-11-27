@@ -31,6 +31,27 @@ struct libusb_transfer;
 
 namespace deskmate::windows {
 
+// Selects the byte count for the next Bulk OUT transfer.
+// HarmonyOS/Android f_accessory read() is 16 KiB message-oriented: a transfer
+// whose length is an exact multiple of USB wMaxPacketSize (512B High-Speed /
+// 1024B SuperSpeed) has no terminating short packet, so the device UDC can
+// coalesce the next 12 KiB video fragment into the same 16 KiB read and
+// overflow/STALL the pipe. Splitting off 64 bytes ensures both chunks end in a
+// short packet (< 512B).
+[[nodiscard]] constexpr std::size_t select_bulk_out_chunk_bytes(
+    std::size_t remaining_bytes,
+    std::size_t max_transfer_bytes = 16384) noexcept {
+  if (remaining_bytes == 0 || max_transfer_bytes == 0) {
+    return 0;
+  }
+  std::size_t chunk =
+      remaining_bytes < max_transfer_bytes ? remaining_bytes : max_transfer_bytes;
+  if (chunk >= 512U && (chunk % 512U) == 0U) {
+    chunk -= 64U;
+  }
+  return chunk;
+}
+
 struct ScannedUsbDevice {
   deskmate::platform::AoaIdentity identity;
   std::uint16_t vendor_id{};
@@ -138,7 +159,7 @@ class LibusbBulkTransport final : public LinkTransport {
 
   static constexpr std::size_t kInTransferCount = 4;
   static constexpr std::size_t kInTransferBytes = 16384;
-  static constexpr std::size_t kOutSlotCount = 6;
+  static constexpr std::size_t kOutSlotCount = 4;
   static constexpr std::size_t kMaxOutTransferBytes = 16384;
 
   [[maybe_unused]] std::array<libusb_transfer*, kInTransferCount>

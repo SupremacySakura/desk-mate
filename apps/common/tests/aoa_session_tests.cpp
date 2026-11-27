@@ -235,11 +235,12 @@ void test_video_backlog_drops_new_p_frames_instead_of_breaking_a_gop() {
     gated.submit_video(std::vector<std::uint8_t>{0x41}, pts, false);
   }
   CHECK(gated.stats().frames_dropped == 5U);
-  // The next IDR reopens the gate and is admitted (replacing the backlog).
+  // An un-pumped IDR still leaves drop_until_keyframe_ armed until pump()
+  // confirms it was Sent, so an intervening P-frame is dropped.
   gated.submit_video(std::vector<std::uint8_t>{0x65}, 21U, true);
   CHECK(!gated.consume_local_keyframe_request());
   gated.submit_video(std::vector<std::uint8_t>{0x41}, 22U, false);
-  CHECK(gated.stats().frames_dropped == 21U);
+  CHECK(gated.stats().frames_dropped == 22U);
   gated.stop();
 
   // A live session exposes which encoded frames actually enter the wire
@@ -330,9 +331,9 @@ void test_session_link_refresh_reconfigure_and_idr_retry() {
   CHECK(link.state() == deskmate::protocol::SessionState::Reconfiguring);
   const std::uint32_t first_idr_req = link.take_keyframe_request();
   CHECK(first_idr_req != 0U);
-  // Immediately polling again is debounced, then retries after 120 ms.
+  // Immediately polling again is debounced, then retries after 250 ms.
   CHECK(link.take_keyframe_request() == 0U);
-  std::this_thread::sleep_for(std::chrono::milliseconds(130));
+  std::this_thread::sleep_for(std::chrono::milliseconds(260));
   CHECK(link.take_keyframe_request() == first_idr_req);
 
   link.submit_video(std::vector<std::uint8_t>{0x65}, 100U, true);

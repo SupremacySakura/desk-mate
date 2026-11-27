@@ -82,7 +82,7 @@ deskmate::protocol::HostSessionConfig make_host_session_config(
   config.limits.initial_idr_timeout_ns = kAoaInitialIdrTimeoutNs;
   config.scheduler.max_video_urbs = 8;
   config.scheduler.max_pending_video_bytes = 2U * 1024U * 1024U;
-  config.scheduler.max_oldest_unsent_frame_age_ns = 100'000'000ULL;
+  config.scheduler.max_oldest_unsent_frame_age_ns = 250'000'000ULL;
   return config;
 }
 

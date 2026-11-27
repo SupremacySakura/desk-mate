@@ -2,6 +2,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <deque>
 #include <functional>
 #include <memory>
 #include <mutex>
@@ -111,6 +112,17 @@ bool apply_monitor_layout(const std::vector<MonitorPlacement>& placements);
                                                 bool explicit_fallback,
                                                 int fallback_hz) noexcept;
 
+// Steady-state idle keepalive targets up to 60 Hz so static desktops stay
+// responsive at 60 FPS even without mouse movement, while 30 Hz stays at 30 Hz.
+[[nodiscard]] int resolve_idle_keepalive_hz(int effective_hz) noexcept;
+
+// Two-phase idle AcquireNextFrame timeout: uses short (1..8 ms) DXGI waits
+// until within ~4.5 ms of the deadline, then returns 0 so capture_loop()
+// finishes the tail on the high-resolution waitable timer (~0.3 ms accuracy).
+[[nodiscard]] std::uint32_t compute_idle_acquire_wait_ms(
+    std::int64_t now_us, std::int64_t next_idle_deadline_us,
+    bool urgent_retry) noexcept;
+
 class FramePacer {
  public:
   explicit FramePacer(int fps);
@@ -124,15 +136,20 @@ class FramePacer {
 
 // A transient not-ready result leaves the newest sample queued. Only replacing
 // an unsubmitted sample counts as a capture-side drop.
-template <typename Sample>
+template <typename Sample, std::size_t Capacity = 1>
 class LatestFrameQueue {
  public:
   static_assert(!std::is_reference_v<Sample>);
+  static_assert(Capacity >= 1);
 
   bool push(Sample sample) {
     std::lock_guard lock(mutex_);
-    const bool replaced = pending_.has_value();
-    pending_ = std::move(sample);
+    bool replaced = false;
+    if (queue_.size() >= Capacity) {
+      queue_.pop_front();
+      replaced = true;
+    }
+    queue_.push_back(std::move(sample));
     return replaced;
   }
 
@@ -140,8 +157,12 @@ class LatestFrameQueue {
   // resource (GPU texture slot, sample) the replaced frame was holding.
   std::optional<Sample> replace(Sample sample) {
     std::lock_guard lock(mutex_);
-    std::optional<Sample> evicted = std::move(pending_);
-    pending_ = std::move(sample);
+    std::optional<Sample> evicted;
+    if (queue_.size() >= Capacity) {
+      evicted = std::move(queue_.front());
+      queue_.pop_front();
+    }
+    queue_.push_back(std::move(sample));
     return evicted;
   }
 
@@ -149,31 +170,53 @@ class LatestFrameQueue {
     requires std::copy_constructible<Sample>
   {
     std::lock_guard lock(mutex_);
-    return pending_;
+    if (queue_.empty()) {
+      return std::nullopt;
+    }
+    return queue_.front();
+  }
+
+  [[nodiscard]] bool empty() const {
+    std::lock_guard lock(mutex_);
+    return queue_.empty();
   }
 
   [[nodiscard]] std::optional<Sample> take() {
     std::lock_guard lock(mutex_);
-    return std::exchange(pending_, std::nullopt);
+    if (queue_.empty()) {
+      return std::nullopt;
+    }
+    Sample front = std::move(queue_.front());
+    queue_.pop_front();
+    return front;
   }
 
   bool restore_if_empty(Sample sample) {
     std::lock_guard lock(mutex_);
-    if (pending_.has_value()) {
+    if (!queue_.empty()) {
       return false;
     }
-    pending_ = std::move(sample);
+    queue_.push_front(std::move(sample));
+    return true;
+  }
+
+  bool restore_front(Sample sample) {
+    std::lock_guard lock(mutex_);
+    if (queue_.size() >= Capacity) {
+      return false;
+    }
+    queue_.push_front(std::move(sample));
     return true;
   }
 
   void discard() {
     std::lock_guard lock(mutex_);
-    pending_.reset();
+    queue_.clear();
   }
 
  private:
   mutable std::mutex mutex_;
-  std::optional<Sample> pending_;
+  std::deque<Sample> queue_;
 };
 
 // Computes a target H.264/HEVC bitrate sized to avoid overflowing the 12 KiB

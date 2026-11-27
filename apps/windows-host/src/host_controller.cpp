@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <ctime>
 #include <sstream>
 #include <unordered_set>
 
@@ -269,13 +270,34 @@ void HostController::stop_service_internal() {
 }
 
 void HostController::append_log(const std::string& line) {
+  std::string stamped = line;
+  if (!line.empty()) {
+    const auto now = std::chrono::system_clock::now();
+    const auto ms =
+        std::chrono::duration_cast<std::chrono::milliseconds>(
+            now.time_since_epoch())
+            .count() %
+        1000;
+    const std::time_t tt = std::chrono::system_clock::to_time_t(now);
+    std::tm tm_val{};
+#ifdef _WIN32
+    localtime_s(&tm_val, &tt);
+#else
+    localtime_r(&tt, &tm_val);
+#endif
+    char prefix[24]{};
+    std::snprintf(prefix, sizeof(prefix), "%02d:%02d:%02d.%03lld ",
+                  tm_val.tm_hour, tm_val.tm_min, tm_val.tm_sec,
+                  static_cast<long long>(ms));
+    stamped = std::string(prefix) + line;
+  }
   std::lock_guard lock(log_mutex_);
   if (logs_.size() >= kMaxLogLines) {
     logs_.pop_front();
   }
-  logs_.push_back(line);
+  logs_.push_back(stamped);
   if (options_.headless) {
-    std::fprintf(stderr, "%s\n", line.c_str());
+    std::fprintf(stderr, "%s\n", stamped.c_str());
   }
 }
 
@@ -330,8 +352,10 @@ void HostController::discovery_loop() {
     std::unordered_set<std::uint16_t> owned_bus_addrs;
     std::unordered_set<std::string> active_keys;
     std::unordered_set<std::string> active_ids;
+    bool has_active_channels = false;
     {
       std::lock_guard lock(mutex_);
+      has_active_channels = !channels_.empty();
       for (const auto& [id, ch] : channels_) {
         (void)id;
         active_keys.insert(ch->key);
@@ -348,8 +372,10 @@ void HostController::discovery_loop() {
     std::string pnp_summary;
     bool pnp_driver_missing = false;
     std::string pnp_driver_hint;
-    discovery_->probe_pnp_aoa_status(pnp_summary, pnp_driver_missing,
-                                     pnp_driver_hint);
+    if (!has_active_channels) {
+      discovery_->probe_pnp_aoa_status(pnp_summary, pnp_driver_missing,
+                                       pnp_driver_hint);
+    }
 
     std::string usb_summary;
     for (std::size_t idx = 0; idx < scanned.size(); ++idx) {
@@ -413,9 +439,13 @@ void HostController::discovery_loop() {
     std::string latest_driver_hint;
     std::string latest_error;
 
+    bool has_pending_candidate = false;
     for (const auto& dev : scanned) {
       if (discovery_stop_.load(std::memory_order_acquire)) {
         break;
+      }
+      if (!dev.in_accessory_mode) {
+        has_pending_candidate = true;
       }
       const std::string key = deskmate::platform::aoa_identity_key(dev.identity);
       const std::string dev_id = deskmate::platform::aoa_device_id(dev.identity);
@@ -543,8 +573,12 @@ void HostController::discovery_loop() {
       }
     }
 
+    const auto wait_interval =
+        (has_active_channels && !has_pending_candidate)
+            ? std::chrono::milliseconds(2500)
+            : std::chrono::milliseconds(400);
     std::unique_lock lock(discovery_mutex_);
-    discovery_cv_.wait_for(lock, std::chrono::milliseconds(400), [this] {
+    discovery_cv_.wait_for(lock, wait_interval, [this] {
       return discovery_stop_.load(std::memory_order_acquire) ||
              discovery_wakeup_;
     });
@@ -648,10 +682,34 @@ void HostController::link_worker_loop(const std::shared_ptr<LinkChannel>& ch) {
       if (!terr.empty()) {
         full_err += " (" + terr + ")";
       }
+      const auto end_stats = ch->session->stats();
+      std::uint64_t end_captured = 0;
+      std::uint64_t end_encoded = 0;
+      std::uint64_t end_cap_dropped = 0;
+      std::string end_enc;
       {
         std::lock_guard lock(mutex_);
         ch->last_error = full_err;
+        if (ch->capture != nullptr) {
+          end_captured = ch->capture->received_frame_count();
+          end_encoded = ch->capture->encoded_frame_count();
+          end_cap_dropped = ch->capture->dropped_frame_count();
+          end_enc = ch->capture->status_summary();
+        }
       }
+      append_log("[link " + std::to_string(ch->link_id) + "] 会话统计: sent=" +
+                 std::to_string(end_stats.frames_sent) + "/" +
+                 std::to_string(end_stats.frames_submitted) +
+                 " drop=" + std::to_string(end_stats.frames_dropped) +
+                 " idrReject=" + std::to_string(end_stats.idr_wait_rejects) +
+                 " cap=" + std::to_string(end_captured) +
+                 " enc=" + std::to_string(end_encoded) +
+                 " capDrop=" + std::to_string(end_cap_dropped) +
+                 " tx=" + std::to_string(end_stats.tx_bytes) +
+                 "B rx=" + std::to_string(end_stats.rx_bytes) +
+                 "B bulkErr=" + std::to_string(end_stats.bulk_errors) +
+                 " timeouts=" + std::to_string(end_stats.write_timeouts) +
+                 (end_enc.empty() ? std::string{} : (" encoder=\"" + end_enc + "\"")));
       append_log("[link " + std::to_string(ch->link_id) + "] 会话结束: " +
                  full_err);
       break;
@@ -665,10 +723,15 @@ void HostController::link_worker_loop(const std::shared_ptr<LinkChannel>& ch) {
     }
 
     const auto now = std::chrono::steady_clock::now();
-    if (state_changed ||
-        ch->capture_dirty.exchange(false, std::memory_order_acq_rel) ||
-        !ch->capture_active.load(std::memory_order_acquire) ||
-        now >= next_poll_30hz) {
+    const auto now_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                            now.time_since_epoch())
+                            .count();
+    const bool cap_active = ch->capture_active.load(std::memory_order_acquire);
+    const bool cap_dirty =
+        ch->capture_dirty.exchange(false, std::memory_order_acq_rel);
+    const auto retry_ns = ch->retry_after_ns.load(std::memory_order_acquire);
+    if (state_changed || cap_dirty ||
+        (!cap_active && (retry_ns == 0 || now_ns >= retry_ns))) {
       ensure_capture_for_channel(ch);
     }
     if (!logged_first_frame && ch->session->stats().frames_sent > 0) {
@@ -680,12 +743,10 @@ void HostController::link_worker_loop(const std::shared_ptr<LinkChannel>& ch) {
     // Route incoming reverse touch/key events to this link's InputInjector.
     const auto input_batch = ch->session->take_input();
     if (!input_batch.empty()) {
-      bool allow = false;
-      {
-        std::lock_guard lock(mutex_);
-        allow = allow_input_ && ch->session->input_requested();
-      }
+      const bool allow = allow_input_.load(std::memory_order_acquire) &&
+                         ch->session->input_requested();
       if (allow && ch->injector != nullptr) {
+        std::lock_guard ilock(ch->injector_mutex);
         for (const auto& ev : input_batch) {
           (void)ch->injector->inject(ev);
         }
@@ -706,12 +767,10 @@ void HostController::link_worker_loop(const std::shared_ptr<LinkChannel>& ch) {
 
     if (now >= next_poll_30hz) {
       next_poll_30hz = now + std::chrono::milliseconds(33);
-      bool tick_input = false;
-      {
-        std::lock_guard lock(mutex_);
-        tick_input = allow_input_ && ch->session->input_requested();
-      }
+      const bool tick_input = allow_input_.load(std::memory_order_acquire) &&
+                              ch->session->input_requested();
       if (tick_input && ch->injector != nullptr) {
+        std::lock_guard ilock(ch->injector_mutex);
         ch->injector->tick();
       }
     }
@@ -882,6 +941,7 @@ void HostController::ensure_capture_for_channel(
       active_monitor_is_virtual = monitor->is_virtual;
       active_monitor_hz = monitor->refresh_hz;
       if (ch->injector != nullptr) {
+        std::lock_guard ilock(ch->injector_mutex);
         ch->injector->set_target(InjectorTarget{
             monitor->left, monitor->top, monitor->width, monitor->height});
       }
@@ -895,6 +955,11 @@ void HostController::ensure_capture_for_channel(
             "无法创建独立虚拟扩展屏：未检测到 Parsec VDD 或 MttVDD 虚拟屏驱动。请安装驱动后点击「重试」，或切换到手动选择已有物理显示器。";
         ch->retry_after =
             std::chrono::steady_clock::now() + std::chrono::seconds(5);
+        ch->retry_after_ns.store(
+            std::chrono::duration_cast<std::chrono::nanoseconds>(
+                ch->retry_after.time_since_epoch())
+                .count(),
+            std::memory_order_release);
       }
     }
     ch->capture_profile = *profile;
@@ -927,6 +992,16 @@ void HostController::ensure_capture_for_channel(
     }
   }
 
+  // Arrange extended monitor positions BEFORE opening DXGI OutputDuplication:
+  // ChangeDisplaySettingsExW invalidates active duplications with ACCESS_LOST.
+  rearrange_monitors();
+  {
+    std::lock_guard lock(mutex_);
+    if (ch->monitor_handle != 0) {
+      cap_opts.monitor_handle = ch->monitor_handle;
+    }
+  }
+
   auto capture = make_capture_encoder();
   std::string error;
   std::weak_ptr<LinkChannel> weak_ch = ch;
@@ -950,6 +1025,11 @@ void HostController::ensure_capture_for_channel(
             locked->capture_error = msg;
             locked->retry_after =
                 std::chrono::steady_clock::now() + std::chrono::seconds(3);
+            locked->retry_after_ns.store(
+                std::chrono::duration_cast<std::chrono::nanoseconds>(
+                    locked->retry_after.time_since_epoch())
+                    .count(),
+                std::memory_order_release);
           }
           append_log("[link " + std::to_string(locked->link_id) +
                      "] 采集异常: " + msg);
@@ -963,6 +1043,11 @@ void HostController::ensure_capture_for_channel(
       ch->capture_error = error;
       ch->retry_after =
           std::chrono::steady_clock::now() + std::chrono::seconds(5);
+      ch->retry_after_ns.store(
+          std::chrono::duration_cast<std::chrono::nanoseconds>(
+              ch->retry_after.time_since_epoch())
+              .count(),
+          std::memory_order_release);
     }
     append_log("[link " + std::to_string(ch->link_id) +
                "] 采集启动失败: " + error);
@@ -974,6 +1059,8 @@ void HostController::ensure_capture_for_channel(
     ch->capture = std::move(capture);
     ch->capture_active.store(true, std::memory_order_release);
     ch->capture_error.clear();
+    ch->retry_after = {};
+    ch->retry_after_ns.store(0, std::memory_order_release);
     const std::string res_text = ch->session->negotiated_summary();
     store_.record_seen_device(ch->device_id, ch->device_name,
                               ch->identity.manufacturer, ch->identity.serial,
@@ -991,7 +1078,6 @@ void HostController::ensure_capture_for_channel(
                std::to_string(cap_opts.refresh_hz) + "Hz，实际为 " +
                encoder_summary);
   }
-  rearrange_monitors();
   update_power_assertion();
   // Tell the transport the negotiated rate so it can size its back-off. The
   // async URB timeout itself stays fixed: scaling it by frame rate made every
@@ -1000,7 +1086,9 @@ void HostController::ensure_capture_for_channel(
   append_log("[link " + std::to_string(ch->link_id) + "] 开始采集与编码 " +
              std::to_string(cap_opts.width) + "x" +
              std::to_string(cap_opts.height) + "@" +
-             std::to_string(cap_opts.refresh_hz) + " (" + monitor_label + ")");
+             std::to_string(cap_opts.refresh_hz) + " (" + monitor_label +
+             (encoder_summary.empty() ? std::string{} : (", " + encoder_summary)) +
+             ")");
 }
 
 void HostController::stop_capture_for_channel(
@@ -1034,6 +1122,7 @@ void HostController::restart_all_captures() {
       std::lock_guard lock(mutex_);
       ch->capture_profile.reset();
       ch->retry_after = {};
+      ch->retry_after_ns.store(0, std::memory_order_release);
     }
     {
       std::lock_guard wlock(ch->wake_mutex);
@@ -1135,6 +1224,7 @@ void HostController::rearrange_monitors() {
       (void)id;
       for (const auto& m : monitors_) {
         if (m.handle == ch->monitor_handle && ch->injector != nullptr) {
+          std::lock_guard ilock(ch->injector_mutex);
           ch->injector->set_target(
               InjectorTarget{m.left, m.top, m.width, m.height});
           break;
@@ -1147,18 +1237,24 @@ void HostController::rearrange_monitors() {
 void HostController::update_channel_metrics(
     const std::shared_ptr<LinkChannel>& ch) {
   const auto now = std::chrono::steady_clock::now();
+  const auto st = ch->session->stats();
   std::lock_guard lock(mutex_);
   const double dt =
       std::chrono::duration<double>(now - ch->last_metric_time).count();
   if (dt < 0.45) {
     return;
   }
-  const std::uint64_t encoded =
-      ch->capture != nullptr ? ch->capture->encoded_frame_count() : 0;
-  const std::uint64_t tx = ch->session->tx_bytes();
-  if (ch->capture != nullptr && encoded >= ch->last_metric_frames) {
-    ch->live_fps = static_cast<int>(
-        std::lround(static_cast<double>(encoded - ch->last_metric_frames) / dt));
+  const std::uint64_t sent = st.frames_sent;
+  const std::uint64_t tx = st.tx_bytes;
+  if (ch->capture != nullptr && sent >= ch->last_metric_frames) {
+    const double inst_fps =
+        static_cast<double>(sent - ch->last_metric_frames) / dt;
+    const int smoothed =
+        (ch->live_fps > 0 && inst_fps > 0.5)
+            ? static_cast<int>(
+                  std::lround(0.65 * inst_fps + 0.35 * ch->live_fps))
+            : static_cast<int>(std::lround(inst_fps));
+    ch->live_fps = smoothed;
   } else {
     ch->live_fps = 0;
   }
@@ -1170,7 +1266,7 @@ void HostController::update_channel_metrics(
     ch->live_bitrate_mbps = 0.0;
   }
   ch->last_metric_time = now;
-  ch->last_metric_frames = encoded;
+  ch->last_metric_frames = sent;
   ch->last_metric_tx_bytes = tx;
 }
 
@@ -1194,11 +1290,32 @@ void HostController::update_power_assertion() {
     }
     power_boost_active_ = any_streaming;
   }
+  auto set_process_streaming_timer_qos = [](bool enable) {
+    struct Win32PowerThrottlingState {
+      ULONG version;
+      ULONG control_mask;
+      ULONG state_mask;
+    };
+    using SetProcessInfoFn = BOOL(WINAPI*)(HANDLE, UINT, PVOID, ULONG);
+    static const auto set_proc_info = reinterpret_cast<SetProcessInfoFn>(
+        GetProcAddress(GetModuleHandleW(L"kernel32.dll"),
+                       "SetProcessInformation"));
+    if (set_proc_info == nullptr) {
+      return;
+    }
+    // ProcessPowerThrottling (4): disable EXECUTION_SPEED (0x1) and
+    // IGNORE_TIMER_RESOLUTION (0x4) while streaming so Windows 11 keeps 1 ms
+    // timer granularity even when DeskMate is in the background or tray.
+    Win32PowerThrottlingState state{1U, enable ? (0x1U | 0x4U) : 0U, 0U};
+    (void)set_proc_info(GetCurrentProcess(), 4U, &state, sizeof(state));
+  };
   if (any_streaming) {
     SetThreadExecutionState(ES_CONTINUOUS | ES_SYSTEM_REQUIRED |
                             ES_DISPLAY_REQUIRED);
     timeBeginPeriod(1);
+    set_process_streaming_timer_qos(true);
   } else {
+    set_process_streaming_timer_qos(false);
     timeEndPeriod(1);
     SetThreadExecutionState(ES_CONTINUOUS);
   }
@@ -1233,6 +1350,7 @@ void HostController::set_video_enabled(bool enabled) {
     video_enabled_ = enabled;
     for (auto& [id, ch] : channels_) {
       (void)id;
+      ch->capture_dirty.store(true, std::memory_order_release);
       {
         std::lock_guard wlock(ch->wake_mutex);
         ch->wakeup = true;
@@ -1251,6 +1369,7 @@ void HostController::set_input_enabled(bool enabled) {
     for (auto& [id, ch] : channels_) {
       (void)id;
       if (ch->injector != nullptr) {
+        std::lock_guard ilock(ch->injector_mutex);
         ch->injector->reset();
       }
     }
@@ -1265,6 +1384,7 @@ void HostController::set_touch_input_mode(TouchInputMode mode) {
   for (auto& [id, ch] : channels_) {
     (void)id;
     if (ch->injector != nullptr) {
+      std::lock_guard ilock(ch->injector_mutex);
       ch->injector->set_mode(mode);
     }
   }
@@ -1333,6 +1453,7 @@ void HostController::set_preferred_refresh_hz(int hz) {
           std::lock_guard lock(mutex_);
           ch->capture_profile.reset();
           ch->retry_after = {};
+          ch->retry_after_ns.store(0, std::memory_order_release);
         }
         ch->capture_dirty.store(true, std::memory_order_release);
       }
@@ -1442,6 +1563,7 @@ void HostController::apply_display_layout(
       for (const auto& m : monitors_) {
         if (m.handle == ch->monitor_handle) {
           if (ch->injector != nullptr) {
+            std::lock_guard ilock(ch->injector_mutex);
             ch->injector->set_target(
                 InjectorTarget{m.left, m.top, m.width, m.height});
           }
@@ -1665,6 +1787,7 @@ void HostController::retry() {
       (void)id;
       ch->capture_error.clear();
       ch->retry_after = {};
+      ch->retry_after_ns.store(0, std::memory_order_release);
     }
   }
   if (!running_now) {
@@ -1672,6 +1795,10 @@ void HostController::retry() {
     return;
   }
   restart_all_captures();
+  notify_device_change();
+}
+
+void HostController::notify_device_change() {
   {
     std::lock_guard lock(discovery_mutex_);
     discovery_wakeup_ = true;
@@ -1730,10 +1857,8 @@ void HostController::invalidate_vdd_status() {
 
 HostUiState HostController::snapshot_ui_state() {
   const VirtualDisplayStatus vdd_status = vdd_status_cached(false);
-  const StartupStatus startup_status = startup_manager_.current_status();
   HostUiState view;
   std::lock_guard lock(mutex_);
-  startup_status_ = startup_status;
 
   view.vdd_installed = vdd_status.driver_installed;
   view.vdd_backend_name = vdd_status.backend_name;
@@ -1752,8 +1877,8 @@ HostUiState HostController::snapshot_ui_state() {
   view.video_enabled = video_enabled_;
   view.input_enabled = allow_input_;
   view.touch_input_mode = touch_mode_;
-  InputInjector probe_inj(InjectorTarget{}, nullptr, touch_mode_);
-  view.touch_capability = probe_inj.capability_status();
+  view.touch_capability =
+      describe_touch_capability(touch_mode_, native_touch_available_);
   view.auto_virtual_display = auto_virtual_display_;
   view.hevc_available = hevc_available_;
   view.native_touch_available = native_touch_available_;

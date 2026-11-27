@@ -72,6 +72,7 @@ class HostController {
   void rename_device(const std::string& device_id, const std::string& name);
   void remove_device(const std::string& device_id);
   void retry();
+  void notify_device_change();
   void handle_host_event(deskmate::protocol::HostEvent event);
 
   void check_for_updates(bool manual = true);
@@ -97,6 +98,7 @@ class HostController {
     std::unique_ptr<CaptureEncoder> capture;
     std::atomic<bool> capture_active{false};
     std::atomic<bool> capture_dirty{true};
+    mutable std::mutex injector_mutex;
     std::unique_ptr<InputInjector> injector;
     std::uintptr_t monitor_handle{};
     std::uint32_t monitor_display_id{};
@@ -106,6 +108,7 @@ class HostController {
     std::string capture_error;
     std::string last_error;
     std::chrono::steady_clock::time_point retry_after{};
+    std::atomic<std::int64_t> retry_after_ns{0};
 
     // Telemetry state
     std::chrono::steady_clock::time_point last_metric_time{};

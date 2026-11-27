@@ -10,6 +10,7 @@
 #include <cstdio>
 #include <cstring>
 #include <deque>
+#include <limits>
 #include <mutex>
 #include <memory>
 #include <thread>
@@ -51,6 +52,31 @@ int resolve_advertised_refresh_hz(int preferred_hz, bool explicit_fallback,
   return 120;
 }
 
+int resolve_idle_keepalive_hz(int effective_hz) noexcept {
+  return std::clamp(std::min(60, effective_hz), 1, 60);
+}
+
+std::uint32_t compute_idle_acquire_wait_ms(std::int64_t now_us,
+                                           std::int64_t next_idle_deadline_us,
+                                           bool urgent_retry) noexcept {
+  if (urgent_retry) {
+    return 4U;
+  }
+  if (next_idle_deadline_us <= 0) {
+    return 8U;
+  }
+  const std::int64_t remaining_us = next_idle_deadline_us - now_us;
+  // Once inside the final ~4.5 ms before the deadline, let capture_loop()
+  // finish the sleep on CREATE_WAITABLE_TIMER_HIGH_RESOLUTION and call
+  // AcquireNextFrame(0), avoiding Windows 11 15.6 ms background coalescing.
+  constexpr std::int64_t kHighResTailUs = 4'500;
+  if (remaining_us <= kHighResTailUs) {
+    return 0U;
+  }
+  return static_cast<std::uint32_t>(
+      std::clamp<std::int64_t>((remaining_us - 3'500) / 1000, 1, 8));
+}
+
 FramePacer::FramePacer(int fps)
     : period_us_(1'000'000LL / std::clamp(fps, 1, 240)) {}
 
@@ -75,12 +101,10 @@ std::uint32_t compute_target_bitrate_bps(int width, int height, int fps,
       clamped_fps <= 60.0 ? clamped_fps : (60.0 + (clamped_fps - 60.0) * 0.5);
   const double bpp = hevc ? 0.065 : 0.09;
   const double raw = safe_w * safe_h * effective_fps * bpp;
-  // macOS uses the same formula but clamps to [8M, 45M]. We adopt the same
-  // bounds: the previous 14 Mbps ceiling was too aggressive for 90/120 Hz
-  // at high resolutions (e.g. 2848x1320), causing the encoder to starve and
-  // produce bursty oversized P-frames that overwhelmed the USB scheduler.
+  // Clamp to [8M, 24M] so high-refresh streams stay well inside the USB 2.0
+  // AOA budget without bursty oversized IDR/P-frames saturating the scheduler.
   return static_cast<std::uint32_t>(
-      std::clamp<std::int64_t>(std::llround(raw), 8'000'000LL, 45'000'000LL));
+      std::clamp<std::int64_t>(std::llround(raw), 8'000'000LL, 24'000'000LL));
 }
 
 bool annex_b_has_vcl_nal(std::span<const std::uint8_t> annex_b,
@@ -112,6 +136,7 @@ bool annex_b_has_vcl_nal(std::span<const std::uint8_t> annex_b,
 #include <avrt.h>
 #include <d3d10.h>
 #include <d3d11.h>
+#include <d3dcompiler.h>
 #include <dxgi1_2.h>
 #include <mfapi.h>
 #include <mferror.h>
@@ -124,6 +149,7 @@ bool annex_b_has_vcl_nal(std::span<const std::uint8_t> annex_b,
 
 #ifdef _MSC_VER
 #pragma comment(lib, "d3d11.lib")
+#pragma comment(lib, "d3dcompiler.lib")
 #pragma comment(lib, "dxgi.lib")
 #pragma comment(lib, "mfplat.lib")
 #pragma comment(lib, "mfuuid.lib")
@@ -195,6 +221,11 @@ constexpr GUID kMfMtMpeg2Profile = {
     0x2d5c,
     0x4e0b,
     {0x92, 0xfd, 0x38, 0xc7, 0x25, 0x27, 0xd8, 0xde}};
+constexpr GUID kMfLowLatencyAttr = {
+    0x9c27891a,
+    0xed7a,
+    0x40e1,
+    {0x88, 0xe8, 0xb2, 0x27, 0x27, 0xa0, 0x24, 0xee}};
 
 bool try_configure_mft_types(IMFTransform* encoder, int width, int height,
                              int requested_fps, bool hevc, UINT32 bitrate,
@@ -343,6 +374,23 @@ std::string hex_hr(HRESULT hr) {
   char buf[32]{};
   std::snprintf(buf, sizeof(buf), "0x%08lX", static_cast<unsigned long>(hr));
   return std::string(buf);
+}
+
+void disable_thread_power_throttling() {
+  struct ThreadPowerThrottling {
+    ULONG version;
+    ULONG control_mask;
+    ULONG state_mask;
+  };
+  using SetThreadInfoFn = BOOL(WINAPI*)(HANDLE, UINT, PVOID, ULONG);
+  static const auto set_thread_info = reinterpret_cast<SetThreadInfoFn>(
+      GetProcAddress(GetModuleHandleW(L"kernel32.dll"), "SetThreadInformation"));
+  if (set_thread_info == nullptr) {
+    return;
+  }
+  // ThreadPowerThrottling (3), THREAD_POWER_THROTTLING_EXECUTION_SPEED (0x1).
+  ThreadPowerThrottling state{1U, 0x1U, 0U};
+  (void)set_thread_info(GetCurrentThread(), 3U, &state, sizeof(state));
 }
 
 void convert_bgra_to_nv12(const std::uint8_t* src, int src_pitch, int src_w,
@@ -517,6 +565,17 @@ class DxgiCaptureEncoder final : public CaptureEncoder {
     force_keyframe_.store(true, std::memory_order_release);
     cached_param_sets_.clear();
     last_nv12_.clear();
+    last_cursor_pos_ = {std::numeric_limits<LONG>::min(),
+                        std::numeric_limits<LONG>::min()};
+    last_cursor_on_monitor_ = false;
+    last_monitor_rect_check_ = {};
+    cached_cursor_handle_ = nullptr;
+    cached_cursor_hotspot_ = {};
+    cached_cursor_valid_ = false;
+    has_valid_vp_input_ = false;
+    has_latest_nv12_ = false;
+    prev_cursor_patch_rect_ = {};
+    has_prev_cursor_patch_ = false;
 
     if (FAILED(MFStartup(MF_VERSION, MFSTARTUP_LITE))) {
       error = "MFStartup failed";
@@ -616,15 +675,35 @@ class DxgiCaptureEncoder final : public CaptureEncoder {
     bgra_staging_.Reset();
     readback_.Reset();
     vp_input_view_.Reset();
+    vp_input_rtv_.Reset();
     vp_input_.Reset();
+    has_valid_vp_input_ = false;
+    cursor_backup_.Reset();
+    cursor_sprite_srv_.Reset();
+    cursor_sprite_.Reset();
+    cursor_vs_.Reset();
+    cursor_ps_.Reset();
+    cursor_blend_.Reset();
+    cursor_sampler_.Reset();
+    cursor_raster_.Reset();
+    cursor_cb_.Reset();
+    cursor_shader_failed_ = false;
+    cached_cursor_handle_ = nullptr;
+    cached_cursor_hotspot_ = {};
+    cached_cursor_valid_ = false;
+    prev_cursor_patch_rect_ = {};
+    has_prev_cursor_patch_ = false;
     {
       std::lock_guard lock(pool_mutex_);
       nv12_pool_.clear();
       submitted_slots_.clear();
+      unretired_outputs_ = 0;
       cached_slot_ = -1;
       pool_starved_since_ = {};
       pool_ready_ = false;
     }
+    latest_nv12_.Reset();
+    has_latest_nv12_ = false;
     transient_gpu_texture_.Reset();
     processor_.Reset();
     enumerator_.Reset();
@@ -760,7 +839,7 @@ class DxgiCaptureEncoder final : public CaptureEncoder {
   // GDI frames so the stream never stalls.
   void reopen_duplication() {
     const auto now = std::chrono::steady_clock::now();
-    if ((now - last_duplication_retry_) < std::chrono::seconds(2)) {
+    if ((now - last_duplication_retry_) < std::chrono::milliseconds(250)) {
       return;
     }
     last_duplication_retry_ = now;
@@ -820,6 +899,9 @@ class DxgiCaptureEncoder final : public CaptureEncoder {
       return false;
     };
 
+    const UINT32 bitrate = compute_target_bitrate_bps(
+        options_.width, options_.height, options_.refresh_hz, options_.hevc);
+
     ComPtr<IMFAttributes> attrs;
     if (SUCCEEDED(encoder_->GetAttributes(&attrs)) && attrs != nullptr) {
       UINT32 async_flag = 0;
@@ -835,6 +917,9 @@ class DxgiCaptureEncoder final : public CaptureEncoder {
                                 " async MFT missing IMFMediaEventGenerator");
         }
       }
+      // Enable low-latency mode before media types are locked so hardware MFTs
+      // disable lookahead / B-frame reorder buffers at initialization time.
+      (void)attrs->SetUINT32(kMfLowLatencyAttr, TRUE);
       if (!disable_d3d11_encoder_ && dxgi_manager_ != nullptr) {
         UINT32 d3d11_aware = 0;
         if (SUCCEEDED(attrs->GetUINT32(MF_SA_D3D11_AWARE, &d3d11_aware)) &&
@@ -849,8 +934,57 @@ class DxgiCaptureEncoder final : public CaptureEncoder {
       }
     }
 
-    const UINT32 bitrate = compute_target_bitrate_bps(
-        options_.width, options_.height, options_.refresh_hz, options_.hevc);
+    auto apply_codec_api_pre_type = [&](UINT32 target_bitrate) {
+      if (codec_api_ == nullptr) {
+        (void)encoder_.As(&codec_api_);
+      }
+      if (codec_api_ == nullptr) {
+        return;
+      }
+      VARIANT v{};
+      VariantInit(&v);
+      v.vt = VT_BOOL;
+      v.boolVal = VARIANT_TRUE;
+      (void)codec_api_->SetValue(&kCodecApiCommonLowLatency, &v);
+
+      VariantInit(&v);
+      v.vt = VT_UI4;
+      v.ulVal = 0;
+      (void)codec_api_->SetValue(&kCodecApiMPVDefaultBPictureCount, &v);
+
+      // Prefer PeakConstrainedVBR (2) so MaxBitRate (1.3x) and BufferSize
+      // (0.25s leaky bucket) are actually honored by hardware MFTs; fall back
+      // to CBR (0) if the driver rejects PeakConstrainedVBR.
+      VariantInit(&v);
+      v.vt = VT_UI4;
+      v.ulVal = 2;  // eAVEncCommonRateControlMode_PeakConstrainedVBR
+      if (FAILED(codec_api_->SetValue(&kCodecApiCommonRateControlMode, &v))) {
+        VariantInit(&v);
+        v.vt = VT_UI4;
+        v.ulVal = 0;  // eAVEncCommonRateControlMode_CBR
+        (void)codec_api_->SetValue(&kCodecApiCommonRateControlMode, &v);
+      }
+
+      VariantInit(&v);
+      v.vt = VT_UI4;
+      v.ulVal = 0;
+      (void)codec_api_->SetValue(&kCodecApiCommonQualityVsSpeed, &v);
+
+      VariantInit(&v);
+      v.vt = VT_UI4;
+      v.ulVal = static_cast<ULONG>(
+          static_cast<std::uint64_t>(target_bitrate) * 130ULL / 100ULL);
+      (void)codec_api_->SetValue(&kCodecApiCommonMaxBitRate, &v);
+
+      VariantInit(&v);
+      v.vt = VT_UI4;
+      v.ulVal = static_cast<ULONG>(
+          static_cast<std::uint64_t>(target_bitrate) / 32ULL);
+      (void)codec_api_->SetValue(&kCodecApiCommonBufferSize, &v);
+    };
+
+    apply_codec_api_pre_type(bitrate);
+
     int chosen_fps = std::max<int>(1, options_.refresh_hz);
     HRESULT out_hr = E_FAIL;
     HRESULT in_hr = E_FAIL;
@@ -860,6 +994,7 @@ class DxgiCaptureEncoder final : public CaptureEncoder {
     if (!configured && d3d11_encoder_aware_.load(std::memory_order_acquire)) {
       (void)encoder_->ProcessMessage(MFT_MESSAGE_SET_D3D_MANAGER, 0);
       d3d11_encoder_aware_.store(false, std::memory_order_release);
+      capture_gpu_enabled_.store(false, std::memory_order_release);
       configured = try_configure_mft_types(
           encoder_.Get(), options_.width, options_.height, options_.refresh_hz,
           options_.hevc, bitrate, chosen_fps, out_hr, in_hr);
@@ -874,58 +1009,15 @@ class DxgiCaptureEncoder final : public CaptureEncoder {
     }
     encoder_fps_.store(chosen_fps, std::memory_order_release);
 
-    if (SUCCEEDED(encoder_.As(&codec_api_)) && codec_api_ != nullptr) {
+    apply_codec_api_pre_type(bitrate);
+    if (codec_api_ != nullptr) {
+      // Match macOS "long GOP with on-demand IDR" while bounding worst-case
+      // recovery to 60 s so periodic IDR spikes never cause 5 s FPS dips.
       VARIANT v{};
       VariantInit(&v);
-      v.vt = VT_BOOL;
-      v.boolVal = VARIANT_TRUE;
-      (void)codec_api_->SetValue(&kCodecApiCommonLowLatency, &v);
-
-      VariantInit(&v);
       v.vt = VT_UI4;
-      v.ulVal = 0;
-      (void)codec_api_->SetValue(&kCodecApiMPVDefaultBPictureCount, &v);
-
-      // Use CBR (0) with a long GOP so bitrate stays smooth over USB without
-      // periodic IDR spikes saturating the 64-fragment packet budget.
-      VariantInit(&v);
-      v.vt = VT_UI4;
-      v.ulVal = 0;
-      (void)codec_api_->SetValue(&kCodecApiCommonRateControlMode, &v);
-
-      VariantInit(&v);
-      v.vt = VT_UI4;
-      v.ulVal = 0;
-      (void)codec_api_->SetValue(&kCodecApiCommonQualityVsSpeed, &v);
-
-      // Match the macOS "long GOP with on-demand IDR" strategy. A periodic
-      // IDR every 2 s forced a full-frame burst through the 64-fragment USB
-      // budget at 90/120 Hz; 30 s is only a safety net because every
-      // congestion event already requests a keyframe explicitly.
-      VariantInit(&v);
-      v.vt = VT_UI4;
-      v.ulVal = static_cast<ULONG>(chosen_fps * 30);
+      v.ulVal = static_cast<ULONG>(chosen_fps * 60);
       (void)codec_api_->SetValue(&kCodecApiMPVGOPSize, &v);
-
-      // Cap instantaneous bitrate to 1.3x average, matching macOS
-      // DataRateLimits burst window. This prevents the encoder from
-      // emitting oversized P-frames that exceed the 64-fragment USB budget.
-      VariantInit(&v);
-      v.vt = VT_UI4;
-      v.ulVal = static_cast<ULONG>(
-          static_cast<std::uint64_t>(bitrate) * 130ULL / 100ULL);
-      (void)codec_api_->SetValue(&kCodecApiCommonMaxBitRate, &v);
-
-      // BufferSize controls the leaky-bucket window and is expressed in
-      // BYTES, not bits. bitrate / 32 == bitrate / 8 bits-per-byte / 4, i.e.
-      // the macOS burstWindowSec=0.25. The previous bitrate / 4 was eight
-      // times larger (a 2 s bucket) and let complex scenes emit bursts that
-      // overflowed the fragment budget.
-      VariantInit(&v);
-      v.vt = VT_UI4;
-      v.ulVal = static_cast<ULONG>(
-          static_cast<std::uint64_t>(bitrate) / 32ULL);
-      (void)codec_api_->SetValue(&kCodecApiCommonBufferSize, &v);
     }
 
     hr = encoder_->ProcessMessage(MFT_MESSAGE_NOTIFY_BEGIN_STREAMING, 0);
@@ -1004,6 +1096,7 @@ class DxgiCaptureEncoder final : public CaptureEncoder {
     if (mmcs != nullptr) {
       (void)AvSetMmThreadPriority(mmcs, AVRT_PRIORITY_HIGH);
     }
+    disable_thread_power_throttling();
     const HRESULT com_hr = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
     const bool com_owned = SUCCEEDED(com_hr);
 
@@ -1013,12 +1106,33 @@ class DxgiCaptureEncoder final : public CaptureEncoder {
         std::max<int>(1, std::min<int>(
                                options_.refresh_hz,
                                encoder_fps_.load(std::memory_order_acquire)));
-    const UINT acquire_ms =
-        static_cast<UINT>(std::clamp(1000 / (effective_hz * 2), 2, 8));
     const bool vsync_paced =
         (monitor_refresh_hz_ > 0 && monitor_refresh_hz_ <= effective_hz + 2);
-    FramePacer pacer(effective_hz);
+    const int paced_hz = std::clamp(effective_hz, 1, 240);
+    FramePacer pacer(paced_hz);
     std::int64_t next_submit_deadline_us = 0;
+    const std::int64_t frame_period_us = 1'000'000LL / paced_hz;
+    // Steady-state idle keepalive runs at min(60 Hz, effective_hz) so static
+    // desktops stay smooth without colliding with real DWM frames (which track
+    // last_real_encode_us independently) and never evict real frames from
+    // pending_frames_.
+    const int idle_hz = resolve_idle_keepalive_hz(paced_hz);
+    const std::int64_t idle_period_us = (1'000'000LL + idle_hz / 2) / idle_hz;
+    std::int64_t next_idle_deadline_us = 0;
+    auto reset_idle_deadline_after_active = [&](std::int64_t now_i64) {
+      next_idle_deadline_us = now_i64 + idle_period_us;
+    };
+    auto advance_idle_deadline_from_idle = [&](std::int64_t now_i64) {
+      if (next_idle_deadline_us <= 0 ||
+          now_i64 - next_idle_deadline_us >= idle_period_us) {
+        next_idle_deadline_us = now_i64 + idle_period_us;
+      } else {
+        next_idle_deadline_us += idle_period_us;
+      }
+    };
+    std::int64_t last_real_encode_us = 0;
+    std::int64_t last_any_encode_us = 0;
+    bool cursor_dirty = false;
 
     while (running_.load(std::memory_order_acquire)) {
       if (gdi_fallback_mode_) {
@@ -1045,35 +1159,95 @@ class DxgiCaptureEncoder final : public CaptureEncoder {
                     now.time_since_epoch())
                     .count());
             if (submit_cached_frame(now_us)) {
+              const auto now_i64 = static_cast<std::int64_t>(now_us);
+              last_any_encode_us = now_i64;
               last_static_submit = now;
+              reset_idle_deadline_after_active(now_i64);
             }
           }
         }
-        (void)wait_for_capture(150);
+        (void)wait_for_capture(50);
         (void)reopen_duplication();
         continue;
       }
 
+      // When capturing a higher-refresh physical monitor (e.g. 180/240 Hz) for
+      // a 90/120 Hz stream, pace BEFORE AcquireNextFrame so DXGI accumulates
+      // intermediate updates instead of throwing frames away after acquire.
+      if (!vsync_paced && next_submit_deadline_us > 0 &&
+          !force_keyframe_.load(std::memory_order_acquire) &&
+          encoded_frames_.load(std::memory_order_relaxed) > 0) {
+        wait_until_us(next_submit_deadline_us - 500);
+      }
+
+      const bool urgent_retry =
+          encoded_frames_.load(std::memory_order_relaxed) == 0 ||
+          force_keyframe_.load(std::memory_order_acquire);
+      const UINT wait_ms = static_cast<UINT>(compute_idle_acquire_wait_ms(
+          static_cast<std::int64_t>(current_time_us()), next_idle_deadline_us,
+          urgent_retry));
+      if (wait_ms == 0U && !urgent_retry && next_idle_deadline_us > 0) {
+        wait_until_us(next_idle_deadline_us);
+      }
       DXGI_OUTDUPL_FRAME_INFO info{};
       ComPtr<IDXGIResource> resource;
       const HRESULT hr =
-          duplication_->AcquireNextFrame(acquire_ms, &info, &resource);
+          duplication_->AcquireNextFrame(wait_ms, &info, &resource);
       if (hr == DXGI_ERROR_WAIT_TIMEOUT) {
-        // AcquireNextFrame already consumed the whole wait budget. Sleeping
-        // until next_submit_deadline_us here would skip the DWM frame that
-        // landed during that wait and add a full frame of jitter.
         const auto now = std::chrono::steady_clock::now();
         const auto now_us = static_cast<std::uint64_t>(
             std::chrono::duration_cast<std::chrono::microseconds>(
                 now.time_since_epoch())
                 .count());
+        const auto now_i64 = static_cast<std::int64_t>(now_us);
+        if (poll_cursor_changed()) {
+          cursor_dirty = true;
+        }
+        if (cursor_dirty &&
+            (last_any_encode_us == 0 ||
+             now_i64 - last_any_encode_us >= frame_period_us) &&
+            encode_cursor_only_frame(now_us)) {
+          cursor_dirty = false;
+          last_any_encode_us = now_i64;
+          last_static_submit = now;
+          reset_idle_deadline_after_active(now_i64);
+          continue;
+        }
+        const auto encoded_so_far =
+            encoded_frames_.load(std::memory_order_relaxed);
         const bool need_initial_or_idr =
-            encoded_frames_.load(std::memory_order_relaxed) == 0 ||
+            encoded_so_far == 0 ||
             force_keyframe_.load(std::memory_order_acquire);
+        const auto static_retry_interval =
+            force_keyframe_.load(std::memory_order_acquire) &&
+                    encoded_so_far > 0
+                ? std::chrono::milliseconds(25)
+                : std::chrono::milliseconds(150);
         if (need_initial_or_idr &&
-            (now - last_static_submit) >= std::chrono::milliseconds(150)) {
+            (now - last_static_submit) >= static_retry_interval) {
           if (submit_cached_frame(now_us)) {
+            last_any_encode_us = now_i64;
             last_static_submit = now;
+            reset_idle_deadline_after_active(now_i64);
+          }
+        } else if (!need_initial_or_idr && encoded_so_far > 0 &&
+                   pending_frames_.empty()) {
+          if (encoded_so_far < 4) {
+            if (last_any_encode_us == 0 ||
+                (now_i64 - last_any_encode_us) >= frame_period_us) {
+              if (submit_cached_frame(now_us)) {
+                last_any_encode_us = now_i64;
+                last_static_submit = now;
+                reset_idle_deadline_after_active(now_i64);
+              }
+            }
+          } else if (next_idle_deadline_us <= 0 ||
+                     now_i64 + 750 >= next_idle_deadline_us) {
+            if (submit_cached_frame(now_us)) {
+              last_any_encode_us = now_i64;
+              last_static_submit = now;
+              advance_idle_deadline_from_idle(now_i64);
+            }
           }
         }
         continue;
@@ -1091,22 +1265,63 @@ class DxgiCaptureEncoder final : public CaptureEncoder {
       const bool has_image =
           (info.LastPresentTime.QuadPart != 0 || info.AccumulatedFrames > 0);
       if (!has_image) {
+        if (poll_cursor_changed()) {
+          cursor_dirty = true;
+        }
         duplication_->ReleaseFrame();
         const auto now = std::chrono::steady_clock::now();
         const auto now_us = static_cast<std::uint64_t>(
             std::chrono::duration_cast<std::chrono::microseconds>(
                 now.time_since_epoch())
                 .count());
+        const auto now_i64 = static_cast<std::int64_t>(now_us);
+        if (cursor_dirty &&
+            (last_any_encode_us == 0 ||
+             now_i64 - last_any_encode_us >= frame_period_us) &&
+            encode_cursor_only_frame(now_us)) {
+          cursor_dirty = false;
+          last_any_encode_us = now_i64;
+          last_static_submit = now;
+          reset_idle_deadline_after_active(now_i64);
+          continue;
+        }
         const bool no_cached_frame =
             (!capture_gpu_enabled_.load(std::memory_order_acquire) ||
-             !has_cached_slot()) &&
+             (!has_latest_nv12_ && !has_cached_slot())) &&
             last_nv12_.empty();
+        const auto encoded_so_far =
+            encoded_frames_.load(std::memory_order_relaxed);
+        const auto static_retry_interval =
+            force_keyframe_.load(std::memory_order_acquire) &&
+                    encoded_so_far > 0
+                ? std::chrono::milliseconds(25)
+                : std::chrono::milliseconds(150);
         if (no_cached_frame ||
-            ((encoded_frames_.load(std::memory_order_relaxed) == 0 ||
+            ((encoded_so_far == 0 ||
               force_keyframe_.load(std::memory_order_acquire)) &&
-             (now - last_static_submit) >= std::chrono::milliseconds(150))) {
+             (now - last_static_submit) >= static_retry_interval)) {
           if (submit_cached_frame(now_us)) {
+            last_any_encode_us = now_i64;
             last_static_submit = now;
+            reset_idle_deadline_after_active(now_i64);
+          }
+        } else if (encoded_so_far > 0 && pending_frames_.empty()) {
+          if (encoded_so_far < 4) {
+            if (last_any_encode_us == 0 ||
+                (now_i64 - last_any_encode_us) >= frame_period_us) {
+              if (submit_cached_frame(now_us)) {
+                last_any_encode_us = now_i64;
+                last_static_submit = now;
+                reset_idle_deadline_after_active(now_i64);
+              }
+            }
+          } else if (next_idle_deadline_us <= 0 ||
+                     now_i64 + 750 >= next_idle_deadline_us) {
+            if (submit_cached_frame(now_us)) {
+              last_any_encode_us = now_i64;
+              last_static_submit = now;
+              advance_idle_deadline_from_idle(now_i64);
+            }
           }
         }
         continue;
@@ -1117,22 +1332,22 @@ class DxgiCaptureEncoder final : public CaptureEncoder {
           std::chrono::duration_cast<std::chrono::microseconds>(
               now.time_since_epoch())
               .count());
+      const auto now_i64 = static_cast<std::int64_t>(now_us);
       const bool need_immediate =
           encoded_frames_.load(std::memory_order_relaxed) == 0 ||
           force_keyframe_.load(std::memory_order_acquire);
-      // Early-skip pacing: if the frame arrives well before the next submit
-      // deadline, release it and wait. This caps the encode rate at the
-      // negotiated fps when the display runs faster (e.g. 240Hz monitor
-      // driving a 120Hz stream).
-      if (!need_immediate && !vsync_paced && next_submit_deadline_us != 0 &&
-          static_cast<std::int64_t>(now_us) + 1500 <
-              next_submit_deadline_us) {
+      // When the virtual display itself runs at the negotiated refresh rate
+      // (vsync_paced), encode every real DWM frame directly without dropping on
+      // minor VSync jitter. Only cap bursts on faster physical monitors.
+      if (!need_immediate && !vsync_paced && last_real_encode_us != 0 &&
+          (now_i64 - last_real_encode_us) < (frame_period_us * 65) / 100) {
         resource.Reset();
         duplication_->ReleaseFrame();
-        wait_until_us(next_submit_deadline_us);
+        wait_until_us(last_real_encode_us + frame_period_us);
         continue;
       }
 
+      (void)poll_cursor_changed();
       ComPtr<ID3D11Texture2D> texture;
       D3D11_TEXTURE2D_DESC src_desc{};
       bool used_gpu_vp = false;
@@ -1148,9 +1363,13 @@ class DxgiCaptureEncoder final : public CaptureEncoder {
       duplication_->ReleaseFrame();
 
       if (copied && encode_copied_frame(src_desc, used_gpu_vp, now_us)) {
+        cursor_dirty = false;
+        last_real_encode_us = now_i64;
+        last_any_encode_us = now_i64;
         last_static_submit = now;
+        reset_idle_deadline_after_active(now_i64);
       }
-      next_submit_deadline_us = pacer.next_deadline_us(now_us);
+      next_submit_deadline_us = pacer.next_deadline_us(now_i64);
     }
 
     if (com_owned) {
@@ -1222,13 +1441,14 @@ class DxgiCaptureEncoder final : public CaptureEncoder {
     if (mmcs != nullptr) {
       (void)AvSetMmThreadPriority(mmcs, AVRT_PRIORITY_HIGH);
     }
+    disable_thread_power_throttling();
     const HRESULT com_hr = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
     const bool com_owned = SUCCEEDED(com_hr);
     while (running_.load(std::memory_order_acquire)) {
       auto pending = pending_frames_.take();
       if (!pending.has_value()) {
         pump_async_events(0);
-        if (pending_frames_.peek().has_value()) {
+        if (!pending_frames_.empty()) {
           continue;
         }
         // No work queued: sleep until a frame, an IDR request, an async MFT
@@ -1248,7 +1468,7 @@ class DxgiCaptureEncoder final : public CaptureEncoder {
         // Keep the slot reserved while the frame goes back to the queue: the
         // texture must not be reused before the MFT actually accepts it.
         const int slot = pending->pool_slot;
-        if (!pending_frames_.restore_if_empty(std::move(*pending)) &&
+        if (!pending_frames_.restore_front(std::move(*pending)) &&
             slot >= 0) {
           rollback_slot(slot);
         }
@@ -1361,16 +1581,36 @@ class DxgiCaptureEncoder final : public CaptureEncoder {
     processor_.Reset();
     enumerator_.Reset();
     vp_input_view_.Reset();
+    vp_input_rtv_.Reset();
     vp_input_.Reset();
+    has_valid_vp_input_ = false;
+    cursor_backup_.Reset();
+    cursor_sprite_srv_.Reset();
+    cursor_sprite_.Reset();
+    cursor_vs_.Reset();
+    cursor_ps_.Reset();
+    cursor_blend_.Reset();
+    cursor_sampler_.Reset();
+    cursor_raster_.Reset();
+    cursor_cb_.Reset();
+    cursor_shader_failed_ = false;
+    cached_cursor_handle_ = nullptr;
+    cached_cursor_hotspot_ = {};
+    cached_cursor_valid_ = false;
+    prev_cursor_patch_rect_ = {};
+    has_prev_cursor_patch_ = false;
     {
       std::lock_guard lock(pool_mutex_);
       nv12_pool_.clear();
       submitted_slots_.clear();
+      unretired_outputs_ = 0;
       nv12_next_ = 0;
       cached_slot_ = -1;
       pool_starved_since_ = {};
       pool_ready_ = false;
     }
+    latest_nv12_.Reset();
+    has_latest_nv12_ = false;
     transient_gpu_texture_.Reset();
     readback_.Reset();
     vp_verified_ = false;
@@ -1423,7 +1663,9 @@ class DxgiCaptureEncoder final : public CaptureEncoder {
     in_desc.SampleDesc.Count = 1;
     in_desc.SampleDesc.Quality = 0;
     in_desc.Usage = D3D11_USAGE_DEFAULT;
-    in_desc.BindFlags = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_RENDER_TARGET;
+    in_desc.MiscFlags = 0;
+    in_desc.BindFlags =
+        D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_RENDER_TARGET;
     if (FAILED(device_->CreateTexture2D(&in_desc, nullptr, &vp_input_))) {
       in_desc.BindFlags = D3D11_BIND_RENDER_TARGET;
       if (FAILED(device_->CreateTexture2D(&in_desc, nullptr, &vp_input_))) {
@@ -1433,6 +1675,25 @@ class DxgiCaptureEncoder final : public CaptureEncoder {
           return false;
         }
       }
+    }
+
+    if (desc.Format == DXGI_FORMAT_B8G8R8A8_UNORM ||
+        desc.Format == DXGI_FORMAT_B8G8R8X8_UNORM) {
+      D3D11_TEXTURE2D_DESC backup_desc{};
+      backup_desc.Width = kCursorPatchSize;
+      backup_desc.Height = kCursorPatchSize;
+      backup_desc.MipLevels = 1;
+      backup_desc.ArraySize = 1;
+      backup_desc.Format = desc.Format;
+      backup_desc.SampleDesc.Count = 1;
+      backup_desc.SampleDesc.Quality = 0;
+      backup_desc.Usage = D3D11_USAGE_DEFAULT;
+      backup_desc.BindFlags = 0;
+      backup_desc.MiscFlags = 0;
+      (void)device_->CreateTexture2D(&backup_desc, nullptr, &cursor_backup_);
+      (void)device_->CreateRenderTargetView(vp_input_.Get(), nullptr,
+                                            &vp_input_rtv_);
+      (void)ensure_cursor_pipeline();
     }
 
     D3D11_TEXTURE2D_DESC target{};
@@ -1450,6 +1711,8 @@ class DxgiCaptureEncoder final : public CaptureEncoder {
     target.BindFlags = 0;
     if (FAILED(device_->CreateTexture2D(&target, nullptr, &readback_))) {
       processor_.Reset();
+      cursor_backup_.Reset();
+      vp_input_rtv_.Reset();
       vp_input_.Reset();
       return false;
     }
@@ -1461,10 +1724,25 @@ class DxgiCaptureEncoder final : public CaptureEncoder {
             &vp_input_view_))) {
       vp_input_view_.Reset();
       processor_.Reset();
+      cursor_backup_.Reset();
+      vp_input_rtv_.Reset();
       vp_input_.Reset();
       readback_.Reset();
       return false;
     }
+    D3D11_TEXTURE2D_DESC latest_desc{};
+    latest_desc.Width = out_width;
+    latest_desc.Height = out_height;
+    latest_desc.MipLevels = 1;
+    latest_desc.ArraySize = 1;
+    latest_desc.Format = DXGI_FORMAT_NV12;
+    latest_desc.SampleDesc.Count = 1;
+    latest_desc.Usage = D3D11_USAGE_DEFAULT;
+    latest_desc.BindFlags = 0;
+    if (FAILED(device_->CreateTexture2D(&latest_desc, nullptr, &latest_nv12_))) {
+      latest_nv12_.Reset();
+    }
+    has_latest_nv12_ = false;
     create_nv12_pool();
     return true;
   }
@@ -1521,6 +1799,7 @@ class DxgiCaptureEncoder final : public CaptureEncoder {
       nv12_pool_ = std::move(pool);
       nv12_next_ = 0;
       submitted_slots_.clear();
+      unretired_outputs_ = 0;
       cached_slot_ = -1;
       pool_starved_since_ = {};
       pool_ready_ = true;
@@ -1558,6 +1837,24 @@ class DxgiCaptureEncoder final : public CaptureEncoder {
                      static_cast<int>(index)) == submitted_slots_.end();
   }
 
+  void sweep_retired_slots_locked() {
+    for (auto it = submitted_slots_.begin();
+         it != submitted_slots_.end() && unretired_outputs_ > 0;) {
+      const int index = *it;
+      if (index >= 0 && static_cast<std::size_t>(index) < nv12_pool_.size() &&
+          slot_idle_locked(static_cast<std::size_t>(index))) {
+        cached_slot_ = index;
+        it = submitted_slots_.erase(it);
+        --unretired_outputs_;
+      } else {
+        ++it;
+      }
+    }
+    if (submitted_slots_.empty()) {
+      unretired_outputs_ = 0;
+    }
+  }
+
   // Returns -1 when every slot is still held by the encoder; the caller then
   // leaves the frame queued instead of overwriting a texture in flight.
   int acquire_nv12_slot() {
@@ -1565,6 +1862,7 @@ class DxgiCaptureEncoder final : public CaptureEncoder {
     if (!pool_ready_ || nv12_pool_.empty()) {
       return -1;
     }
+    sweep_retired_slots_locked();
     const std::size_t count = nv12_pool_.size();
     // First pass: rotate through slots that are not retained for static-screen
     // repeats, so a live frame never clobbers the last encoded picture.
@@ -1600,7 +1898,7 @@ class DxgiCaptureEncoder final : public CaptureEncoder {
       pool_starved_since_ = now;
       return -1;
     }
-    if (now - pool_starved_since_ < std::chrono::seconds(1)) {
+    if (now - pool_starved_since_ < std::chrono::milliseconds(250)) {
       return -1;
     }
     if (submitted_slots_.empty()) {
@@ -1614,6 +1912,9 @@ class DxgiCaptureEncoder final : public CaptureEncoder {
     }
     const int index = submitted_slots_.front();
     submitted_slots_.pop_front();
+    if (unretired_outputs_ > 0) {
+      --unretired_outputs_;
+    }
     if (cached_slot_ == index) {
       cached_slot_ = -1;
     }
@@ -1639,42 +1940,21 @@ class DxgiCaptureEncoder final : public CaptureEncoder {
   void release_inflight_slot() {
     std::lock_guard lock(pool_mutex_);
     if (submitted_slots_.empty()) {
+      unretired_outputs_ = 0;
       return;
     }
-    // Hardware MFTs may skip an input internally (frame dropping, stream
-    // change), so "one HaveOutput = the oldest submission retired" is not
-    // guaranteed. Retire the idle prefix instead: several older inputs may
-    // have finished with this single output, and out-of-order retirement could
-    // free a texture that is still being encoded.
-    int last_retired = -1;
-    while (!submitted_slots_.empty()) {
-      const int index = submitted_slots_.front();
-      if (index < 0 || static_cast<std::size_t>(index) >= nv12_pool_.size() ||
-          !slot_idle_locked(static_cast<std::size_t>(index))) {
-        break;
-      }
-      last_retired = index;
+    ++unretired_outputs_;
+    sweep_retired_slots_locked();
+    if (unretired_outputs_ > nv12_pool_.size() * 2 &&
+        !submitted_slots_.empty()) {
+      const int last_retired = submitted_slots_.front();
       submitted_slots_.pop_front();
-    }
-    if (last_retired < 0) {
-      // No prefix entry is idle yet. Bound the list so a driver that never
-      // releases its textures cannot grow it forever; acquire()'s 1 s
-      // watchdog is the real recovery path for that case.
-      if (submitted_slots_.size() <= nv12_pool_.size() * 2) {
-        return;
+      --unretired_outputs_;
+      if (last_retired >= 0 &&
+          static_cast<std::size_t>(last_retired) < nv12_pool_.size() &&
+          slot_idle_locked(static_cast<std::size_t>(last_retired))) {
+        cached_slot_ = last_retired;
       }
-      last_retired = submitted_slots_.front();
-      submitted_slots_.pop_front();
-    }
-    if (last_retired < 0 ||
-        static_cast<std::size_t>(last_retired) >= nv12_pool_.size()) {
-      return;
-    }
-    // Only retain a slot for static-screen repeats once the MFT has really let
-    // go of it; otherwise the next repeat would resubmit a texture the encoder
-    // is still reading. Keep the previous repeat source if this one is busy.
-    if (slot_idle_locked(static_cast<std::size_t>(last_retired))) {
-      cached_slot_ = last_retired;
     }
   }
 
@@ -1700,6 +1980,7 @@ class DxgiCaptureEncoder final : public CaptureEncoder {
   void reset_slot_bookkeeping() {
     std::lock_guard lock(pool_mutex_);
     submitted_slots_.clear();
+    unretired_outputs_ = 0;
     cached_slot_ = -1;
     pool_starved_since_ = {};
     pool_ready_ = !nv12_pool_.empty();
@@ -1727,12 +2008,390 @@ class DxgiCaptureEncoder final : public CaptureEncoder {
     return cached_slot_;
   }
 
+  bool poll_cursor_changed() {
+    const auto now = std::chrono::steady_clock::now();
+    if (target_monitor_ != nullptr &&
+        (last_monitor_rect_check_.time_since_epoch().count() == 0 ||
+         (now - last_monitor_rect_check_) >= std::chrono::milliseconds(500))) {
+      last_monitor_rect_check_ = now;
+      MONITORINFOEXW mi{};
+      mi.cbSize = sizeof(mi);
+      if (GetMonitorInfoW(target_monitor_, &mi)) {
+        monitor_rect_ = mi.rcMonitor;
+      }
+    }
+    CURSORINFO ci{};
+    ci.cbSize = sizeof(ci);
+    const bool ok = (GetCursorInfo(&ci) != FALSE);
+    const bool on_monitor = ok && (ci.flags & CURSOR_SHOWING) != 0 &&
+                            ci.hCursor != nullptr &&
+                            PtInRect(&monitor_rect_, ci.ptScreenPos) != FALSE;
+    const bool changed =
+        (on_monitor != last_cursor_on_monitor_) ||
+        (on_monitor && (ci.ptScreenPos.x != last_cursor_pos_.x ||
+                        ci.ptScreenPos.y != last_cursor_pos_.y));
+    last_cursor_on_monitor_ = on_monitor;
+    last_cursor_pos_ =
+        on_monitor ? ci.ptScreenPos
+                   : POINT{std::numeric_limits<LONG>::min(),
+                           std::numeric_limits<LONG>::min()};
+    return changed;
+  }
+
+  bool ensure_cursor_pipeline() {
+    if (cursor_shader_failed_) {
+      return false;
+    }
+    if (cursor_vs_ != nullptr && cursor_ps_ != nullptr &&
+        cursor_blend_ != nullptr && cursor_sampler_ != nullptr &&
+        cursor_raster_ != nullptr && cursor_cb_ != nullptr &&
+        cursor_sprite_ != nullptr && cursor_sprite_srv_ != nullptr) {
+      return true;
+    }
+
+    static constexpr char kCursorHlsl[] = R"(
+cbuffer Params : register(b0) { float4 uv_rect; };
+struct VSOut { float4 pos : SV_Position; float2 uv : TEXCOORD0; };
+VSOut main_vs(uint id : SV_VertexID) {
+  float2 p = float2((id & 1u) ? 1.0 : 0.0, (id & 2u) ? 1.0 : 0.0);
+  VSOut o;
+  o.pos = float4(p.x * 2.0 - 1.0, 1.0 - p.y * 2.0, 0.0, 1.0);
+  o.uv = uv_rect.xy + p * uv_rect.zw;
+  return o;
+}
+Texture2D spriteTex : register(t0);
+SamplerState samp : register(s0);
+float4 main_ps(VSOut i) : SV_Target {
+  return spriteTex.Sample(samp, i.uv);
+}
+)";
+    ComPtr<ID3DBlob> vs_blob;
+    ComPtr<ID3DBlob> ps_blob;
+    if (FAILED(D3DCompile(kCursorHlsl, sizeof(kCursorHlsl) - 1, nullptr, nullptr,
+                          nullptr, "main_vs", "vs_4_0", 0, 0, &vs_blob,
+                          nullptr)) ||
+        FAILED(D3DCompile(kCursorHlsl, sizeof(kCursorHlsl) - 1, nullptr, nullptr,
+                          nullptr, "main_ps", "ps_4_0", 0, 0, &ps_blob,
+                          nullptr))) {
+      cursor_shader_failed_ = true;
+      return false;
+    }
+    if (FAILED(device_->CreateVertexShader(vs_blob->GetBufferPointer(),
+                                           vs_blob->GetBufferSize(), nullptr,
+                                           &cursor_vs_)) ||
+        FAILED(device_->CreatePixelShader(ps_blob->GetBufferPointer(),
+                                          ps_blob->GetBufferSize(), nullptr,
+                                          &cursor_ps_))) {
+      cursor_shader_failed_ = true;
+      return false;
+    }
+
+    D3D11_BLEND_DESC blend{};
+    blend.RenderTarget[0].BlendEnable = TRUE;
+    blend.RenderTarget[0].SrcBlend = D3D11_BLEND_ONE;
+    blend.RenderTarget[0].DestBlend = D3D11_BLEND_INV_SRC_ALPHA;
+    blend.RenderTarget[0].BlendOp = D3D11_BLEND_OP_ADD;
+    blend.RenderTarget[0].SrcBlendAlpha = D3D11_BLEND_ONE;
+    blend.RenderTarget[0].DestBlendAlpha = D3D11_BLEND_INV_SRC_ALPHA;
+    blend.RenderTarget[0].BlendOpAlpha = D3D11_BLEND_OP_ADD;
+    blend.RenderTarget[0].RenderTargetWriteMask = D3D11_COLOR_WRITE_ENABLE_ALL;
+    if (FAILED(device_->CreateBlendState(&blend, &cursor_blend_))) {
+      cursor_shader_failed_ = true;
+      return false;
+    }
+
+    D3D11_SAMPLER_DESC samp{};
+    samp.Filter = D3D11_FILTER_MIN_MAG_MIP_POINT;
+    samp.AddressU = D3D11_TEXTURE_ADDRESS_CLAMP;
+    samp.AddressV = D3D11_TEXTURE_ADDRESS_CLAMP;
+    samp.AddressW = D3D11_TEXTURE_ADDRESS_CLAMP;
+    if (FAILED(device_->CreateSamplerState(&samp, &cursor_sampler_))) {
+      cursor_shader_failed_ = true;
+      return false;
+    }
+
+    D3D11_RASTERIZER_DESC rast{};
+    rast.FillMode = D3D11_FILL_SOLID;
+    rast.CullMode = D3D11_CULL_NONE;
+    if (FAILED(device_->CreateRasterizerState(&rast, &cursor_raster_))) {
+      cursor_shader_failed_ = true;
+      return false;
+    }
+
+    D3D11_BUFFER_DESC cb_desc{};
+    cb_desc.ByteWidth = 16;
+    cb_desc.Usage = D3D11_USAGE_DYNAMIC;
+    cb_desc.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
+    cb_desc.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
+    if (FAILED(device_->CreateBuffer(&cb_desc, nullptr, &cursor_cb_))) {
+      cursor_shader_failed_ = true;
+      return false;
+    }
+
+    D3D11_TEXTURE2D_DESC sprite_desc{};
+    sprite_desc.Width = kCursorPatchSize;
+    sprite_desc.Height = kCursorPatchSize;
+    sprite_desc.MipLevels = 1;
+    sprite_desc.ArraySize = 1;
+    sprite_desc.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
+    sprite_desc.SampleDesc.Count = 1;
+    sprite_desc.Usage = D3D11_USAGE_DEFAULT;
+    sprite_desc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+    if (FAILED(device_->CreateTexture2D(&sprite_desc, nullptr,
+                                        &cursor_sprite_)) ||
+        FAILED(device_->CreateShaderResourceView(cursor_sprite_.Get(), nullptr,
+                                                 &cursor_sprite_srv_))) {
+      cursor_shader_failed_ = true;
+      return false;
+    }
+    return true;
+  }
+
+  bool update_cursor_sprite(HCURSOR cursor) {
+    if (cursor == nullptr) {
+      return false;
+    }
+    if (cursor == cached_cursor_handle_ && cached_cursor_valid_) {
+      return true;
+    }
+    ICONINFO ii{};
+    if (GetIconInfo(cursor, &ii) == FALSE) {
+      return false;
+    }
+    const LONG hotspot_x = static_cast<LONG>(ii.xHotspot);
+    const LONG hotspot_y = static_cast<LONG>(ii.yHotspot);
+    if (ii.hbmMask != nullptr) DeleteObject(ii.hbmMask);
+    if (ii.hbmColor != nullptr) DeleteObject(ii.hbmColor);
+
+    constexpr int kSize = static_cast<int>(kCursorPatchSize);
+    BITMAPINFO bmi{};
+    bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+    bmi.bmiHeader.biWidth = kSize;
+    bmi.bmiHeader.biHeight = -kSize;  // top-down
+    bmi.bmiHeader.biPlanes = 1;
+    bmi.bmiHeader.biBitCount = 32;
+    bmi.bmiHeader.biCompression = BI_RGB;
+
+    HDC screen_dc = GetDC(nullptr);
+    if (screen_dc == nullptr) {
+      return false;
+    }
+    HDC black_dc = CreateCompatibleDC(screen_dc);
+    HDC white_dc = CreateCompatibleDC(screen_dc);
+    void* black_bits = nullptr;
+    void* white_bits = nullptr;
+    HBITMAP black_bmp =
+        black_dc != nullptr
+            ? CreateDIBSection(black_dc, &bmi, DIB_RGB_COLORS, &black_bits,
+                               nullptr, 0)
+            : nullptr;
+    HBITMAP white_bmp =
+        white_dc != nullptr
+            ? CreateDIBSection(white_dc, &bmi, DIB_RGB_COLORS, &white_bits,
+                               nullptr, 0)
+            : nullptr;
+
+    bool ok = false;
+    std::vector<std::uint32_t> premul(static_cast<std::size_t>(kSize) * kSize,
+                                      0U);
+    if (black_dc != nullptr && white_dc != nullptr && black_bmp != nullptr &&
+        white_bmp != nullptr && black_bits != nullptr && white_bits != nullptr) {
+      const HGDIOBJ old_b = SelectObject(black_dc, black_bmp);
+      const HGDIOBJ old_w = SelectObject(white_dc, white_bmp);
+      const std::size_t pixel_count = static_cast<std::size_t>(kSize) * kSize;
+      std::memset(black_bits, 0x00, pixel_count * 4U);
+      std::memset(white_bits, 0xFF, pixel_count * 4U);
+      (void)DrawIconEx(black_dc, 0, 0, cursor, 0, 0, 0, nullptr, DI_NORMAL);
+      (void)DrawIconEx(white_dc, 0, 0, cursor, 0, 0, 0, nullptr, DI_NORMAL);
+      GdiFlush();
+
+      const auto* b_px = static_cast<const std::uint8_t*>(black_bits);
+      const auto* w_px = static_cast<const std::uint8_t*>(white_bits);
+      for (std::size_t i = 0; i < pixel_count; ++i) {
+        const std::size_t off = i * 4U;
+        const int bb = b_px[off + 0];
+        const int bg = b_px[off + 1];
+        const int br = b_px[off + 2];
+        const int ba = b_px[off + 3];
+        const int wb = w_px[off + 0];
+        const int wg = w_px[off + 1];
+        const int wr = w_px[off + 2];
+
+        if (wb < bb || wg < bg || wr < br) {
+          // Inverted XOR mask (e.g. I-beam): render a high-contrast dark
+          // cursor stroke with soft alpha so it stays visible on light & dark.
+          premul[i] = (230U << 24U) | (22U << 16U) | (22U << 8U) | 22U;
+        } else if (ba > 0) {
+          premul[i] = (static_cast<std::uint32_t>(ba) << 24U) |
+                      (static_cast<std::uint32_t>(br) << 16U) |
+                      (static_cast<std::uint32_t>(bg) << 8U) |
+                      static_cast<std::uint32_t>(bb);
+        } else {
+          const int diff = ((wb - bb) + (wg - bg) + (wr - br)) / 3;
+          const int alpha = std::clamp(255 - diff, 0, 255);
+          if (alpha == 0) {
+            premul[i] = 0U;
+          } else {
+            premul[i] = (static_cast<std::uint32_t>(alpha) << 24U) |
+                        (static_cast<std::uint32_t>(std::min(br, alpha)) << 16U) |
+                        (static_cast<std::uint32_t>(std::min(bg, alpha)) << 8U) |
+                        static_cast<std::uint32_t>(std::min(bb, alpha));
+          }
+        }
+      }
+      SelectObject(black_dc, old_b);
+      SelectObject(white_dc, old_w);
+      ok = true;
+    }
+
+    if (black_bmp != nullptr) DeleteObject(black_bmp);
+    if (white_bmp != nullptr) DeleteObject(white_bmp);
+    if (black_dc != nullptr) DeleteDC(black_dc);
+    if (white_dc != nullptr) DeleteDC(white_dc);
+    ReleaseDC(nullptr, screen_dc);
+
+    if (!ok || cursor_sprite_ == nullptr) {
+      return false;
+    }
+    device_context_->UpdateSubresource(cursor_sprite_.Get(), 0, nullptr,
+                                       premul.data(), kSize * 4U, 0);
+    cached_cursor_handle_ = cursor;
+    cached_cursor_hotspot_ = {hotspot_x, hotspot_y};
+    cached_cursor_valid_ = true;
+    return true;
+  }
+
+  void draw_cursor_on_vp_input() {
+    if (cursor_backup_ == nullptr || vp_input_ == nullptr ||
+        vp_input_rtv_ == nullptr || processor_width_ == 0 ||
+        processor_height_ == 0 || !ensure_cursor_pipeline()) {
+      return;
+    }
+    CURSORINFO ci{};
+    ci.cbSize = sizeof(ci);
+    if (GetCursorInfo(&ci) == FALSE || (ci.flags & CURSOR_SHOWING) == 0 ||
+        ci.hCursor == nullptr || !PtInRect(&monitor_rect_, ci.ptScreenPos)) {
+      return;
+    }
+    if (!update_cursor_sprite(ci.hCursor)) {
+      return;
+    }
+    const int cx = ci.ptScreenPos.x - monitor_rect_.left -
+                   static_cast<int>(cached_cursor_hotspot_.x);
+    const int cy = ci.ptScreenPos.y - monitor_rect_.top -
+                   static_cast<int>(cached_cursor_hotspot_.y);
+    const int tex_w = static_cast<int>(processor_width_);
+    const int tex_h = static_cast<int>(processor_height_);
+    const int patch_x = std::max(0, cx);
+    const int patch_y = std::max(0, cy);
+    const int patch_right =
+        std::min(tex_w, cx + static_cast<int>(kCursorPatchSize));
+    const int patch_bottom =
+        std::min(tex_h, cy + static_cast<int>(kCursorPatchSize));
+    const int patch_w = patch_right - patch_x;
+    const int patch_h = patch_bottom - patch_y;
+    if (patch_w <= 0 || patch_h <= 0) {
+      return;
+    }
+
+    const D3D11_BOX src_box{
+        static_cast<UINT>(patch_x),
+        static_cast<UINT>(patch_y),
+        0,
+        static_cast<UINT>(patch_x + patch_w),
+        static_cast<UINT>(patch_y + patch_h),
+        1,
+    };
+    device_context_->CopySubresourceRegion(cursor_backup_.Get(), 0, 0, 0, 0,
+                                           vp_input_.Get(), 0, &src_box);
+
+    D3D11_MAPPED_SUBRESOURCE mapped{};
+    if (SUCCEEDED(device_context_->Map(cursor_cb_.Get(), 0,
+                                       D3D11_MAP_WRITE_DISCARD, 0, &mapped))) {
+      auto* params = static_cast<float*>(mapped.pData);
+      constexpr float kInvSize = 1.0F / static_cast<float>(kCursorPatchSize);
+      params[0] = static_cast<float>(patch_x - cx) * kInvSize;
+      params[1] = static_cast<float>(patch_y - cy) * kInvSize;
+      params[2] = static_cast<float>(patch_w) * kInvSize;
+      params[3] = static_cast<float>(patch_h) * kInvSize;
+      device_context_->Unmap(cursor_cb_.Get(), 0);
+    }
+
+    ID3D11RenderTargetView* rtv = vp_input_rtv_.Get();
+    ID3D11ShaderResourceView* srv = cursor_sprite_srv_.Get();
+    ID3D11Buffer* cb = cursor_cb_.Get();
+    ID3D11SamplerState* samp = cursor_sampler_.Get();
+    D3D11_VIEWPORT vp{
+        static_cast<FLOAT>(patch_x),
+        static_cast<FLOAT>(patch_y),
+        static_cast<FLOAT>(patch_w),
+        static_cast<FLOAT>(patch_h),
+        0.0F,
+        1.0F,
+    };
+    const float blend_factor[4]{0.0F, 0.0F, 0.0F, 0.0F};
+    device_context_->IASetInputLayout(nullptr);
+    device_context_->IASetPrimitiveTopology(
+        D3D11_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP);
+    device_context_->VSSetShader(cursor_vs_.Get(), nullptr, 0);
+    device_context_->VSSetConstantBuffers(0, 1, &cb);
+    device_context_->RSSetViewports(1, &vp);
+    device_context_->RSSetState(cursor_raster_.Get());
+    device_context_->PSSetShader(cursor_ps_.Get(), nullptr, 0);
+    device_context_->PSSetShaderResources(0, 1, &srv);
+    device_context_->PSSetSamplers(0, 1, &samp);
+    device_context_->OMSetRenderTargets(1, &rtv, nullptr);
+    device_context_->OMSetBlendState(cursor_blend_.Get(), blend_factor,
+                                     0xFFFFFFFFU);
+    device_context_->Draw(4, 0);
+
+    // Unbind RTV and SRV immediately so VideoProcessorBlt never encounters a
+    // D3D11 resource hazard when binding vp_input_view_.
+    ID3D11RenderTargetView* null_rtv = nullptr;
+    ID3D11ShaderResourceView* null_srv = nullptr;
+    device_context_->OMSetRenderTargets(1, &null_rtv, nullptr);
+    device_context_->PSSetShaderResources(0, 1, &null_srv);
+
+    prev_cursor_patch_rect_ =
+        RECT{patch_x, patch_y, patch_x + patch_w, patch_y + patch_h};
+    has_prev_cursor_patch_ = true;
+  }
+
+  bool encode_cursor_only_frame(std::uint64_t now_us) {
+    if (cursor_backup_ == nullptr || !has_valid_vp_input_ ||
+        vp_input_ == nullptr || gpu_processor_failed_) {
+      return false;
+    }
+    if (has_prev_cursor_patch_) {
+      const UINT pw = static_cast<UINT>(prev_cursor_patch_rect_.right -
+                                        prev_cursor_patch_rect_.left);
+      const UINT ph = static_cast<UINT>(prev_cursor_patch_rect_.bottom -
+                                        prev_cursor_patch_rect_.top);
+      if (pw > 0 && ph > 0) {
+        const D3D11_BOX restore_box{0, 0, 0, pw, ph, 1};
+        device_context_->CopySubresourceRegion(
+            vp_input_.Get(), 0,
+            static_cast<UINT>(prev_cursor_patch_rect_.left),
+            static_cast<UINT>(prev_cursor_patch_rect_.top), 0,
+            cursor_backup_.Get(), 0, &restore_box);
+      }
+      has_prev_cursor_patch_ = false;
+    }
+    draw_cursor_on_vp_input();
+    received_frames_.fetch_add(1, std::memory_order_relaxed);
+    return encode_copied_frame(last_vp_src_desc_, true, now_us);
+  }
+
   bool copy_source_for_readback(ID3D11Texture2D* source,
                                 D3D11_TEXTURE2D_DESC& desc_out,
                                 bool& used_gpu_vp) {
     source->GetDesc(&desc_out);
     if (!gpu_processor_failed_ && ensure_processor(desc_out)) {
       device_context_->CopyResource(vp_input_.Get(), source);
+      last_vp_src_desc_ = desc_out;
+      has_valid_vp_input_ = true;
+      has_prev_cursor_patch_ = false;
+      draw_cursor_on_vp_input();
       used_gpu_vp = true;
       return true;
     }
@@ -1881,6 +2540,7 @@ class DxgiCaptureEncoder final : public CaptureEncoder {
       } else {
         // Every pooled target is still inside the MFT: leave this frame queued
         // rather than clobber an in-flight input.
+        dropped_frames_.fetch_add(1, std::memory_order_relaxed);
         return false;
       }
       D3D11_VIDEO_PROCESSOR_STREAM stream{};
@@ -1905,6 +2565,15 @@ class DxgiCaptureEncoder final : public CaptureEncoder {
           }
         }
         if (direct_gpu) {
+          // Snapshot into dedicated GPU texture so idle keepalives can rotate
+          // through the 12-slot ring via pure VRAM CopyResource without
+          // stalling on MFT reference release of the previous input slot.
+          if (latest_nv12_ != nullptr) {
+            device_context_->CopyResource(latest_nv12_.Get(), nv12);
+            has_latest_nv12_ = true;
+          }
+          // Dispatch the GPU VideoProcessorBlt immediately before the MFT
+          // worker thread consumes the NV12 surface on a separate thread.
           device_context_->Flush();
           // Only a non-pooled fallback texture needs a retained reference; a
           // pooled slot is pinned by the in-flight FIFO instead.
@@ -2070,6 +2739,28 @@ class DxgiCaptureEncoder final : public CaptureEncoder {
 
   bool submit_cached_frame(std::uint64_t now_us) {
     if (capture_gpu_enabled_.load(std::memory_order_acquire) &&
+        !gpu_processor_failed_ && has_latest_nv12_ && latest_nv12_ != nullptr) {
+      const int slot = acquire_nv12_slot();
+      if (slot >= 0) {
+        ComPtr<ID3D11Texture2D> dst;
+        {
+          std::lock_guard lock(pool_mutex_);
+          if (static_cast<std::size_t>(slot) < nv12_pool_.size()) {
+            dst = nv12_pool_[static_cast<std::size_t>(slot)].texture;
+          }
+        }
+        if (dst != nullptr) {
+          device_context_->CopyResource(dst.Get(), latest_nv12_.Get());
+          device_context_->Flush();
+          const bool queued = submit_gpu_nv12(dst.Get(), now_us, slot);
+          if (!queued) {
+            rollback_slot(slot);
+          }
+          return queued;
+        }
+      }
+    }
+    if (capture_gpu_enabled_.load(std::memory_order_acquire) &&
         !gpu_processor_failed_ && has_cached_slot()) {
       const int slot = take_cached_slot();
       if (slot < 0) {
@@ -2199,7 +2890,9 @@ class DxgiCaptureEncoder final : public CaptureEncoder {
       }
     }
 
-    if (force_keyframe_.exchange(false, std::memory_order_acq_rel)) {
+    const bool want_keyframe =
+        force_keyframe_.load(std::memory_order_acquire);
+    if (want_keyframe) {
       sample->SetUINT32(MFSampleExtension_CleanPoint, 1);
       if (codec_api_ != nullptr) {
         VARIANT v{};
@@ -2239,6 +2932,9 @@ class DxgiCaptureEncoder final : public CaptureEncoder {
         on_failure_(last_encode_error_);
       }
       return false;
+    }
+    if (want_keyframe) {
+      force_keyframe_.store(false, std::memory_order_release);
     }
     consecutive_process_input_errors_ = 0;
     ++submitted_frames_;
@@ -2417,7 +3113,7 @@ class DxgiCaptureEncoder final : public CaptureEncoder {
   RECT monitor_rect_{};
   std::thread capture_thread_;
   std::thread encoder_thread_;
-  LatestFrameQueue<PendingFrame> pending_frames_;
+  LatestFrameQueue<PendingFrame, 2> pending_frames_;
   struct EventHandleDeleter {
     void operator()(void* handle) const {
       if (handle != nullptr && handle != INVALID_HANDLE_VALUE) {
@@ -2445,7 +3141,30 @@ class DxgiCaptureEncoder final : public CaptureEncoder {
   ComPtr<ID3D11VideoProcessorEnumerator> enumerator_;
   ComPtr<ID3D11VideoProcessor> processor_;
   ComPtr<ID3D11VideoProcessorInputView> vp_input_view_;
+  ComPtr<ID3D11RenderTargetView> vp_input_rtv_;
   ComPtr<ID3D11Texture2D> vp_input_;
+  D3D11_TEXTURE2D_DESC last_vp_src_desc_{};
+  bool has_valid_vp_input_{false};
+  static constexpr UINT kCursorPatchSize = 128;
+  ComPtr<ID3D11Texture2D> cursor_backup_;
+  ComPtr<ID3D11Texture2D> cursor_sprite_;
+  ComPtr<ID3D11ShaderResourceView> cursor_sprite_srv_;
+  ComPtr<ID3D11VertexShader> cursor_vs_;
+  ComPtr<ID3D11PixelShader> cursor_ps_;
+  ComPtr<ID3D11BlendState> cursor_blend_;
+  ComPtr<ID3D11SamplerState> cursor_sampler_;
+  ComPtr<ID3D11RasterizerState> cursor_raster_;
+  ComPtr<ID3D11Buffer> cursor_cb_;
+  bool cursor_shader_failed_{false};
+  HCURSOR cached_cursor_handle_{nullptr};
+  POINT cached_cursor_hotspot_{};
+  bool cached_cursor_valid_{false};
+  RECT prev_cursor_patch_rect_{};
+  bool has_prev_cursor_patch_{false};
+  std::chrono::steady_clock::time_point last_monitor_rect_check_{};
+  POINT last_cursor_pos_{std::numeric_limits<LONG>::min(),
+                         std::numeric_limits<LONG>::min()};
+  bool last_cursor_on_monitor_{false};
   struct Nv12Slot {
     ComPtr<ID3D11Texture2D> texture;
     ComPtr<ID3D11VideoProcessorOutputView> view;
@@ -2453,13 +3172,16 @@ class DxgiCaptureEncoder final : public CaptureEncoder {
     // Comparing against this tells us the MFT has released the input.
     ULONG idle_refcount{};
   };
-  static constexpr std::size_t kNv12PoolSize = 6;
+  static constexpr std::size_t kNv12PoolSize = 12;
   mutable std::mutex pool_mutex_;
   std::vector<Nv12Slot> nv12_pool_;
   std::deque<int> submitted_slots_;
+  std::size_t unretired_outputs_{0};
   std::size_t nv12_next_{0};
   int cached_slot_{-1};
   std::chrono::steady_clock::time_point pool_starved_since_{};
+  ComPtr<ID3D11Texture2D> latest_nv12_;
+  bool has_latest_nv12_{false};
   ComPtr<ID3D11Texture2D> transient_gpu_texture_;
   bool pool_ready_{false};
   ComPtr<ID3D11Texture2D> readback_;

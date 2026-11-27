@@ -44,6 +44,8 @@ struct TouchCapabilityStatus {
     TouchInputMode mode) noexcept {
   return mode == TouchInputMode::NativeTouch;
 }
+[[nodiscard]] TouchCapabilityStatus describe_touch_capability(
+    TouchInputMode mode, bool native_available);
 
 struct InjectorTarget {
   // Virtual desktop bounds in physical pixels. Normalized input is mapped into

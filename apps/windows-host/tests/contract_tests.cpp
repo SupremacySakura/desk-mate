@@ -1,3 +1,4 @@
+#include "deskmate/clock.hpp"
 #include "deskmate/platform/session_profile.hpp"
 #include "deskmate/windows/aoa_links.hpp"
 #include "deskmate/windows/capture_encoder.hpp"
@@ -5,16 +6,21 @@
 #include "deskmate/windows/host_session.hpp"
 #include "deskmate/windows/host_state.hpp"
 #include "deskmate/windows/input_injector.hpp"
+#include "deskmate/windows/libusb_aoa.hpp"
 #include "deskmate/windows/updater.hpp"
 #include "deskmate/windows/virtual_display.hpp"
 
+#include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
 #include <limits>
 #include <memory>
+#include <mutex>
 #include <string>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -572,11 +578,11 @@ void test_frame_rate_and_bitrate_policy() {
   const auto bps_hevc_120 = compute_target_bitrate_bps(2800, 1840, 120, true);
   const auto bps_h264_60 = compute_target_bitrate_bps(1920, 1200, 60, false);
   const auto bps_low = compute_target_bitrate_bps(640, 480, 30, true);
-  // Bitrate policy mirrors macOS VideoEncoder: clamp to [8M, 45M].
+  // Bitrate policy clamps to [8M, 24M] to stay comfortably inside USB 2.0 AOA.
   CHECK(bps_low == 8'000'000U);
-  CHECK(bps_hevc_60 >= 8'000'000U && bps_hevc_60 <= 45'000'000U);
-  CHECK(bps_hevc_120 >= bps_hevc_60 && bps_hevc_120 <= 45'000'000U);
-  CHECK(bps_h264_60 >= 8'000'000U && bps_h264_60 <= 45'000'000U);
+  CHECK(bps_hevc_60 >= 8'000'000U && bps_hevc_60 <= 24'000'000U);
+  CHECK(bps_hevc_120 >= bps_hevc_60 && bps_hevc_120 <= 24'000'000U);
+  CHECK(bps_h264_60 >= 8'000'000U && bps_h264_60 <= 24'000'000U);
 
   // SettingsStore must sanitize unknown refresh values back to 0 (Auto).
 #ifdef _WIN32
@@ -631,6 +637,206 @@ void test_encoder_queue_retries_and_counts_only_replaced_frames() {
   CHECK(queue.peek() == 10);
 }
 
+void test_session_link_oversized_keyframe_requests_local_idr() {
+  class Pipe {
+   public:
+    deskmate::protocol::IoResult read(std::span<std::uint8_t> destination) {
+      std::lock_guard lock(mutex_);
+      if (offset_ == bytes_.size()) {
+        return {deskmate::protocol::IoStatus::WouldBlock, 0};
+      }
+      const std::size_t take =
+          std::min(destination.size(), bytes_.size() - offset_);
+      std::copy_n(bytes_.begin() + static_cast<std::ptrdiff_t>(offset_), take,
+                  destination.begin());
+      offset_ += take;
+      return {deskmate::protocol::IoStatus::Ok, take};
+    }
+
+    deskmate::protocol::IoResult write(std::span<const std::uint8_t> source) {
+      std::lock_guard lock(mutex_);
+      bytes_.insert(bytes_.end(), source.begin(), source.end());
+      return {deskmate::protocol::IoStatus::Ok, source.size()};
+    }
+
+   private:
+    std::mutex mutex_;
+    std::vector<std::uint8_t> bytes_;
+    std::size_t offset_{};
+  };
+
+  class PipeTransport final : public deskmate::windows::LinkTransport {
+   public:
+    PipeTransport(std::shared_ptr<Pipe> inbound,
+                  std::shared_ptr<Pipe> outbound)
+        : inbound_(std::move(inbound)), outbound_(std::move(outbound)) {}
+
+    deskmate::protocol::IoResult read(
+        std::span<std::uint8_t> destination) override {
+      return inbound_->read(destination);
+    }
+    deskmate::protocol::IoResult write(
+        std::span<const std::uint8_t> source) override {
+      return outbound_->write(source);
+    }
+    [[nodiscard]] bool alive() const override { return true; }
+
+   private:
+    std::shared_ptr<Pipe> inbound_;
+    std::shared_ptr<Pipe> outbound_;
+  };
+
+  auto host_to_device = std::make_shared<Pipe>();
+  auto device_to_host = std::make_shared<Pipe>();
+  deskmate::platform::AoaIdentity identity;
+  identity.product = "MatePad";
+  identity.port_path = "7:1";
+
+  deskmate::windows::SessionLink link(
+      std::make_unique<PipeTransport>(device_to_host, host_to_device), identity,
+      21U, 0x01020309U, 1U, 1920, 1200, 120, false, true);
+  deskmate::protocol::SteadyClock clock;
+  PipeTransport device_transport(host_to_device, device_to_host);
+  deskmate::protocol::DeviceSession device(
+      device_transport, clock,
+      deskmate::platform::make_device_session_config(
+          0xC1D2E3F4U, 1920, 1200, 120, false),
+      nullptr);
+  device.start();
+  for (int i = 0; i < 6; ++i) {
+    device.pump();
+    link.pump();
+  }
+  CHECK(link.state() == deskmate::protocol::SessionState::Streaming);
+  CHECK(!link.consume_local_keyframe_request());
+
+  // Oversized (> 768 KiB = 64 x 12 KiB) keyframe is rejected by the scheduler;
+  // SessionLink must still gate subsequent P-frames and request a fresh IDR.
+  std::vector<std::uint8_t> oversized_idr(769U * 1024U, 0x65);
+  link.submit_video(std::move(oversized_idr), 1000U, true);
+  link.pump();
+  CHECK(link.stats().frames_sent == 0U);
+  CHECK(link.stats().frames_dropped == 1U);
+  CHECK(link.consume_local_keyframe_request());
+  CHECK(!link.consume_local_keyframe_request());
+
+  // While drop_until_keyframe_ remains true, consume_local_keyframe_request()
+  // must re-trigger every 250 ms so a missed IDR never stalls at 0 Mbps.
+  std::this_thread::sleep_for(std::chrono::milliseconds(90));
+  CHECK(!link.consume_local_keyframe_request());
+  std::this_thread::sleep_for(std::chrono::milliseconds(170));
+  CHECK(link.consume_local_keyframe_request());
+  CHECK(!link.consume_local_keyframe_request());
+
+  // Subsequent P-frame is suppressed until a valid keyframe arrives.
+  link.submit_video(std::vector<std::uint8_t>{0x41}, 2000U, false);
+  link.pump();
+  CHECK(link.stats().frames_sent == 0U);
+  CHECK(link.stats().frames_dropped == 2U);
+
+  // Normal-sized keyframe clears the gate once pump() confirms it was Sent.
+  link.submit_video(std::vector<std::uint8_t>{0x65, 0x88}, 3000U, true);
+  link.pump();
+  CHECK(link.stats().frames_sent == 1U);
+  std::this_thread::sleep_for(std::chrono::milliseconds(260));
+  CHECK(!link.consume_local_keyframe_request());
+
+  link.stop();
+  device.stop();
+}
+
+void test_bulk_out_chunking_avoids_usb_packet_multiples() {
+  using deskmate::windows::select_bulk_out_chunk_bytes;
+  CHECK(select_bulk_out_chunk_bytes(0) == 0U);
+  CHECK(select_bulk_out_chunk_bytes(12320) == 12320U);
+
+  const std::vector<std::size_t> critical_sizes{
+      1,    64,   511,  512,   513,   1024,  4096,
+      5120, 8192, 12288, 12320, 15360, 16384, 24576, 32768};
+  for (std::size_t total : critical_sizes) {
+    std::size_t sent = 0;
+    while (sent < total) {
+      const std::size_t chunk = select_bulk_out_chunk_bytes(total - sent, 16384);
+      CHECK(chunk > 0U);
+      CHECK(chunk <= 16384U);
+      CHECK((chunk % 512U) != 0U);
+      CHECK((chunk % 1024U) != 0U);
+      sent += chunk;
+    }
+    CHECK(sent == total);
+  }
+}
+
+void test_two_slot_frame_queue_and_touch_capability_helper() {
+  deskmate::windows::LatestFrameQueue<int, 2> queue;
+  CHECK(queue.empty());
+  CHECK(!queue.replace(10).has_value());
+  CHECK(!queue.replace(20).has_value());
+  auto evicted = queue.replace(30);
+  CHECK(evicted.has_value() && *evicted == 10);
+  auto first = queue.take();
+  CHECK(first.has_value() && *first == 20);
+  CHECK(queue.restore_front(20));
+  CHECK(!queue.restore_front(99));
+  auto restored = queue.take();
+  CHECK(restored.has_value() && *restored == 20);
+  auto last = queue.take();
+  CHECK(last.has_value() && *last == 30);
+  CHECK(queue.empty());
+
+  using deskmate::windows::TouchInputMode;
+  using deskmate::windows::describe_touch_capability;
+  const auto native_ok =
+      describe_touch_capability(TouchInputMode::NativeTouch, true);
+  CHECK(native_ok.native_touch_available && !native_ok.fallback_active);
+  const auto native_fb =
+      describe_touch_capability(TouchInputMode::NativeTouch, false);
+  CHECK(!native_fb.native_touch_available && native_fb.fallback_active);
+  const auto compat =
+      describe_touch_capability(TouchInputMode::CompatibleGestures, true);
+  CHECK(compat.native_touch_available && !compat.fallback_active);
+}
+
+void test_idle_keepalive_60hz_pacing() {
+  using deskmate::windows::compute_idle_acquire_wait_ms;
+  using deskmate::windows::resolve_idle_keepalive_hz;
+
+  CHECK(resolve_idle_keepalive_hz(120) == 60);
+  CHECK(resolve_idle_keepalive_hz(90) == 60);
+  CHECK(resolve_idle_keepalive_hz(60) == 60);
+  CHECK(resolve_idle_keepalive_hz(30) == 30);
+
+  CHECK(compute_idle_acquire_wait_ms(100'000, 116'667, true) == 4U);
+  CHECK(compute_idle_acquire_wait_ms(100'000, 0, false) == 8U);
+  CHECK(compute_idle_acquire_wait_ms(100'000, 116'667, false) == 8U);
+  CHECK(compute_idle_acquire_wait_ms(109'167, 116'667, false) == 4U);
+  CHECK(compute_idle_acquire_wait_ms(112'167, 116'667, false) == 0U);
+  CHECK(compute_idle_acquire_wait_ms(114'667, 116'667, false) == 0U);
+  CHECK(compute_idle_acquire_wait_ms(120'000, 116'667, false) == 0U);
+
+  // Simulated 60 Hz idle loop: short DXGI slices step down into the <=4.5 ms
+  // high-resolution pacing_timer_ tail (return 0U) so every tick lands at 16.67 ms.
+  constexpr std::int64_t kPeriodUs = 16'667;
+  std::int64_t now_us = 1'000'000;
+  std::int64_t deadline_us = now_us + kPeriodUs;
+  for (int i = 0; i < 60; ++i) {
+    int iterations = 0;
+    while (iterations++ < 10) {
+      const auto wait_ms =
+          compute_idle_acquire_wait_ms(now_us, deadline_us, false);
+      if (wait_ms == 0U) {
+        now_us = std::max(now_us, deadline_us);
+        break;
+      }
+      CHECK(wait_ms <= 8U);
+      now_us += static_cast<std::int64_t>(wait_ms) * 1000;
+    }
+    CHECK(now_us >= deadline_us);
+    CHECK(now_us - deadline_us < 1000);
+    deadline_us += kPeriodUs;
+  }
+}
+
 }  // namespace
 
 int main() {
@@ -649,6 +855,10 @@ int main() {
   test_frame_rate_and_bitrate_policy();
   test_high_fps_pacing_uses_absolute_deadlines();
   test_encoder_queue_retries_and_counts_only_replaced_frames();
+  test_session_link_oversized_keyframe_requests_local_idr();
+  test_bulk_out_chunking_avoids_usb_packet_multiples();
+  test_two_slot_frame_queue_and_touch_capability_helper();
+  test_idle_keepalive_60hz_pacing();
   if (failures != 0) {
     return 1;
   }

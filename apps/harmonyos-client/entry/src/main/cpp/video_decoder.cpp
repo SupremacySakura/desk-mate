@@ -241,6 +241,7 @@ bool VideoDecoder::DestroyCodec()
     {
         std::lock_guard lock(mutex_);
         queued_.clear();
+        waiting_for_keyframe_ = false;
         input_ready_.clear();
         events_.clear();
     }
@@ -275,6 +276,7 @@ bool VideoDecoder::Open(const DecoderConfig &config, void *native_window)
         stats_.height = config.height;
         last_error_.clear();
         stop_control_ = false;
+        waiting_for_keyframe_ = false;
     }
     open_.store(true, std::memory_order_release);
     control_thread_ = std::thread([this] { ControlLoop(); });
@@ -340,14 +342,24 @@ bool VideoDecoder::Push(std::vector<std::uint8_t> access_unit,
     }
     {
         std::lock_guard lock(mutex_);
-        if (keyframe && !queued_.empty()) {
-            // A fresh keyframe supersedes stale queued frames (Moonlight-style
-            // low-latency catchup without breaking GOP reference order).
-            stats_.frames_dropped += queued_.size();
-            queued_.clear();
-        } else if (queued_.size() >= kMaxQueuedFrames) {
-            queued_.pop_front();
+        if (keyframe) {
+            waiting_for_keyframe_ = false;
+            if (!queued_.empty()) {
+                // A fresh keyframe supersedes stale queued frames without
+                // breaking GOP reference order.
+                stats_.frames_dropped += queued_.size();
+                queued_.clear();
+            }
+        } else if (waiting_for_keyframe_) {
             ++stats_.frames_dropped;
+            return true;
+        } else if (queued_.size() >= kMaxQueuedFrames) {
+            // Never pop from the front of an active GOP: dropping a reference
+            // frame breaks all subsequent P-frames. Drop incoming P-frames
+            // until the next keyframe resyncs cleanly.
+            waiting_for_keyframe_ = true;
+            ++stats_.frames_dropped;
+            return true;
         }
         queued_.push_back(PendingFrame{std::move(access_unit), pts_us, keyframe});
         ++stats_.frames_submitted;

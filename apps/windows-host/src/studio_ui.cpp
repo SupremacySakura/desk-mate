@@ -19,6 +19,7 @@ int run_studio_ui(HostController&) { return 0; }
 #include <windows.h>
 #include <windowsx.h>
 #include <wtsapi32.h>
+#include <dbt.h>
 #include <wrl/client.h>
 #include <shellapi.h>  // must follow windows.h
 
@@ -27,9 +28,12 @@ int run_studio_ui(HostController&) { return 0; }
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <filesystem>
 #include <functional>
+#include <initializer_list>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace deskmate::windows {
@@ -62,6 +66,12 @@ constexpr UINT kCmdDevRemove = 3013;
 constexpr DWORD kDwmUseImmersiveDarkMode = 20;
 constexpr DWORD kDwmWindowCornerPreference = 33;
 constexpr DWORD kDwmCornerRound = 2;
+
+constexpr GUID kUsbDeviceInterfaceGuid = {
+    0xA5DCBF10,
+    0x6530,
+    0x11D2,
+    {0x90, 0x1F, 0x00, 0xC0, 0x4F, 0xB9, 0x51, 0xED}};
 
 enum class UiTab {
   Display = 0,
@@ -252,6 +262,122 @@ void open_shell_target_utf8(const std::string& target) {
   }
   const std::wstring w = utf8_to_wide(target);
   open_shell_target(w.c_str());
+}
+
+std::wstring lowercase_ascii_w(std::wstring value) {
+  for (wchar_t& ch : value) {
+    if (ch >= L'A' && ch <= L'Z') {
+      ch = static_cast<wchar_t>(ch - L'A' + L'a');
+    }
+  }
+  return value;
+}
+
+std::filesystem::path current_exe_dir() {
+  wchar_t exe_buf[MAX_PATH]{};
+  const DWORD len = GetModuleFileNameW(nullptr, exe_buf, MAX_PATH);
+  if (len == 0 || len >= MAX_PATH) {
+    return {};
+  }
+  return std::filesystem::path(exe_buf).parent_path();
+}
+
+std::filesystem::path find_bundled_driver_exe(
+    std::initializer_list<std::wstring_view> exact_names,
+    std::initializer_list<std::wstring_view> prefixes) {
+  const std::filesystem::path base = current_exe_dir();
+  if (base.empty()) {
+    return {};
+  }
+  std::error_code ec;
+  const std::filesystem::path search_dirs[2]{base / L"drivers", base};
+  for (const auto& dir : search_dirs) {
+    if (!std::filesystem::is_directory(dir, ec)) {
+      continue;
+    }
+    for (std::wstring_view exact : exact_names) {
+      const auto candidate = dir / std::wstring(exact);
+      if (std::filesystem::is_regular_file(candidate, ec)) {
+        return candidate;
+      }
+    }
+    for (const auto& entry : std::filesystem::directory_iterator(dir, ec)) {
+      if (!entry.is_regular_file(ec)) {
+        continue;
+      }
+      const std::wstring name =
+          lowercase_ascii_w(entry.path().filename().wstring());
+      if (name.size() < 4 || name.compare(name.size() - 4, 4, L".exe") != 0) {
+        continue;
+      }
+      for (std::wstring_view prefix : prefixes) {
+        if (name.rfind(prefix, 0) == 0) {
+          return entry.path();
+        }
+      }
+    }
+  }
+  return {};
+}
+
+std::filesystem::path cached_bundled_parsec_vdd() {
+  static auto last_check = std::chrono::steady_clock::time_point{};
+  static std::filesystem::path cached;
+  const auto now = std::chrono::steady_clock::now();
+  if (last_check.time_since_epoch().count() == 0 ||
+      now - last_check >= std::chrono::seconds(3)) {
+    last_check = now;
+    cached = find_bundled_driver_exe(
+        {L"parsec-vdd-0.45.0.0-setup.exe"}, {L"parsec-vdd"});
+  }
+  return cached;
+}
+
+std::filesystem::path cached_bundled_zadig() {
+  static auto last_check = std::chrono::steady_clock::time_point{};
+  static std::filesystem::path cached;
+  const auto now = std::chrono::steady_clock::now();
+  if (last_check.time_since_epoch().count() == 0 ||
+      now - last_check >= std::chrono::seconds(3)) {
+    last_check = now;
+    cached = find_bundled_driver_exe({L"zadig-2.9.exe"}, {L"zadig"});
+  }
+  return cached;
+}
+
+bool has_bundled_parsec_vdd() {
+  return !cached_bundled_parsec_vdd().empty();
+}
+
+bool has_bundled_zadig() { return !cached_bundled_zadig().empty(); }
+
+void launch_local_tool_exe(const std::filesystem::path& exe_path) {
+  const std::wstring exe_w = exe_path.wstring();
+  const std::wstring dir_w = exe_path.parent_path().wstring();
+  HINSTANCE res = ShellExecuteW(nullptr, L"open", exe_w.c_str(), nullptr,
+                                dir_w.c_str(), SW_SHOWNORMAL);
+  if (reinterpret_cast<INT_PTR>(res) == SE_ERR_ACCESSDENIED) {
+    (void)ShellExecuteW(nullptr, L"runas", exe_w.c_str(), nullptr,
+                        dir_w.c_str(), SW_SHOWNORMAL);
+  }
+}
+
+void launch_parsec_vdd_or_web() {
+  const auto path = cached_bundled_parsec_vdd();
+  if (!path.empty()) {
+    launch_local_tool_exe(path);
+    return;
+  }
+  open_shell_target(L"https://github.com/nomi-san/parsec-vdd/releases");
+}
+
+void launch_zadig_or_web() {
+  const auto path = cached_bundled_zadig();
+  if (!path.empty()) {
+    launch_local_tool_exe(path);
+    return;
+  }
+  open_shell_target(L"https://zadig.akeo.ie/");
 }
 
 std::string format_bitrate_mbps(double mbps) {
@@ -811,6 +937,13 @@ class StudioWindowController {
                           sizeof(dark_mode));
     WTSRegisterSessionNotification(main_hwnd_, NOTIFY_FOR_THIS_SESSION);
 
+    DEV_BROADCAST_DEVICEINTERFACE_W dbdi{};
+    dbdi.dbcc_size = sizeof(dbdi);
+    dbdi.dbcc_devicetype = DBT_DEVTYP_DEVICEINTERFACE;
+    dbdi.dbcc_classguid = kUsbDeviceInterfaceGuid;
+    usb_notify_ = RegisterDeviceNotificationW(
+        main_hwnd_, &dbdi, DEVICE_NOTIFY_WINDOW_HANDLE);
+
     popover_hwnd_ = CreateWindowExW(
         WS_EX_TOOLWINDOW | WS_EX_TOPMOST, pwc.lpszClassName, L"DeskMate Tray",
         WS_POPUP, 0, 0, static_cast<int>(std::lround(332.0F * scale)),
@@ -912,6 +1045,10 @@ class StudioWindowController {
     if (app_icon_small_ != nullptr) {
       DestroyIcon(app_icon_small_);
       app_icon_small_ = nullptr;
+    }
+    if (usb_notify_ != nullptr) {
+      UnregisterDeviceNotification(usb_notify_);
+      usb_notify_ = nullptr;
     }
     if (main_hwnd_ != nullptr) {
       WTSUnRegisterSessionNotification(main_hwnd_);
@@ -1999,6 +2136,7 @@ class StudioWindowController {
                             }, 104.0F);
       y += 72.0F;
     } else if (state_.driver_missing) {
+      const bool bundled_zadig = has_bundled_zadig();
       const std::string hint =
           !state_.driver_hint.empty()
               ? state_.driver_hint
@@ -2019,9 +2157,10 @@ class StudioWindowController {
           D2D1::RectF(x + 16.0F, y + 30.0F, x + w - 216.0F, y + card_h - 8.0F),
           f_ui_11_.Get(), p.ink_secondary);
       const float btn_y = y + (card_h - 30.0F) * 0.5F;
-      draw_secondary_button(t, x + w - 202.0F, btn_y, "设备管理器",
+      draw_secondary_button(t, x + w - 202.0F, btn_y,
+                            bundled_zadig ? "启动 Zadig" : "获取 Zadig",
                             f_ui_11_b_.Get(),
-                            [] { open_shell_target(L"devmgmt.msc"); }, 96.0F);
+                            [] { launch_zadig_or_web(); }, 96.0F);
       draw_primary_button(t, x + w - 96.0F, btn_y - 1.0F, "重试",
                           f_ui_12_.Get(), [this] {
                             controller_.retry();
@@ -2029,9 +2168,12 @@ class StudioWindowController {
                           }, 80.0F);
       y += card_h + 12.0F;
     } else if (state_.auto_virtual_display && !state_.vdd_installed) {
+      const bool bundled_vdd = has_bundled_parsec_vdd();
       const std::string title = "需要安装虚拟屏驱动以新建独立扩展屏";
       const std::string sub =
-          "Windows 需通过 Parsec VDD / MttVDD 驱动新建独立虚拟屏（不会占用您现有的真实显示器）。";
+          bundled_vdd
+              ? "Windows 需通过虚拟屏驱动创建独立扩展屏；点击右侧「安装驱动」即可直接运行随附的 Parsec VDD 安装包。"
+              : "Windows 需通过 Parsec VDD / MttVDD 驱动新建独立虚拟屏（不会占用您现有的真实显示器）。";
       const float sub_w = std::max(160.0F, w - 260.0F);
       const float sub_h =
           std::max(22.0F, std::ceil(res_.measure(sub, f_ui_11_.Get(), sub_w).height));
@@ -2061,12 +2203,9 @@ class StudioWindowController {
                               refresh_now();
                             }, 58.0F);
       draw_primary_button(
-          t, x + w - 94.0F, btn_y - 1.0F, "获取驱动", f_ui_11_b_.Get(),
-          [] {
-            open_shell_target(
-                L"https://github.com/nomi-san/parsec-vdd/releases");
-          },
-          78.0F);
+          t, x + w - 94.0F, btn_y - 1.0F,
+          bundled_vdd ? "安装驱动" : "获取驱动", f_ui_11_b_.Get(),
+          [] { launch_parsec_vdd_or_web(); }, 78.0F);
       y += card_h + 12.0F;
     } else if (state_.can_retry) {
       const D2D1_RECT_F c = D2D1::RectF(x, y, x + w, y + 58.0F);
@@ -2803,17 +2942,23 @@ class StudioWindowController {
             ? (state_.vdd_backend_name.empty() ? std::string("虚拟屏就绪")
                                                : state_.vdd_backend_name)
             : std::string("未安装");
+    const bool bundled_vdd = has_bundled_parsec_vdd();
+    const bool bundled_zadig = has_bundled_zadig();
     sys_row(1, "虚拟屏驱动", vdd_badge.c_str(),
             state_.vdd_installed ? Tone::Positive : Tone::Warning,
             !state_.vdd_status_detail.empty()
                 ? state_.vdd_status_detail
-                : "安装 Parsec VDD 或 MttVDD 即可为平板创建独立虚拟扩展屏",
-            state_.vdd_installed ? "显示设置" : "获取驱动", [this] {
+                : (bundled_vdd
+                       ? "点击右侧「安装驱动」可运行随附的 Parsec VDD 安装包"
+                       : "安装 Parsec VDD 或 MttVDD 即可为平板创建独立虚拟扩展屏"),
+            state_.vdd_installed
+                ? "显示设置"
+                : (bundled_vdd ? "安装驱动" : "获取驱动"),
+            [this] {
               if (state_.vdd_installed) {
                 open_shell_target(L"ms-settings:display");
               } else {
-                open_shell_target(
-                    L"https://github.com/nomi-san/parsec-vdd/releases");
+                launch_parsec_vdd_or_web();
               }
             });
     sys_row(2, "触控输入注入",
@@ -2831,7 +2976,16 @@ class StudioWindowController {
                        ? state_.driver_hint
                        : "请使用 Zadig 为 18D1:2D0x AOA 接口绑定 WinUSB 或安装 UsbDk")
                 : "libusb + WinUSB / UsbDk 配件枚举通道已启用",
-            "设备管理器", [] { open_shell_target(L"devmgmt.msc"); });
+            state_.driver_missing
+                ? (bundled_zadig ? "启动 Zadig" : "获取 Zadig")
+                : "设备管理器",
+            [missing = state_.driver_missing] {
+              if (missing) {
+                launch_zadig_or_web();
+              } else {
+                open_shell_target(L"devmgmt.msc");
+              }
+            });
 
     t.stroke_round(D2D1::RectF(x, sys_top, x + w, sys_top + sys_h), 16.0F,
                    p.hairline, 1.0F);
@@ -3268,6 +3422,7 @@ class StudioWindowController {
                           }, 80.0F);
       y += 48.0F;
     } else if (state_.driver_missing) {
+      const bool bundled_zadig = has_bundled_zadig();
       const D2D1_RECT_F call = D2D1::RectF(pad, y, pad + w, y + 38.0F);
       t.fill_round(call, 12.0F, p.warning_wash);
       t.stroke_round(call, 12.0F, p.warning_border, 1.0F);
@@ -3275,9 +3430,10 @@ class StudioWindowController {
                   D2D1::RectF(pad + 12.0F, y, pad + w - 104.0F, y + 38.0F),
                   f_ui_11_b_.Get(), p.ink, DWRITE_TEXT_ALIGNMENT_LEADING,
                   DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
-      draw_secondary_button(t, pad + w - 98.0F, y + 4.0F, "设备管理器",
-                            f_ui_10_b_.Get(),
-                            [] { open_shell_target(L"devmgmt.msc"); }, 88.0F);
+      draw_secondary_button(
+          t, pad + w - 98.0F, y + 4.0F,
+          bundled_zadig ? "启动 Zadig" : "获取 Zadig", f_ui_10_b_.Get(),
+          [] { launch_zadig_or_web(); }, 88.0F);
       y += 48.0F;
     }
 
@@ -3572,16 +3728,22 @@ class StudioWindowController {
             }
           }
         }
-        bool over_hit = false;
-        for (const auto& h : main_hits_) {
-          if (point_in_rect(main_mouse_x_, main_mouse_y_, h.rect)) {
-            over_hit = true;
+        int hover_idx = -1;
+        for (std::size_t i = 0; i < main_hits_.size(); ++i) {
+          if (point_in_rect(main_mouse_x_, main_mouse_y_, main_hits_[i].rect)) {
+            hover_idx = static_cast<int>(i);
             break;
           }
         }
+        const bool over_hit = (hover_idx >= 0);
         SetCursor(LoadCursorW(
             nullptr, over_tile ? IDC_SIZEALL : (over_hit ? IDC_HAND : IDC_ARROW)));
-        InvalidateRect(hwnd, nullptr, FALSE);
+        if (main_mouse_down_ || hover_idx != main_hover_index_ ||
+            over_tile != main_over_tile_) {
+          main_hover_index_ = hover_idx;
+          main_over_tile_ = over_tile;
+          InvalidateRect(hwnd, nullptr, FALSE);
+        }
         return 0;
       }
       case WM_LBUTTONDOWN: {
@@ -3714,6 +3876,9 @@ class StudioWindowController {
               deskmate::protocol::HostEvent::ScreenUnlocked);
         }
         return TRUE;
+      case WM_DEVICECHANGE:
+        controller_.notify_device_change();
+        return TRUE;
       case WM_CLOSE:
         if (!quitting_ && tray_added_) {
           ShowWindow(hwnd, SW_HIDE);
@@ -3758,15 +3923,18 @@ class StudioWindowController {
         const float s = dpi_scale(hwnd);
         pop_mouse_x_ = static_cast<float>(GET_X_LPARAM(lp)) / s;
         pop_mouse_y_ = static_cast<float>(GET_Y_LPARAM(lp)) / s;
-        bool over = false;
-        for (const auto& h : pop_hits_) {
-          if (point_in_rect(pop_mouse_x_, pop_mouse_y_, h.rect)) {
-            over = true;
+        int hover_idx = -1;
+        for (std::size_t i = 0; i < pop_hits_.size(); ++i) {
+          if (point_in_rect(pop_mouse_x_, pop_mouse_y_, pop_hits_[i].rect)) {
+            hover_idx = static_cast<int>(i);
             break;
           }
         }
-        SetCursor(LoadCursorW(nullptr, over ? IDC_HAND : IDC_ARROW));
-        InvalidateRect(hwnd, nullptr, FALSE);
+        SetCursor(LoadCursorW(nullptr, hover_idx >= 0 ? IDC_HAND : IDC_ARROW));
+        if (pop_mouse_down_ || hover_idx != pop_hover_index_) {
+          pop_hover_index_ = hover_idx;
+          InvalidateRect(hwnd, nullptr, FALSE);
+        }
         return 0;
       }
       case WM_LBUTTONDOWN: {
@@ -3815,6 +3983,7 @@ class StudioWindowController {
   HICON app_icon_big_{nullptr};
   HICON app_icon_small_{nullptr};
   HICON tray_hicon_{nullptr};
+  HDEVNOTIFY usb_notify_{nullptr};
   bool tray_added_{false};
   bool last_tray_linked_{false};
   bool last_tray_streaming_{false};
@@ -3842,8 +4011,11 @@ class StudioWindowController {
   std::vector<HitRegion> pop_hits_;
   float main_mouse_x_{-1.0F}, main_mouse_y_{-1.0F};
   bool main_mouse_down_{false};
+  int main_hover_index_{-1};
+  bool main_over_tile_{false};
   float pop_mouse_x_{-1.0F}, pop_mouse_y_{-1.0F};
   bool pop_mouse_down_{false};
+  int pop_hover_index_{-1};
   D2D1_RECT_F right_viewport_rect_{};
   float right_scroll_y_{0.0F};
   float right_max_scroll_{0.0F};

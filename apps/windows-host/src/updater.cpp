@@ -704,6 +704,22 @@ void UpdateManager::download_and_install(
       return;
     }
 
+    // Best-effort sync of bundled third-party driver utilities (drivers/) so
+    // in-place auto-updates also carry updated Parsec VDD / Zadig installers.
+    {
+      std::error_code drv_ec;
+      const auto bundled_drivers = extract_dir / L"drivers";
+      if (std::filesystem::is_directory(bundled_drivers, drv_ec)) {
+        const auto target_drivers = current_exe.parent_path() / L"drivers";
+        std::filesystem::create_directories(target_drivers, drv_ec);
+        std::filesystem::copy(
+            bundled_drivers, target_drivers,
+            std::filesystem::copy_options::overwrite_existing |
+                std::filesystem::copy_options::recursive,
+            drv_ec);
+      }
+    }
+
     const std::wstring relaunch_cmd =
         quote_arg(current_exe.wstring()) + L" --cleanup-old " +
         quote_arg(backup_exe.wstring()) + L" --cleanup-pid " +

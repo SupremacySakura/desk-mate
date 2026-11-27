@@ -114,6 +114,7 @@ class SessionLink final : public LinkSession {
   std::atomic<std::uint64_t> last_idr_request_ns_{0};
   std::atomic<bool> drop_until_keyframe_{false};
   std::atomic<bool> local_keyframe_pending_{false};
+  std::atomic<std::uint64_t> last_local_idr_request_ns_{0};
   std::uint32_t next_config_id_{1};
 };
 

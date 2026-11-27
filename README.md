@@ -101,8 +101,8 @@ DeskMate 将与操作系统无关的协议状态机、调度器和恢复逻辑�
      xattr -dr com.apple.quarantine /Applications/DeskMate.app
      ```
 2. **Windows 端（`DeskMate-v*-windows-x64.zip`）**
-   - 解压后直接双击运行静态链接的单文件 **`DeskMateHost.exe`**（无需安装 VC++ 运行库或额外 DLL）。
-   - ⚠️ **Windows 首次使用必看**：必须先按下方 **[Windows 端首次配置指南（Zadig + Parsec VDD）](#windows-端首次配置指南必读)** 完成 **Zadig 安装 WinUSB 驱动** 与 **Parsec VDD 虚拟屏驱动安装**，否则无法识别 USB AOA 通道或扩展出独立副屏。
+   - 解压后直接双击运行静态链接的 **`DeskMateHost.exe`**（无需安装 VC++ 运行库或额外 DLL）；**压缩包 `drivers/` 目录已内置 `zadig-2.9.exe` 与 `parsec-vdd-0.45.0.0-setup.exe`**，一次下载即可完成全部配置。
+   - ⚠️ **Windows 首次使用必看**：请按下方 **[Windows 端首次配置指南（Zadig + Parsec VDD）](#windows-端首次配置指南必读)** 完成 **Zadig 安装 WinUSB 驱动** 与 **Parsec VDD 虚拟屏驱动安装**（也可直接在工作台界面点击 **「启动 Zadig」/「安装驱动」** 一键调起内置工具）。
 3. **Android 端（`DeskMate-v*-android.apk`）** *（下载即装）*
    - 直接下载 `.apk` 到 Android 8.0+ 平板或手机安装即可使用（内置 `arm64-v8a` 真机与 `x86_64` 架构，无需配置 Android Studio 或开启 USB 调试）。
 4. **鸿蒙端（`DeskMate-v*-harmonyos-unsigned.hap`）**
@@ -119,7 +119,7 @@ Windows 系统与 macOS 的底层机制不同，首次使用 `DeskMateHost.exe` 
 
 Windows 默认不会为手机切换至 Android Open Accessory（AOA）配件模式后的接口绑定 `WinUSB` 驱动，导致 `libusb` 无法读取 USB Bulk 通道（常见症状：手机端点击「允许访问 USB 配件」后，Windows 端仍一直停在「等待 USB 接入」或卡在协商）。
 
-1. 前往 [**Zadig 官网**](https://zadig.akeo.ie/) 下载 Zadig，并**以管理员身份运行**。
+1. 直接双击压缩包内置的 **`drivers\zadig-2.9.exe`**（或在 DeskMate 工作台点击 **「启动 Zadig」**；若单独拷贝了 exe，也可前往 [**Zadig 官网**](https://zadig.akeo.ie/) 下载），**以管理员身份运行**。
 2. 用 USB-C 数据线连接手机/平板，打开 Windows 版 `DeskMateHost.exe` 与手机端 `DeskMate`，触发一次 AOA 切换（手机弹出配件权限时点**允许**）。
 3. 在 Zadig 顶部菜单勾选 **`Options` → `List All Devices`**。
 4. 在设备下拉列表中找到并选中手机切换后的 **USB AOA / Android Accessory 接口**（USB ID 为 **`18D1:2D00`** 或 **`18D1:2D01`**，通常为 **`Interface 0`**）。
@@ -134,7 +134,7 @@ Windows 默认不会为手机切换至 Android Open Accessory（AOA）配件模�
 
 Windows 没有像 macOS `CGVirtualDisplay` 那样的系统级用户态虚拟显示器接口；若系统缺少虚拟显示器驱动，DeskMate 无法“凭空变出”新屏幕（在双屏物理显示器电脑上只能复用或镜像已有屏幕）。
 
-1. 前往 [**Parsec VDD Releases**](https://github.com/nomi-san/parsec-vdd/releases) 下载并安装最新版 **Parsec Virtual Display Driver**（具备微软 WHQL 正式签名，**无需开启 Windows 测试模式**；同时也兼容 **MttVDD / Virtual Display Driver**）。
+1. 直接双击压缩包内置的 **`drivers\parsec-vdd-0.45.0.0-setup.exe`**（或在 DeskMate 工作台点击 **「安装驱动」**；也可前往 [**Parsec VDD Releases**](https://github.com/nomi-san/parsec-vdd/releases) 下载安装最新版）安装 **Parsec Virtual Display Driver**（具备微软 WHQL 正式签名，**无需开启 Windows 测试模式**；同时也兼容 **MttVDD / Virtual Display Driver**）。
 2. 安装完成后，**不需要手动打开或常驻 `ParsecVDisplay` 界面程序**（请关闭手动打开的 ParsecVDisplay 托盘，避免与 DeskMate 争抢虚拟屏索引）。
 3. **全自动生命周期管理**：
    - 当手机/平板接入并完成握手后，`DeskMateHost.exe` 会直接通过驱动 IOCTL 通知 Parsec VDD **自动创建**一块独立虚拟扩展屏，并匹配手机/平板分辨率与刷新率；

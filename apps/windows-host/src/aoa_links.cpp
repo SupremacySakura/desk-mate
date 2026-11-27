@@ -73,6 +73,9 @@ void SessionLink::start_new_session(std::uint32_t video_stream_id,
   input_intent_.store(false, std::memory_order_release);
   requested_idr_.store(0, std::memory_order_release);
   last_idr_request_ns_.store(0, std::memory_order_release);
+  drop_until_keyframe_.store(false, std::memory_order_release);
+  local_keyframe_pending_.store(false, std::memory_order_release);
+  last_local_idr_request_ns_.store(0, std::memory_order_release);
   next_config_id_ = config_id;
   idr_wait_rejects_.store(0, std::memory_order_relaxed);
   session_ = std::move(next);
@@ -296,9 +299,6 @@ void SessionLink::submit_video(std::vector<std::uint8_t> annex_b,
     dropped_.fetch_add(1, std::memory_order_relaxed);
     return;
   }
-  if (keyframe) {
-    drop_until_keyframe_.store(false, std::memory_order_release);
-  }
   if (video_queue_.size() >= kMaxPendingVideoFrames) {
     if (keyframe) {
       // A keyframe supersedes the whole backlog: nothing older can be decoded.
@@ -321,7 +321,21 @@ void SessionLink::submit_video(std::vector<std::uint8_t> annex_b,
 }
 
 bool SessionLink::consume_local_keyframe_request() {
-  return local_keyframe_pending_.exchange(false, std::memory_order_acq_rel);
+  const std::uint64_t now_ns = clock_.now_ns();
+  if (local_keyframe_pending_.exchange(false, std::memory_order_acq_rel)) {
+    last_local_idr_request_ns_.store(now_ns, std::memory_order_release);
+    return true;
+  }
+  if (drop_until_keyframe_.load(std::memory_order_acquire)) {
+    const std::uint64_t prev_ns =
+        last_local_idr_request_ns_.load(std::memory_order_acquire);
+    if (prev_ns == 0 || now_ns < prev_ns ||
+        (now_ns - prev_ns) >= 250'000'000ULL) {
+      last_local_idr_request_ns_.store(now_ns, std::memory_order_release);
+      return true;
+    }
+  }
+  return false;
 }
 
 std::vector<deskmate::protocol::InputEvent> SessionLink::take_input() {
@@ -363,14 +377,14 @@ std::uint32_t SessionLink::take_keyframe_request() {
     last_idr_request_ns_.store(0, std::memory_order_release);
     return 0U;
   }
-  // Report each recovery id immediately on arrival and retry every 120 ms
+  // Report each recovery id immediately on arrival and retry every 250 ms
   // while still pending so one lost/dropped IDR never wedges the stream.
   const std::uint64_t now_ns = clock_.now_ns();
   const std::uint32_t prev_id = requested_idr_.load(std::memory_order_acquire);
   const std::uint64_t prev_ns =
       last_idr_request_ns_.load(std::memory_order_acquire);
   if (prev_id != active_id || now_ns < prev_ns ||
-      (now_ns - prev_ns) >= 120'000'000ULL) {
+      (now_ns - prev_ns) >= 250'000'000ULL) {
     requested_idr_.store(active_id, std::memory_order_release);
     last_idr_request_ns_.store(now_ns, std::memory_order_release);
     return active_id;
@@ -395,26 +409,26 @@ void SessionLink::pump() {
     return;
   }
   for (const auto& frame : batch) {
+    if (!frame.keyframe &&
+        drop_until_keyframe_.load(std::memory_order_acquire)) {
+      dropped_.fetch_add(1, std::memory_order_relaxed);
+      continue;
+    }
     const auto status =
         session_->send_video_frame(frame.bytes, frame.pts_us, frame.keyframe);
     if (status == deskmate::protocol::VideoSendStatus::Sent) {
       sent_.fetch_add(1, std::memory_order_relaxed);
+      if (frame.keyframe) {
+        drop_until_keyframe_.store(false, std::memory_order_release);
+        last_local_idr_request_ns_.store(0, std::memory_order_release);
+      }
     } else if (status == deskmate::protocol::VideoSendStatus::IdrRequired) {
       idr_wait_rejects_.fetch_add(1, std::memory_order_relaxed);
-      // The scheduler refused a P-frame because it needs a keyframe. Stop
-      // queueing P-frames until the encoder delivers one, otherwise every
-      // subsequent frame repeats the same rejected round trip.
-      if (!frame.keyframe) {
-        drop_until_keyframe_.store(true, std::memory_order_release);
-        local_keyframe_pending_.store(true, std::memory_order_release);
-      }
     } else if (status != deskmate::protocol::VideoSendStatus::NotStreaming &&
                status != deskmate::protocol::VideoSendStatus::Paused) {
       dropped_.fetch_add(1, std::memory_order_relaxed);
-      if (!frame.keyframe) {
-        drop_until_keyframe_.store(true, std::memory_order_release);
-        local_keyframe_pending_.store(true, std::memory_order_release);
-      }
+      drop_until_keyframe_.store(true, std::memory_order_release);
+      local_keyframe_pending_.store(true, std::memory_order_release);
     }
   }
   session_->pump();

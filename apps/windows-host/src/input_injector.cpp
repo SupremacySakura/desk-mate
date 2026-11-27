@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <mutex>
 #include <vector>
 
 #ifdef _WIN32
@@ -163,20 +164,41 @@ using FnInitializeTouchInjection = BOOL(WINAPI*)(UINT32 maxCount, DWORD dwMode);
 using FnInjectTouchInput = BOOL(WINAPI*)(UINT32 count,
                                          const DmPointerTouchInfo* contacts);
 
+struct Win32TouchInjectionApi {
+  FnInitializeTouchInjection init{nullptr};
+  FnInjectTouchInput inject{nullptr};
+  bool ready{false};
+};
+
+// InitializeTouchInjection creates/resets the process-wide kernel touch
+// context and DWM feedback layer; invoking it repeatedly from UI timers causes
+// periodic desktop micro-stutters, so initialize at most once per process.
+const Win32TouchInjectionApi& win32_touch_api() {
+  static std::once_flag once;
+  static Win32TouchInjectionApi api;
+  std::call_once(once, [] {
+    HMODULE user32 = GetModuleHandleW(L"user32.dll");
+    if (user32 != nullptr) {
+      api.init = reinterpret_cast<FnInitializeTouchInjection>(
+          reinterpret_cast<void*>(
+              GetProcAddress(user32, "InitializeTouchInjection")));
+      api.inject = reinterpret_cast<FnInjectTouchInput>(
+          reinterpret_cast<void*>(GetProcAddress(user32, "InjectTouchInput")));
+      if (api.init != nullptr && api.inject != nullptr) {
+        api.ready = (api.init(10, TOUCH_FEEDBACK_DEFAULT) != FALSE);
+      }
+    }
+  });
+  return api;
+}
+
 class Win32TouchInputSink final : public TouchInputSink {
  public:
   Win32TouchInputSink() {
-    HMODULE user32 = GetModuleHandleW(L"user32.dll");
-    if (user32 != nullptr) {
-      init_touch_ = reinterpret_cast<FnInitializeTouchInjection>(
-          reinterpret_cast<void*>(
-              GetProcAddress(user32, "InitializeTouchInjection")));
-      inject_touch_ = reinterpret_cast<FnInjectTouchInput>(
-          reinterpret_cast<void*>(GetProcAddress(user32, "InjectTouchInput")));
-      if (init_touch_ != nullptr && inject_touch_ != nullptr) {
-        touch_ready_ = (init_touch_(10, TOUCH_FEEDBACK_DEFAULT) != FALSE);
-      }
-    }
+    const auto& api = win32_touch_api();
+    init_touch_ = api.init;
+    inject_touch_ = api.inject;
+    touch_ready_ = api.ready;
   }
 
   void warp_cursor(int x, int y) override { SetCursorPos(x, y); }
@@ -451,27 +473,32 @@ void InputInjector::set_mode(TouchInputMode mode) {
   mode_ = mode;
 }
 
-TouchCapabilityStatus InputInjector::capability_status() const {
-  const bool native_ok = sink_ != nullptr && sink_->native_touch_available();
-  switch (mode_) {
+TouchCapabilityStatus describe_touch_capability(TouchInputMode mode,
+                                                  bool native_available) {
+  switch (mode) {
     case TouchInputMode::NativeTouch:
-      if (native_ok) {
+      if (native_available) {
         return {true, false, "Windows 原生触摸注入 (最多 10 触点)",
                 "已启用 InitializeTouchInjection 原生多点触控通路。"};
       }
       return {false, true, "兼容手势映射（回退）",
               "当前环境未初始化 Windows 触摸注入，已自动回退为兼容手势映射。"};
     case TouchInputMode::VirtualTrackpad:
-      return {native_ok, false, "相对触控板手势映射",
+      return {native_available, false, "相对触控板手势映射",
               "使用相对指针移动 + 长按拖拽锁存与系统桌面手势。"};
     case TouchInputMode::CompatibleGestures:
-      return {native_ok, false, "兼容手势映射",
+      return {native_available, false, "兼容手势映射",
               "使用 SendInput 鼠标/滚轮事件与系统快捷键执行单指与多指操作。"};
     case TouchInputMode::SingleTouchOnly:
-      return {native_ok, false, "仅单点触控",
+      return {native_available, false, "仅单点触控",
               "仅处理主触点点击与拖动，忽略多指手势。"};
   }
   return {};
+}
+
+TouchCapabilityStatus InputInjector::capability_status() const {
+  const bool native_ok = sink_ != nullptr && sink_->native_touch_available();
+  return describe_touch_capability(mode_, native_ok);
 }
 
 void InputInjector::reset() {

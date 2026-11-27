@@ -7,6 +7,26 @@
 
 ---
 
+## [v1.7.0] - 2026-11-27
+
+相对 `v1.6.0` 的主要差异：
+
+### ✨ 新增功能
+- **鸿蒙端画面安全区适配**：支持自动避让屏幕四角 R 角与前置摄像头挖孔，横屏 180° 翻转时自动切换左右避让边；握手上报按安全区净比例协商虚拟屏尺寸，并在「系统设置」提供 **自动避让 / 对称居中 / 全屏铺满** 三档切换。
+- **Windows 压缩包内置驱动工具箱与工作台一键启动**：`DeskMate-v1.7.0-windows-x64.zip` 的 `drivers/` 目录直接随附 `parsec-vdd-0.45.0.0-setup.exe` 与 `zadig-2.9.exe`（附带第三方许可声明）；概览警告卡片、托盘弹窗与设置页支持一键拉起内置安装器，应用内自动更新同步更新 `drivers/`。
+
+### ⚡ 性能与体验优化
+- **Windows Host 高刷稳定性重构**：`InitializeTouchInjection` 改为全进程单次初始化；为每条链路拆分独立触控互斥锁并在推流期跳过后台 `SetupDi` 阻塞；在开启 DXGI 采集前先完成虚拟屏拓扑排布；光标合成改为缓存双 DIB + D3D11 着色器局部补丁；修正 Media Foundation `MF_LOW_LATENCY`、`PeakConstrainedVBR` 与零 B 帧在 `SetOutputType` 前生效，并移除高刷虚拟屏误丢真实 DWM 帧的 85% 节流门限。
+- **Windows 静止 60 Hz 锁帧策略**：推流期间通过 `SetProcessInformation` / `SetThreadInformation` 解除 Windows 11 后台时钟合并与 EcoQoS 节流，结合两段式短切片 DXGI 等待 + `CREATE_WAITABLE_TIMER_HIGH_RESOLUTION` 收尾与独立 GPU 显存快照 `latest_nv12_`，鼠标不动或画面静止时稳定维持 ~60 Hz。
+
+### 🐛 问题修复
+- **修复 Windows USB AOA 大帧突发 `LIBUSB_TRANSFER_STALL` 断链**：避免 Bulk OUT 分块落入 `512/1024 B` 整数倍导致 `f_accessory` 跨包溢出触发端点 STALL，移除重连时错误的 `libusb_clear_halt()`，并将 AOA 切换冷却延长至 8 秒且按端口/序列号去重扫描。
+- **修复鸿蒙硬解丢帧参考链损坏与高刷过早判错**：视频解码队列满时不再弹出前部参考帧导致花屏，改为跳过后续 P 帧并等待下一个 IDR 重同步；放宽公共调度器未发帧老化阈值至 250 ms。
+
+安装与驱动说明请见 [README.md](./README.md)。
+
+---
+
 ## [v1.6.0] - 2026-11-26
 
 相对 `v1.5.0` 的主要差异：

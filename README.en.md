@@ -102,8 +102,8 @@ Download the latest artifacts from [**GitHub Releases**](https://github.com/Supr
      xattr -dr com.apple.quarantine /Applications/DeskMate.app
      ```
 2. **Windows Host (`DeskMate-v*-windows-x64.zip`)**
-   - Extract the archive and double-click the statically linked single-file **`DeskMateHost.exe`** (no VC++ redistributable or external DLLs needed).
-   - ⚠️ **Required First-Time Setup on Windows**: Complete both **[Step 1: Zadig WinUSB Driver](#step-1-install-usb-aoa-winusb-driver-via-zadig)** and **[Step 2: Parsec VDD Virtual Display Driver](#step-2-install-parsec-vdd-for-standalone-virtual-extended-displays)** below before connecting your device.
+   - Extract the archive and double-click the statically linked **`DeskMateHost.exe`** (no VC++ redistributable or external DLLs needed). **The archive already bundles `drivers/zadig-2.9.exe` and `drivers/parsec-vdd-0.45.0.0-setup.exe`** so you only need a single download.
+   - ⚠️ **Required First-Time Setup on Windows**: Complete both **[Step 1: Zadig WinUSB Driver](#step-1-install-usb-aoa-winusb-driver-via-zadig)** and **[Step 2: Parsec VDD Virtual Display Driver](#step-2-install-parsec-vdd-for-standalone-virtual-extended-displays)** below (you can also launch both bundled tools directly from the **Launch Zadig / Install Driver** buttons in DeskMate's UI).
 3. **Android Client (`DeskMate-v*-android.apk`)** *(Ready to install)*
    - Download `DeskMate-v*-android.apk` directly onto your Android 8.0+ tablet or phone and install it (supports `arm64-v8a` hardware & `x86_64` emulators; no USB debugging or Android Studio required).
 4. **HarmonyOS Client (`DeskMate-v*-harmonyos-unsigned.hap`)**
@@ -119,7 +119,7 @@ Unlike macOS, Windows requires two user-installed drivers so DeskMate can talk t
 
 Windows does not automatically attach a `WinUSB` driver when a phone switches to Android Open Accessory (AOA) mode, which prevents `libusb` from claiming the bulk endpoints (symptom: after tapping "Allow" on the phone, Windows stays stuck waiting for USB connection or negotiation).
 
-1. Download and run [**Zadig**](https://zadig.akeo.ie/) **as Administrator**.
+1. Launch the bundled **`drivers/zadig-2.9.exe`** directly (or click **Launch Zadig** inside DeskMate; if you only copied the executable, you can also download it from [**Zadig**](https://zadig.akeo.ie/)) **as Administrator**.
 2. Connect your phone/tablet over USB-C, launch DeskMate on both sides to trigger an AOA mode flip (tap **Allow** on the device's USB accessory prompt).
 3. In Zadig's menu bar, enable **`Options` → `List All Devices`**.
 4. From the device dropdown, select the device's **USB AOA / Android Accessory interface** (`USB ID`: **`18D1:2D00`** or **`18D1:2D01`**, typically **`Interface 0`**).
@@ -134,7 +134,7 @@ Windows does not automatically attach a `WinUSB` driver when a phone switches to
 
 Windows has no built-in user-space API equivalent to macOS `CGVirtualDisplay`. Without a virtual display driver installed, Windows cannot create a brand-new extended monitor out of thin air (on multi-monitor PCs it would only mirror or borrow an existing physical screen).
 
-1. Download and install [**Parsec Virtual Display Driver (Parsec VDD)**](https://github.com/nomi-san/parsec-vdd/releases) (Microsoft WHQL-signed — **no Windows Test Mode required**; **MttVDD / Virtual Display Driver** is also supported).
+1. Run the bundled **`drivers/parsec-vdd-0.45.0.0-setup.exe`** directly (or click **Install Driver** inside DeskMate; upstream releases are also at [**Parsec VDD Releases**](https://github.com/nomi-san/parsec-vdd/releases)) to install **Parsec Virtual Display Driver** (Microsoft WHQL-signed — **no Windows Test Mode required**; **MttVDD / Virtual Display Driver** is also supported).
 2. After installing the driver, **do not keep the standalone `ParsecVDisplay` GUI tray app open** — let DeskMate talk to the driver directly so there is no contention over display indices.
 3. **Fully Automatic Display Lifecycle**:
    - When a phone/tablet connects and commits its stream, `DeskMateHost.exe` invokes Parsec VDD IOCTLs to **automatically create** a dedicated virtual extended display matching your device's resolution and refresh rate;

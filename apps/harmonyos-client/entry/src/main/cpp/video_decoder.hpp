@@ -121,6 +121,7 @@ private:
     bool stop_control_ = false;
     std::thread control_thread_;
     std::deque<PendingFrame> queued_;
+    bool waiting_for_keyframe_ = false;
     // Input buffers the codec handed us but we had no frame for yet. Dropping
     // one would permanently shrink the codec's buffer pool and eventually
     // stop all input callbacks, so they are held until a frame is available.

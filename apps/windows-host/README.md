@@ -8,7 +8,7 @@ Windows 主控端：提供 **Alabaster Studio** 自绘工作台界面（Direct2D
 
 Windows 默认不会为切换到 AOA 配件模式的手机/平板绑定 WinUSB 驱动，导致 `libusb` 无法打开 Bulk 通道：
 
-1. 下载并以管理员身份运行 [**Zadig**](https://zadig.akeo.ie/)。
+1. 运行发行压缩包内置的 `drivers\zadig-2.9.exe`（或点击工作台「启动 Zadig」，也可从 [**Zadig**](https://zadig.akeo.ie/) 下载），以管理员身份运行。
 2. 用 USB-C 数据线连接手机/平板，打开两端 DeskMate 触发一次 AOA 切换（设备重枚举为 `18D1:2D00` 或 `18D1:2D01`）。
 3. 在 Zadig 菜单勾选 **Options → List All Devices**。
 4. 选择设备对应的 **Android Accessory / USB AOA 接口（`18D1:2D00` 或 `18D1:2D01`，Interface 0）**。
@@ -17,7 +17,7 @@ Windows 默认不会为切换到 AOA 配件模式的手机/平板绑定 WinUSB �
 
 ### 2. 安装 Parsec VDD 创建独立虚拟扩展屏
 
-1. 前往 [**Parsec VDD Releases**](https://github.com/nomi-san/parsec-vdd/releases) 下载安装 **Parsec Virtual Display Driver**（拥有微软 WHQL 正式签名，无需开启 Windows 测试模式；同时兼容 **MttVDD / Virtual Display Driver**）。
+1. 运行发行压缩包内置的 `drivers\parsec-vdd-0.45.0.0-setup.exe`（或点击工作台「安装驱动」，也可从 [**Parsec VDD Releases**](https://github.com/nomi-san/parsec-vdd/releases) 下载）安装 **Parsec Virtual Display Driver**（拥有微软 WHQL 正式签名，无需开启 Windows 测试模式；同时兼容 **MttVDD / Virtual Display Driver**）。
 2. 安装后**不要长期开启手动的 `ParsecVDisplay` 界面**——`DeskMateHost.exe` 会直接通过 `VirtualDisplayManager`（Parsec VDD IOCTL + 100ms 保活 / MttVDD 命名管道）按需自动创建与销毁独立虚拟扩展屏，并自动错开排布在现有物理显示器旁（自动模式下绝不会抢占电脑已有的物理副屏）。
 3. 启动 `DeskMateHost.exe` 后进入 **「设置 → 系统环境与驱动」**，即可查看 USB / WinUSB 与 Parsec VDD 驱动就绪状态。
 
@@ -60,6 +60,16 @@ powershell -ExecutionPolicy Bypass -File apps/windows-host/build-portable.ps1 `
   -LibusbSource C:\dm\libusb-1.0.30 `
   -OutputDir    C:\dm\build
 ```
+
+### 方式 C：从 macOS 驱动局域网 Windows 构建机（本仓库默认流程）
+
+Windows 产物无法在 macOS 上交叉编译。本仓库固定使用一台局域网 Windows 构建机（`Administrator@192.168.43.4`，已配置公钥免密）远程编译，一条命令完成上传、全量编译、取回与打包：
+
+```bash
+bash scripts/build-windows-remote.sh --verify
+```
+
+地址、工具链路径、SSH 调用规范与故障恢复见 [docs/windows-remote-build.md](../../docs/windows-remote-build.md)。
 
 ## 契约测试（任意宿主机）
 

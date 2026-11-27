@@ -17,6 +17,28 @@ DeskMate 是 macOS / Windows Host 与 HarmonyOS NEXT / Android Client 之间的�
 - 跨平台通用层、Windows 契约与 Android fd 测试：`bash apps/common/tests/run_platform_tests.sh`
 - macOS Host 编译与契约/多链路测试：`make -C apps/macos-host test`
 - Android 配件 fd 契约测试：`bash apps/common/tests/run_android_io_test.sh`
+- Windows Host 打包（局域网远程构建）：`bash scripts/build-windows-remote.sh [--verify]`
+
+## Remote Windows Build（Windows 端必须远程编译）
+
+`DeskMateHost.exe` 只能在 Windows 上编译（`build-portable.ps1` 依赖 llvm-mingw 的 Windows SDK 头与 UCRT，macOS 无法交叉产出可用二进制）。仓库所在的 Mac 通过局域网 SSH 使用专用构建机，**无需用户再提供地址或密码**：
+
+| 项 | 值 |
+| --- | --- |
+| 地址 | `192.168.43.4:22`，用户 `Administrator`，已配置公钥免密 |
+| 主机名 / 系统 | `PC-20261122RWRQ` / Windows `10.0.26300`（PowerShell 7.7） |
+| 工具链 | `C:\dm\llvm-mingw-20261117-ucrt-x86_64`（clang 23.1.6） |
+| libusb 源码 | `C:\dm\libusb-1.0.30` |
+| 解包目录 / 中间产物 | `C:\dm\src`（每次全删重建）/ `C:\dm\buildwork`（**必须在源码树外**） |
+| 产物校验脚本 | `C:\Users\Administrator\verify-win.ps1` |
+
+一条命令即可完成「打包源码 → 上传 → 远程全量编译 → 取回 exe → 重打 zip → 刷新 sha256」：
+
+```bash
+bash scripts/build-windows-remote.sh --verify
+```
+
+完整流程、SSH 调用规范（单引号包裹、`cmd /c`、中文乱码判读）、故障恢复与硬约束见 [docs/windows-remote-build.md](./docs/windows-remote-build.md)。改动 `apps/windows-host` 或 `core/` 后若需要 Windows 产物，直接跑上述命令，不要尝试在 macOS 上交叉编译。
 
 ## Local Build & Packaging Output Convention（本地打包产物目录规范）
 

@@ -1,7 +1,14 @@
 import { AccessoryLink, LinkSnapshot } from '../deskmate/AccessoryLink';
 import {
+  computeDisplayViewport,
+  computeLandscapeDisplayMetricsPx,
+  DisplayMetricsPx,
+  DisplayViewport,
   isPhoneDevice,
+  normalizeSafeAreaMode,
   preferredOrientationForPage,
+  readCutoutInsets,
+  readRoundedCornerRadiusVp,
   readSafeAreaInsets,
   SafeAreaInsets
 } from '../deskmate/DeviceLayout';
@@ -24,6 +31,7 @@ import { display, UIContext, window } from '@kit.ArkUI';
 
 PersistentStorage.persistProp('deskMateShowFps', false);
 PersistentStorage.persistProp('deskMateCodec', 'auto');
+PersistentStorage.persistProp('deskMateSafeAreaMode', 'auto');
 PersistentStorage.persistProp('deskMatePrivacyAccepted', false);
 
 interface EngineSnapshot {
@@ -57,6 +65,12 @@ const CODEC_OPTIONS: Array<CodecOption> = [
   { value: 'auto', title: '自动', subtitle: '优先 HEVC' },
   { value: 'hevc', title: 'HEVC', subtitle: 'H.265' },
   { value: 'h264', title: 'H.264', subtitle: 'AVC' }
+];
+
+const SAFE_AREA_OPTIONS: Array<CodecOption> = [
+  { value: 'auto', title: '自动避让', subtitle: '避开挖孔与四角' },
+  { value: 'symmetric', title: '对称居中', subtitle: '左右对称留边' },
+  { value: 'fullscreen', title: '全屏铺满', subtitle: '无安全区内缩' }
 ];
 
 interface DiagnosticRow {
@@ -329,6 +343,7 @@ struct Index {
   @State private controlsExpanded: boolean = false;
   @StorageLink('deskMateShowFps') private showFps: boolean = false;
   @StorageLink('deskMateCodec') private preferredCodec: string = 'auto';
+  @StorageLink('deskMateSafeAreaMode') private safeAreaMode: string = 'auto';
   @StorageLink('deskMatePrivacyAccepted') private privacyAccepted: boolean = false;
   @State private privacyDeclined: boolean = false;
   @State private showConsentFullPolicy: boolean = false;
@@ -341,6 +356,7 @@ struct Index {
   @State private activeResolution: string = '';
   @State private droppedFrames: number = 0;
   @State private codecChangedWhileConnected: boolean = false;
+  @State private safeAreaChangedWhileConnected: boolean = false;
   private readonly isPhone: boolean = isPhoneDevice();
   @State private windowWidthVp: number = isPhoneDevice() ? 390 : 1024;
   @State private windowHeightVp: number = isPhoneDevice() ? 844 : 768;
@@ -348,6 +364,12 @@ struct Index {
   @State private safeBottomVp: number = 0;
   @State private safeLeftVp: number = 0;
   @State private safeRightVp: number = 0;
+  @State private cutoutTopVp: number = 0;
+  @State private cutoutBottomVp: number = 0;
+  @State private cutoutLeftVp: number = 0;
+  @State private cutoutRightVp: number = 0;
+  @State private cornerRadiusVp: number = isPhoneDevice() ? 28 : 0;
+  private isDisappeared: boolean = false;
   private mainWindow: window.Window | undefined = undefined;
   private lastAppliedOrientation: window.Orientation | undefined = undefined;
   private readonly handleWindowSizeChange = (size: window.Size): void => {
@@ -381,6 +403,7 @@ struct Index {
         this.activeResolution = '';
         this.droppedFrames = 0;
         this.codecChangedWhileConnected = false;
+        this.safeAreaChangedWhileConnected = false;
         this.lastRendered = 0;
         this.lastRxBytes = 0;
         this.lastSampleAt = 0;
@@ -434,14 +457,53 @@ struct Index {
 
   private refreshSafeAreas(appWindow: window.Window): void {
     try {
-      const insets: SafeAreaInsets = readSafeAreaInsets(appWindow, this.getUIContext());
+      const uiContext: UIContext = this.getUIContext();
+      const insets: SafeAreaInsets = readSafeAreaInsets(appWindow, uiContext);
       this.safeTopVp = insets.top;
       this.safeBottomVp = insets.bottom;
       this.safeLeftVp = insets.left;
       this.safeRightVp = insets.right;
+
+      const cutout: SafeAreaInsets = readCutoutInsets(appWindow, uiContext);
+      this.cutoutTopVp = cutout.top;
+      this.cutoutBottomVp = cutout.bottom;
+      this.cutoutLeftVp = cutout.left;
+      this.cutoutRightVp = cutout.right;
+
+      this.cornerRadiusVp = readRoundedCornerRadiusVp(uiContext, this.isPhone);
     } catch (error) {
       // Ignore if UIContext is not attached yet.
     }
+  }
+
+  private currentDisplayViewport(): DisplayViewport {
+    if (this.page !== 'display') {
+      return {
+        leftVp: 0,
+        topVp: 0,
+        widthVp: this.windowWidthVp,
+        heightVp: this.windowHeightVp,
+        safeLeftVp: this.safeLeftVp,
+        safeRightVp: this.safeRightVp,
+        safeTopVp: this.safeTopVp,
+        safeBottomVp: this.safeBottomVp
+      };
+    }
+    const cutout: SafeAreaInsets = {
+      top: this.cutoutTopVp,
+      bottom: this.cutoutBottomVp,
+      left: this.cutoutLeftVp,
+      right: this.cutoutRightVp
+    };
+    return computeDisplayViewport(
+      this.windowWidthVp,
+      this.windowHeightVp,
+      cutout,
+      this.cornerRadiusVp,
+      this.isPhone,
+      normalizeSafeAreaMode(this.safeAreaMode),
+      this.activeResolution
+    );
   }
 
   private updateWindowMetrics(appWindow: window.Window): void {
@@ -481,17 +543,56 @@ struct Index {
     }).catch(() => {});
   }
 
-  private reportDisplayMetrics(): void {
+  private reportDisplayMetricsSync(): void {
     try {
       const info: display.Display = display.getDefaultDisplaySync();
       if (info.width > 0 && info.height > 0) {
-        const landscapeWidth: number = Math.max(info.width, info.height);
-        const landscapeHeight: number = Math.min(info.width, info.height);
-        const refreshHz: number = info.refreshRate > 0 ? Math.round(info.refreshRate) : 60;
-        native.setDisplayMetrics(landscapeWidth, landscapeHeight, refreshHz);
+        const metrics: DisplayMetricsPx = computeLandscapeDisplayMetricsPx(
+          info,
+          undefined,
+          this.isPhone,
+          normalizeSafeAreaMode(this.safeAreaMode)
+        );
+        native.setDisplayMetrics(metrics.widthPx, metrics.heightPx, metrics.refreshHz);
       }
     } catch (error) {
       // Fallback presets inside native DeviceEngine are used if display query is unavailable.
+    }
+  }
+
+  private async reportDisplayMetricsAsync(): Promise<void> {
+    try {
+      const info: display.Display = display.getDefaultDisplaySync();
+      if (info.width <= 0 || info.height <= 0) {
+        return;
+      }
+      let cutoutInfo: display.CutoutInfo | undefined = undefined;
+      try {
+        cutoutInfo = await info.getCutoutInfo();
+      } catch (error) {
+        cutoutInfo = undefined;
+      }
+      const metrics: DisplayMetricsPx = computeLandscapeDisplayMetricsPx(
+        info,
+        cutoutInfo,
+        this.isPhone,
+        normalizeSafeAreaMode(this.safeAreaMode)
+      );
+      native.setDisplayMetrics(metrics.widthPx, metrics.heightPx, metrics.refreshHz);
+    } catch (error) {
+      // Keep sync metrics if async display query fails.
+    }
+  }
+
+  private selectSafeAreaMode(mode: string): void {
+    const normalized: string = normalizeSafeAreaMode(mode);
+    if (this.safeAreaMode === normalized) {
+      return;
+    }
+    this.safeAreaMode = normalized;
+    void this.reportDisplayMetricsAsync();
+    if (this.link.state === 'connected') {
+      this.safeAreaChangedWhileConnected = true;
     }
   }
 
@@ -573,8 +674,10 @@ struct Index {
   }
 
   aboutToAppear(): void {
+    this.isDisappeared = false;
     this.loadBundleMetadata();
-    this.reportDisplayMetrics();
+    this.reportDisplayMetricsSync();
+    const metricsReady: Promise<void> = this.reportDisplayMetricsAsync();
     native.setPreferredCodec(this.preferredCodec);
     window.getLastWindow(this.getUIContext().getHostContext()).then((appWindow: window.Window) => {
       this.mainWindow = appWindow;
@@ -584,11 +687,23 @@ struct Index {
       this.applyWindowPresentation(appWindow);
     }).catch(() => {});
     if (this.privacyAccepted) {
-      this.startAccessoryServices();
+      const timeoutPromise: Promise<void> = new Promise<void>((resolve) => {
+        setTimeout(() => resolve(), 40);
+      });
+      Promise.race([metricsReady, timeoutPromise]).then(() => {
+        if (!this.isDisappeared && this.privacyAccepted) {
+          this.startAccessoryServices();
+        }
+      }).catch(() => {
+        if (!this.isDisappeared && this.privacyAccepted) {
+          this.startAccessoryServices();
+        }
+      });
     }
   }
 
   aboutToDisappear(): void {
+    this.isDisappeared = true;
     if (this.mainWindow !== undefined) {
       try {
         this.mainWindow.off('windowSizeChange', this.handleWindowSizeChange);
@@ -1142,6 +1257,66 @@ struct Index {
         .border({ width: 0.8, color: $r('app.color.dm_hairline') })
         .borderRadius(16)
         .alignItems(HorizontalAlign.Start)
+      }
+
+      this.sectionHeader('画面安全区')
+
+      Text('避让屏幕四角大 R 角与前置摄像头挖孔；切换模式后重连 USB 可同步调整扩展屏比例')
+        .fontSize(12)
+        .lineHeight(18)
+        .fontColor($r('app.color.dm_ink_secondary'))
+        .width('100%')
+
+      Row({ space: compact ? 8 : 10 }) {
+        ForEach(SAFE_AREA_OPTIONS, (option: CodecOption) => {
+          Button({ type: ButtonType.Normal }) {
+            Column({ space: 4 }) {
+              Text(option.title)
+                .fontSize(compact ? 12.5 : 13.5)
+                .fontWeight(FontWeight.Medium)
+                .fontColor(this.safeAreaMode === option.value ? $r('app.color.dm_accent') : $r('app.color.dm_ink'))
+              Text(option.subtitle)
+                .fontSize(compact ? 10 : 11)
+                .fontColor(this.safeAreaMode === option.value ? $r('app.color.dm_accent') : $r('app.color.dm_ink_muted'))
+            }
+            .width('100%')
+            .padding({ top: 11, bottom: 11, left: compact ? 4 : 8, right: compact ? 4 : 8 })
+            .backgroundColor(this.safeAreaMode === option.value ? $r('app.color.dm_accent_soft') : $r('app.color.dm_surface'))
+            .border({
+              width: 0.8,
+              color: this.safeAreaMode === option.value ? $r('app.color.dm_accent_border') : $r('app.color.dm_hairline')
+            })
+            .borderRadius(11)
+          }
+          .layoutWeight(1)
+          .backgroundColor(Color.Transparent)
+          .onClick(() => this.selectSafeAreaMode(option.value))
+        }, (option: CodecOption) => `safe:${option.value}:${this.safeAreaMode === option.value}`)
+      }.width('100%')
+
+      if (this.safeAreaChangedWhileConnected && this.link.state === 'connected') {
+        Row({ space: 12 }) {
+          Text('安全区显示已生效；重连 USB 会话可同步调整扩展屏分辨率')
+            .fontSize(12)
+            .fontColor($r('app.color.dm_accent'))
+            .layoutWeight(1)
+          Button('立即重连', { type: ButtonType.Normal })
+            .height(32)
+            .padding({ left: 14, right: 14 })
+            .fontSize(12)
+            .fontColor($r('app.color.dm_accent_fg'))
+            .backgroundColor($r('app.color.dm_accent'))
+            .borderRadius(999)
+            .onClick(() => {
+              this.safeAreaChangedWhileConnected = false;
+              this.accessoryLink.reconnect();
+            })
+        }
+        .width('100%')
+        .padding({ left: 14, right: 14, top: 10, bottom: 10 })
+        .backgroundColor($r('app.color.dm_accent_soft'))
+        .border({ width: 0.8, color: $r('app.color.dm_accent_border') })
+        .borderRadius(14)
       }
 
       this.sectionHeader('视频编码格式')
@@ -1990,6 +2165,37 @@ struct Index {
     .zIndex(1)
   }
 
+  private xComponentWidth(): string {
+    if (this.page !== 'display') {
+      return '100%';
+    }
+    return `${this.currentDisplayViewport().widthVp}vp`;
+  }
+
+  private xComponentHeight(): string {
+    if (this.page !== 'display') {
+      return '100%';
+    }
+    return `${this.currentDisplayViewport().heightVp}vp`;
+  }
+
+  private xComponentMarginLeft(): number {
+    return this.page === 'display' ? this.currentDisplayViewport().leftVp : 0;
+  }
+
+  private xComponentMarginTop(): number {
+    return this.page === 'display' ? this.currentDisplayViewport().topVp : 0;
+  }
+
+  private displayHudPadding(): Padding {
+    const viewport: DisplayViewport = this.currentDisplayViewport();
+    return {
+      left: Math.max(14, viewport.safeLeftVp + 6),
+      right: Math.max(14, viewport.safeRightVp + 6),
+      top: Math.max(10, viewport.safeTopVp + 8)
+    };
+  }
+
   build() {
     Stack({ alignContent: Alignment.TopStart }) {
       XComponent({
@@ -1997,8 +2203,12 @@ struct Index {
         type: XComponentType.SURFACE,
         libraryname: 'deskmate_device'
       })
-        .width('100%')
-        .height('100%')
+        .width(this.xComponentWidth())
+        .height(this.xComponentHeight())
+        .margin({
+          left: this.xComponentMarginLeft(),
+          top: this.xComponentMarginTop()
+        })
         .backgroundColor('#000000')
 
       if (!this.privacyAccepted) {
@@ -2090,7 +2300,7 @@ struct Index {
           }
         }
         .width('100%')
-        .padding({ left: Math.max(14, this.safeLeftVp + 8), right: Math.max(14, this.safeRightVp + 8), top: 12 })
+        .padding(this.displayHudPadding())
         .hitTestBehavior(HitTestMode.Transparent)
         .zIndex(2)
       }

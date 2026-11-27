@@ -45,7 +45,7 @@ namespace {
 
 constexpr unsigned kControlTimeoutMs = 3000;
 constexpr std::size_t kMaxRxBufferBytes = 256U * 1024U;
-constexpr auto kAoaSwitchCooldown = std::chrono::seconds(5);
+constexpr auto kAoaSwitchCooldown = std::chrono::seconds(8);
 constexpr auto kExpectedIdentityTtl = std::chrono::seconds(20);
 constexpr auto kPnpSettleGrace = std::chrono::seconds(3);
 
@@ -971,8 +971,10 @@ deskmate::protocol::IoResult LibusbBulkTransport::write(
   }
   // ByteIo allows partial writes, and core already advances its offset by the
   // returned byte count. A large keyframe must therefore be split into
-  // kMaxOutTransferBytes chunks instead of failing the whole session.
-  const std::size_t chunk = std::min(source.size(), kMaxOutTransferBytes);
+  // <= kMaxOutTransferBytes chunks, avoiding exact 512/1024B multiples so
+  // HarmonyOS f_accessory never coalesces adjacent transfers across 16 KiB.
+  const std::size_t chunk =
+      select_bulk_out_chunk_bytes(source.size(), kMaxOutTransferBytes);
   // Find a free slot; the whole point of the pool is that a submit never
   // blocks the pump thread waiting for the previous URB to retire.
   // Arm the wake flag *before* scanning: a completion that races with this
@@ -1221,7 +1223,27 @@ std::vector<ScannedUsbDevice> LibusbAoaDiscovery::scan_all_devices(
     results.push_back(std::move(entry));
   }
   libusb_free_device_list(devices, 1);
-  return results;
+
+  // Deduplicate composite Windows USB nodes that expose the same physical
+  // device multiple times in one scan pass (e.g. same port_path or serial).
+  std::vector<ScannedUsbDevice> deduped;
+  deduped.reserve(results.size());
+  std::unordered_set<std::string> seen_ports;
+  std::unordered_set<std::string> seen_serials;
+  for (auto& item : results) {
+    if (!item.in_accessory_mode) {
+      if (!item.identity.port_path.empty() &&
+          !seen_ports.insert(item.identity.port_path).second) {
+        continue;
+      }
+      if (!item.identity.serial.empty() &&
+          !seen_serials.insert(item.identity.serial).second) {
+        continue;
+      }
+    }
+    deduped.push_back(std::move(item));
+  }
+  return deduped;
 }
 
 bool LibusbAoaDiscovery::trigger_aoa_switch(const ScannedUsbDevice& candidate,
@@ -1412,8 +1434,6 @@ std::unique_ptr<LinkTransport> LibusbAoaDiscovery::open_accessory(
     }
     return nullptr;
   }
-  (void)libusb_clear_halt(handle, pair.endpoint_in);
-  (void)libusb_clear_halt(handle, pair.endpoint_out);
   {
     char msg[256]{};
     std::snprintf(msg, sizeof(msg),
