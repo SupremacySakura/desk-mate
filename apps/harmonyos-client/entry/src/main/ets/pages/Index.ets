@@ -5,11 +5,26 @@ import {
   readSafeAreaInsets,
   SafeAreaInsets
 } from '../deskmate/DeviceLayout';
+import {
+  APP_DISPLAY_NAME,
+  CONTACT_EMAIL,
+  DEVELOPER_NAME,
+  FALLBACK_BUNDLE_NAME,
+  FALLBACK_VERSION_CODE,
+  FALLBACK_VERSION_NAME,
+  PRIVACY_CONSENT_HIGHLIGHTS,
+  PRIVACY_ONE_LINE_COMMITMENT,
+  PRIVACY_POLICY_SECTIONS,
+  PRIVACY_UPDATED_DATE,
+  PrivacySection
+} from '../deskmate/PrivacyContent';
 import native from 'libdeskmate_device.so';
+import { bundleManager } from '@kit.AbilityKit';
 import { display, UIContext, window } from '@kit.ArkUI';
 
 PersistentStorage.persistProp('deskMateShowFps', false);
 PersistentStorage.persistProp('deskMateCodec', 'auto');
+PersistentStorage.persistProp('deskMatePrivacyAccepted', false);
 
 interface EngineSnapshot {
   session: string;
@@ -49,7 +64,7 @@ interface DiagnosticRow {
   value: string;
 }
 
-type Page = 'home' | 'settings' | 'diagnostics' | 'display';
+type Page = 'home' | 'settings' | 'diagnostics' | 'about' | 'display';
 
 /**
  * Quiet Squircle wired dual-display schematic (Host + USB-C AOA + HarmonyOS tablet/phone).
@@ -314,6 +329,12 @@ struct Index {
   @State private controlsExpanded: boolean = false;
   @StorageLink('deskMateShowFps') private showFps: boolean = false;
   @StorageLink('deskMateCodec') private preferredCodec: string = 'auto';
+  @StorageLink('deskMatePrivacyAccepted') private privacyAccepted: boolean = false;
+  @State private privacyDeclined: boolean = false;
+  @State private showConsentFullPolicy: boolean = false;
+  @State private appVersionName: string = FALLBACK_VERSION_NAME;
+  @State private appVersionCode: number = FALLBACK_VERSION_CODE;
+  @State private appBundleName: string = FALLBACK_BUNDLE_NAME;
   @State private fps: number = 0;
   @State private bitrateMbps: number = 0;
   @State private activeCodec: string = '';
@@ -485,17 +506,29 @@ struct Index {
     }
   }
 
-  aboutToAppear(): void {
-    this.reportDisplayMetrics();
-    native.setPreferredCodec(this.preferredCodec);
-    window.getLastWindow(this.getUIContext().getHostContext()).then((appWindow: window.Window) => {
-      this.mainWindow = appWindow;
-      this.updateWindowMetrics(appWindow);
-      appWindow.on('windowSizeChange', this.handleWindowSizeChange);
-      appWindow.on('avoidAreaChange', this.handleAvoidAreaChange);
-      this.applyWindowPresentation(appWindow);
-    }).catch(() => {});
+  private loadBundleMetadata(): void {
+    try {
+      const info: bundleManager.BundleInfo =
+        bundleManager.getBundleInfoForSelfSync(bundleManager.BundleFlag.GET_BUNDLE_INFO_DEFAULT);
+      if (info.versionName && info.versionName.length > 0) {
+        this.appVersionName = info.versionName;
+      }
+      if (info.versionCode > 0) {
+        this.appVersionCode = info.versionCode;
+      }
+      if (info.name && info.name.length > 0) {
+        this.appBundleName = info.name;
+      }
+    } catch (error) {
+      // Keep fallback metadata if bundleManager query is unavailable.
+    }
+  }
+
+  private startAccessoryServices(): void {
     this.accessoryLink.start();
+    if (this.refreshTimer >= 0) {
+      return;
+    }
     this.refreshTimer = setInterval(() => {
       const json: string = native.snapshotJson();
       if (json !== this.engine) {
@@ -519,6 +552,42 @@ struct Index {
     }, 250);
   }
 
+  private stopAccessoryServices(): void {
+    if (this.refreshTimer >= 0) {
+      clearInterval(this.refreshTimer);
+      this.refreshTimer = -1;
+    }
+    this.accessoryLink.stop();
+  }
+
+  private acceptPrivacyPolicy(): void {
+    this.privacyDeclined = false;
+    this.showConsentFullPolicy = false;
+    this.privacyAccepted = true;
+    this.startAccessoryServices();
+  }
+
+  private declinePrivacyPolicy(): void {
+    this.privacyDeclined = true;
+    this.stopAccessoryServices();
+  }
+
+  aboutToAppear(): void {
+    this.loadBundleMetadata();
+    this.reportDisplayMetrics();
+    native.setPreferredCodec(this.preferredCodec);
+    window.getLastWindow(this.getUIContext().getHostContext()).then((appWindow: window.Window) => {
+      this.mainWindow = appWindow;
+      this.updateWindowMetrics(appWindow);
+      appWindow.on('windowSizeChange', this.handleWindowSizeChange);
+      appWindow.on('avoidAreaChange', this.handleAvoidAreaChange);
+      this.applyWindowPresentation(appWindow);
+    }).catch(() => {});
+    if (this.privacyAccepted) {
+      this.startAccessoryServices();
+    }
+  }
+
   aboutToDisappear(): void {
     if (this.mainWindow !== undefined) {
       try {
@@ -533,11 +602,7 @@ struct Index {
       this.touchCaptureActive = false;
       native.setTouchEnabled(false);
     }
-    if (this.refreshTimer >= 0) {
-      clearInterval(this.refreshTimer);
-      this.refreshTimer = -1;
-    }
-    this.accessoryLink.stop();
+    this.stopAccessoryServices();
   }
 
   private parseEngine(): EngineSnapshot | undefined {
@@ -594,7 +659,14 @@ struct Index {
   }
 
   onBackPress(): boolean {
-    if (this.page === 'diagnostics') {
+    if (!this.privacyAccepted) {
+      if (this.showConsentFullPolicy) {
+        this.showConsentFullPolicy = false;
+        return true;
+      }
+      return false;
+    }
+    if (this.page === 'diagnostics' || this.page === 'about') {
       this.navigate('settings');
       return true;
     }
@@ -1161,6 +1233,35 @@ struct Index {
       .width('100%')
       .backgroundColor(Color.Transparent)
       .onClick(() => this.navigate('diagnostics'))
+
+      this.sectionHeader('关于与隐私')
+
+      Button({ type: ButtonType.Normal }) {
+        Row({ space: 12 }) {
+          Column({ space: 2 }) {
+            Text('关于 DeskMate 与隐私说明')
+              .fontSize(14)
+              .fontWeight(FontWeight.Medium)
+              .fontColor($r('app.color.dm_ink'))
+            Text(`版本 v${this.appVersionName} · 本地 USB 传输，不联网、不收集个人信息`)
+              .fontSize(12)
+              .fontColor($r('app.color.dm_ink_secondary'))
+          }.alignItems(HorizontalAlign.Start).layoutWeight(1)
+
+          Text('查看 →')
+            .fontSize(12)
+            .fontWeight(FontWeight.Medium)
+            .fontColor($r('app.color.dm_accent'))
+        }
+        .width('100%')
+        .padding({ top: 12, bottom: 12, left: 16, right: 16 })
+        .backgroundColor($r('app.color.dm_surface'))
+        .border({ width: 0.8, color: $r('app.color.dm_hairline') })
+        .borderRadius(16)
+      }
+      .width('100%')
+      .backgroundColor(Color.Transparent)
+      .onClick(() => this.navigate('about'))
     }
     .width('100%')
     .alignItems(HorizontalAlign.Start)
@@ -1347,6 +1448,376 @@ struct Index {
     }
   }
 
+  private aboutInfoRows(): Array<DiagnosticRow> {
+    return [
+      { label: '应用名称', value: APP_DISPLAY_NAME },
+      { label: '当前版本', value: `v${this.appVersionName} (${this.appVersionCode})` },
+      { label: '应用包名', value: this.appBundleName },
+      { label: '支持设备', value: 'HarmonyOS 手机 / 平板' },
+      { label: '开发者', value: DEVELOPER_NAME },
+      { label: '联系邮箱', value: CONTACT_EMAIL },
+      { label: '联网与权限', value: '无网络权限 · 仅使用本地 USB 配件接口' }
+    ];
+  }
+
+  @Builder
+  private aboutIdentityCard() {
+    Row({ space: 14 }) {
+      Image($r('app.media.app_icon'))
+        .width(48)
+        .height(48)
+        .borderRadius(12)
+        .objectFit(ImageFit.Cover)
+
+      Column({ space: 3 }) {
+        Text(APP_DISPLAY_NAME)
+          .fontSize(16)
+          .fontWeight(FontWeight.Medium)
+          .fontColor($r('app.color.dm_ink'))
+        Text(`版本 v${this.appVersionName} (${this.appVersionCode})`)
+          .fontSize(12)
+          .fontColor($r('app.color.dm_ink_secondary'))
+        Text(this.appBundleName)
+          .fontSize(11)
+          .fontColor($r('app.color.dm_ink_muted'))
+      }
+      .alignItems(HorizontalAlign.Start)
+      .layoutWeight(1)
+    }
+    .width('100%')
+    .padding(14)
+    .backgroundColor($r('app.color.dm_surface'))
+    .border({ width: 0.8, color: $r('app.color.dm_hairline') })
+    .borderRadius(16)
+  }
+
+  @Builder
+  private aboutMetadataCard(compact: boolean) {
+    Column() {
+      ForEach(this.aboutInfoRows(), (row: DiagnosticRow, index: number) => {
+        Column() {
+          if (index > 0) {
+            Divider().color($r('app.color.dm_soft_hairline')).strokeWidth(0.8)
+          }
+          Row({ space: 12 }) {
+            Text(row.label)
+              .fontSize(compact ? 12 : 12.5)
+              .fontColor($r('app.color.dm_ink_muted'))
+              .width(compact ? 74 : 84)
+            Text(row.value)
+              .fontSize(compact ? 12 : 12.5)
+              .fontWeight(FontWeight.Medium)
+              .fontColor($r('app.color.dm_ink'))
+              .layoutWeight(1)
+          }
+          .width('100%')
+          .padding({ top: 10, bottom: 10, left: 14, right: 14 })
+        }.width('100%')
+      }, (row: DiagnosticRow) => `${row.label}:${row.value}`)
+    }
+    .width('100%')
+    .backgroundColor($r('app.color.dm_surface'))
+    .border({ width: 0.8, color: $r('app.color.dm_hairline') })
+    .borderRadius(16)
+    .clip(true)
+  }
+
+  @Builder
+  private aboutCommitmentCard() {
+    Column({ space: 6 }) {
+      Text('本地隐私承诺')
+        .fontSize(12.5)
+        .fontWeight(FontWeight.Medium)
+        .fontColor($r('app.color.dm_positive'))
+      Text(PRIVACY_ONE_LINE_COMMITMENT)
+        .fontSize(13)
+        .lineHeight(19.5)
+        .fontColor($r('app.color.dm_ink'))
+    }
+    .width('100%')
+    .padding(14)
+    .backgroundColor($r('app.color.dm_positive_soft'))
+    .border({ width: 0.8, color: $r('app.color.dm_positive_border') })
+    .borderRadius(16)
+    .alignItems(HorizontalAlign.Start)
+  }
+
+  @Builder
+  private aboutPrivacyPolicyCard() {
+    Column({ space: 10 }) {
+      Row({ space: 8 }) {
+        Text('隐私政策全文')
+          .fontSize(14)
+          .fontWeight(FontWeight.Medium)
+          .fontColor($r('app.color.dm_ink'))
+          .layoutWeight(1)
+        Text(`更新：${PRIVACY_UPDATED_DATE}`)
+          .fontSize(11)
+          .fontColor($r('app.color.dm_ink_muted'))
+      }
+      .width('100%')
+
+      Divider().color($r('app.color.dm_soft_hairline')).strokeWidth(0.8)
+
+      ForEach(PRIVACY_POLICY_SECTIONS, (section: PrivacySection, index: number) => {
+        Column({ space: 4 }) {
+          if (index > 0) {
+            Divider().color($r('app.color.dm_soft_hairline')).strokeWidth(0.8).margin({ bottom: 6 })
+          }
+          Text(section.title)
+            .fontSize(12.5)
+            .fontWeight(FontWeight.Medium)
+            .fontColor($r('app.color.dm_ink'))
+          Text(section.body)
+            .fontSize(12)
+            .lineHeight(18)
+            .fontColor($r('app.color.dm_ink_secondary'))
+        }
+        .width('100%')
+        .alignItems(HorizontalAlign.Start)
+      }, (section: PrivacySection, index: number) => `${index}:${section.title}`)
+    }
+    .width('100%')
+    .padding(16)
+    .backgroundColor($r('app.color.dm_surface'))
+    .border({ width: 0.8, color: $r('app.color.dm_hairline') })
+    .borderRadius(16)
+    .alignItems(HorizontalAlign.Start)
+  }
+
+  @Builder
+  private aboutContent() {
+    if (this.isCompactLayout()) {
+      Column({ space: 12 }) {
+        Text('关于与隐私')
+          .fontSize(19)
+          .fontWeight(FontWeight.Medium)
+          .fontColor($r('app.color.dm_ink'))
+          .width('100%')
+
+        this.aboutIdentityCard()
+        this.aboutCommitmentCard()
+        this.aboutMetadataCard(true)
+        this.aboutPrivacyPolicyCard()
+      }
+      .width('100%')
+      .padding({ left: 16, right: 16, top: 14, bottom: 20 })
+      .alignItems(HorizontalAlign.Start)
+    } else {
+      Row({ space: 24 }) {
+        Column({ space: 12 }) {
+          this.aboutIdentityCard()
+          this.aboutMetadataCard(false)
+
+          Row({ space: 10 }) {
+            Button('← 返回系统设置', { type: ButtonType.Normal })
+              .height(36)
+              .padding({ left: 14, right: 14 })
+              .fontSize(12)
+              .fontColor($r('app.color.dm_ink_secondary'))
+              .backgroundColor($r('app.color.dm_surface'))
+              .border({ width: 0.8, color: $r('app.color.dm_hairline') })
+              .borderRadius(11)
+              .onClick(() => this.navigate('settings'))
+
+            Button('返回主页', { type: ButtonType.Normal })
+              .height(36)
+              .padding({ left: 14, right: 14 })
+              .fontSize(12)
+              .fontColor($r('app.color.dm_accent'))
+              .backgroundColor($r('app.color.dm_accent_soft'))
+              .border({ width: 0.8, color: $r('app.color.dm_accent_border') })
+              .borderRadius(11)
+              .onClick(() => this.navigate('home'))
+          }
+        }
+        .width('36%')
+        .alignItems(HorizontalAlign.Start)
+
+        Column({ space: 12 }) {
+          Text('关于与隐私')
+            .fontSize(20)
+            .fontWeight(FontWeight.Medium)
+            .fontColor($r('app.color.dm_ink'))
+            .width('100%')
+
+          this.aboutCommitmentCard()
+          this.aboutPrivacyPolicyCard()
+        }
+        .width('64%')
+        .alignItems(HorizontalAlign.Start)
+      }
+      .width('100%')
+      .constraintSize({ maxWidth: 1000 })
+      .padding({ left: 28, right: 28, top: 18, bottom: 24 })
+      .alignItems(VerticalAlign.Top)
+    }
+  }
+
+  @Builder
+  private privacyConsentGate() {
+    Column() {
+      Column({ space: 0 }) {
+        Row({ space: 12 }) {
+          Image($r('app.media.app_icon'))
+            .width(44)
+            .height(44)
+            .borderRadius(10)
+            .objectFit(ImageFit.Cover)
+
+          Column({ space: 2 }) {
+            Text('欢迎使用 DeskMate')
+              .fontSize(17)
+              .fontWeight(FontWeight.Medium)
+              .fontColor($r('app.color.dm_ink'))
+            Text('隐私保护提示')
+              .fontSize(12)
+              .fontColor($r('app.color.dm_ink_secondary'))
+          }
+          .alignItems(HorizontalAlign.Start)
+          .layoutWeight(1)
+        }
+        .width('100%')
+        .padding({ left: 20, right: 20, top: 18, bottom: 14 })
+
+        Divider().color($r('app.color.dm_soft_hairline')).strokeWidth(0.8)
+
+        Scroll() {
+          Column({ space: 12 }) {
+            Row({ space: 6 }) {
+              Row()
+                .width(6)
+                .height(6)
+                .borderRadius(3)
+                .backgroundColor($r('app.color.dm_positive'))
+              Text('不联网 · 不收集个人信息 · 本地 USB 直连')
+                .fontSize(11.5)
+                .fontWeight(FontWeight.Medium)
+                .fontColor($r('app.color.dm_positive'))
+            }
+            .padding({ left: 10, right: 10, top: 5, bottom: 5 })
+            .backgroundColor($r('app.color.dm_positive_soft'))
+            .border({ width: 0.8, color: $r('app.color.dm_positive_border') })
+            .borderRadius(999)
+
+            Text('DeskMate 需配合电脑端主机通过 USB-C 数据线建立本地扩展屏会话。在您点击“同意并继续”之前，应用不会枚举 USB 配件或请求 USB 配件授权。')
+              .fontSize(13)
+              .lineHeight(19.5)
+              .fontColor($r('app.color.dm_ink_secondary'))
+
+            Column({ space: 8 }) {
+              ForEach(PRIVACY_CONSENT_HIGHLIGHTS, (item: PrivacySection, index: number) => {
+                Column({ space: 3 }) {
+                  Text(item.title)
+                    .fontSize(12.5)
+                    .fontWeight(FontWeight.Medium)
+                    .fontColor($r('app.color.dm_ink'))
+                  Text(item.body)
+                    .fontSize(12)
+                    .lineHeight(17.5)
+                    .fontColor($r('app.color.dm_ink_secondary'))
+                }
+                .width('100%')
+                .padding(11)
+                .backgroundColor($r('app.color.dm_canvas'))
+                .border({ width: 0.8, color: $r('app.color.dm_soft_hairline') })
+                .borderRadius(12)
+                .alignItems(HorizontalAlign.Start)
+              }, (item: PrivacySection, index: number) => `${index}:${item.title}`)
+            }
+            .width('100%')
+
+            Button(this.showConsentFullPolicy ? '收起完整隐私政策' : '查看完整隐私政策', { type: ButtonType.Normal })
+              .height(34)
+              .padding({ left: 12, right: 12 })
+              .fontSize(12)
+              .fontWeight(FontWeight.Medium)
+              .fontColor($r('app.color.dm_accent'))
+              .backgroundColor($r('app.color.dm_accent_soft'))
+              .border({ width: 0.8, color: $r('app.color.dm_accent_border') })
+              .borderRadius(999)
+              .onClick(() => {
+                this.showConsentFullPolicy = !this.showConsentFullPolicy;
+              })
+
+            if (this.showConsentFullPolicy) {
+              this.aboutPrivacyPolicyCard()
+            }
+
+            if (this.privacyDeclined) {
+              Column({ space: 4 }) {
+                Text('未同意隐私保护提示')
+                  .fontSize(12.5)
+                  .fontWeight(FontWeight.Medium)
+                  .fontColor($r('app.color.dm_warning'))
+                Text('当前不会枚举 USB 配件，也无法建立有线扩展屏连接。您可以随时点击下方“同意并继续”启用，或退出本应用。')
+                  .fontSize(12)
+                  .lineHeight(17.5)
+                  .fontColor($r('app.color.dm_ink_secondary'))
+              }
+              .width('100%')
+              .padding(12)
+              .backgroundColor($r('app.color.dm_warning_soft'))
+              .border({ width: 0.8, color: $r('app.color.dm_warning_border') })
+              .borderRadius(12)
+              .alignItems(HorizontalAlign.Start)
+            }
+          }
+          .width('100%')
+          .padding({ left: 20, right: 20, top: 14, bottom: 14 })
+          .alignItems(HorizontalAlign.Start)
+        }
+        .width('100%')
+        .constraintSize({ maxHeight: Math.max(220, this.windowHeightVp - this.safeTopVp - this.safeBottomVp - 240) })
+
+        Divider().color($r('app.color.dm_soft_hairline')).strokeWidth(0.8)
+
+        Row({ space: 10 }) {
+          Button('不同意', { type: ButtonType.Normal })
+            .layoutWeight(1)
+            .height(42)
+            .fontSize(13.5)
+            .fontWeight(FontWeight.Medium)
+            .fontColor($r('app.color.dm_ink_secondary'))
+            .backgroundColor($r('app.color.dm_subtle'))
+            .border({ width: 0.8, color: $r('app.color.dm_hairline') })
+            .borderRadius(999)
+            .onClick(() => this.declinePrivacyPolicy())
+
+          Button('同意并继续', { type: ButtonType.Normal })
+            .layoutWeight(1.4)
+            .height(42)
+            .fontSize(13.5)
+            .fontWeight(FontWeight.Medium)
+            .fontColor($r('app.color.dm_accent_fg'))
+            .backgroundColor($r('app.color.dm_accent'))
+            .borderRadius(999)
+            .onClick(() => this.acceptPrivacyPolicy())
+        }
+        .width('100%')
+        .padding({ left: 20, right: 20, top: 14, bottom: 16 })
+      }
+      .width('100%')
+      .constraintSize({ maxWidth: 540 })
+      .backgroundColor($r('app.color.dm_surface'))
+      .border({ width: 0.8, color: $r('app.color.dm_hairline') })
+      .borderRadius(20)
+      .clip(true)
+    }
+    .width('100%')
+    .height('100%')
+    .justifyContent(FlexAlign.Center)
+    .alignItems(HorizontalAlign.Center)
+    .padding({
+      left: 16,
+      right: 16,
+      top: Math.max(16, this.safeTopVp + 8),
+      bottom: Math.max(16, this.safeBottomVp + 8)
+    })
+    .backgroundColor($r('app.color.dm_canvas'))
+    .zIndex(2)
+  }
+
   @Builder
   private shell() {
     Column() {
@@ -1467,6 +1938,8 @@ struct Index {
             this.homeContent()
           } else if (this.page === 'settings') {
             this.settingsContent()
+          } else if (this.page === 'about') {
+            this.aboutContent()
           } else {
             this.diagnosticsContent()
           }
@@ -1528,7 +2001,9 @@ struct Index {
         .height('100%')
         .backgroundColor('#000000')
 
-      if (this.page !== 'display') {
+      if (!this.privacyAccepted) {
+        this.privacyConsentGate()
+      } else if (this.page !== 'display') {
         this.shell()
       } else {
         Row({ space: 8 }) {

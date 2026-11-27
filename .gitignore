@@ -12,6 +12,15 @@ apps/android-client/captures/
 *.apk
 *.aab
 
+# HarmonyOS client (DevEco Studio / ohpm)
+apps/harmonyos-client/.idea/
+apps/harmonyos-client/.clangd
+apps/harmonyos-client/.clang-tidy
+apps/harmonyos-client/oh_modules/
+apps/harmonyos-client/entry/oh_modules/
+apps/harmonyos-client/entry/oh-package-lock.json5
+apps/harmonyos-client/local.properties
+
 # Local release staging / packaged deliverables
 dist/
 *.dmg
@@ -22,3 +31,6 @@ DeskMate-*.zip
 # Private signing keys & certificates
 *.key
 *.p12
+*.csr
+*.cer
+*.p7b

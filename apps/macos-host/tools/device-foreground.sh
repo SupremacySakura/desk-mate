@@ -20,7 +20,7 @@
 
 set -u
 
-BUNDLE=${DESKMATE_BUNDLE:-com.deskmate.gate3}
+BUNDLE=${DESKMATE_BUNDLE:-com.supremacy.deskmate}
 ABILITY=${DESKMATE_ABILITY:-EntryAbility}
 LOG=${DESKMATE_FG_LOG:-/data/local/tmp/deskmate_fg.log}
 ROUNDS=${DESKMATE_FG_ROUNDS:-12}

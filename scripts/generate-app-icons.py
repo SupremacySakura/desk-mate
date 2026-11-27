@@ -334,7 +334,29 @@ def main() -> int:
     repo = Path(__file__).resolve().parent.parent
     parser = argparse.ArgumentParser(description="Generate DeskMate app icons for all 4 platforms.")
     parser.add_argument("--preview", type=Path, default=None, help="Optional contact sheet PNG path.")
+    parser.add_argument(
+        "--harmony-store-icon",
+        type=Path,
+        default=None,
+        help="Optional 1024x1024 opaque RGB PNG output path for Huawei AppGallery.",
+    )
+    parser.add_argument(
+        "--only-harmony-store",
+        action="store_true",
+        help="Only generate the 1024x1024 AppGallery store icon without modifying platform icons.",
+    )
     args = parser.parse_args()
+
+    if args.harmony_store_icon is not None or args.only_harmony_store:
+        store_out = args.harmony_store_icon or (repo / "dist" / "harmonyos" / "store" / "app_icon_1024.png")
+        if not store_out.is_absolute():
+            store_out = repo / store_out
+        store_out.parent.mkdir(parents=True, exist_ok=True)
+        store_1024 = render_full_bleed_icon(1024, supersample=4, mark_scale=0.96).convert("RGB")
+        store_1024.save(store_out, format="PNG")
+        print(f"Generated HarmonyOS AppGallery 1024x1024 opaque store icon at {store_out}")
+        if args.only_harmony_store:
+            return 0
 
     # 1. macOS: 1024x1024 with Oink's 824x824 rx=185 squircle proportion
     macos_master = render_rounded_square_icon(1024, body_px=824.0, corner_r=185.0, supersample=4, mark_scale=1.0)

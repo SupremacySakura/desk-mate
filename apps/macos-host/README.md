@@ -80,7 +80,7 @@ BetterDisplay 创建的 `id 41`（`1920x1280 pt / 3840x2560 px @ 120Hz`）。
 ```sh
 make device-foreground \
   HDC=/Applications/DevEco-Studio.app/Contents/sdk/default/openharmony/toolchains/hdc \
-  BUNDLE=com.deskmate.gate3
+  BUNDLE=com.supremacy.deskmate
 ```
 
 脚本在平板后台每 5 秒 `aa start` 一次，共 12 轮，覆盖整个切换窗口。日志在

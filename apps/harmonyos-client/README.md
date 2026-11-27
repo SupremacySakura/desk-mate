@@ -3,8 +3,8 @@
 产品端设备应用：以 USB Accessory（AOA）接收 Mac 发来的视频分片，解码到
 `XComponent` Surface 显示，并把触控事件回传给 Host。
 
-- Bundle：`com.deskmate.gate3`
-- 目标设备：`tablet`（实测 MatePad Pro `MRDI-W00`，OpenHarmony 7.0.0.111 / API 26）
+- Bundle：`com.supremacy.deskmate`
+- 目标设备：`tablet`、`phone`（首发支持平板与手机；平板实测 MatePad Pro `MRDI-W00`，OpenHarmony 7.0.0.111 / API 26）
 
 ## 构建
 
@@ -40,7 +40,7 @@ $HDC install entry/build/default/outputs/default/entry-default-signed.hap
 
 ```sh
 cd ../macos-host
-make device-foreground HDC=$HDC BUNDLE=com.deskmate.gate3
+make device-foreground HDC=$HDC BUNDLE=com.supremacy.deskmate
 ```
 
 平板以原生解码器成功输出到 Surface 作为进入全屏的触发信号。全屏左上角可展开工具栏并返回首页；
@@ -62,3 +62,8 @@ entry/src/main/cpp/fd_byte_io.hpp               以 POLLIN 为许可的字节 I/
 - 只处理单指鼠标等价输入与双指滚动；键盘与压感未接入。
 - 退出 Host 不会把平板送回 HDC 模式，恢复方式是拔插 USB。
 - 帧率偏低（实测约 9 fps）尚未优化，不构成性能结论。
+
+## 发布到华为应用市场
+
+发布流程、AGC 填写项、素材规格、隐私政策与自测说明模板见
+[docs/harmonyos-appgallery-release.md](../../docs/harmonyos-appgallery-release.md)。
