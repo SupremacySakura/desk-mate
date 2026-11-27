@@ -5,8 +5,8 @@ export interface PrivacySection {
 
 export const APP_DISPLAY_NAME: string = 'DeskMate';
 export const FALLBACK_BUNDLE_NAME: string = 'com.supremacy.deskmate';
-export const FALLBACK_VERSION_NAME: string = '1.7.0';
-export const FALLBACK_VERSION_CODE: number = 1007000;
+export const FALLBACK_VERSION_NAME: string = '1.7.1';
+export const FALLBACK_VERSION_CODE: number = 1007001;
 export const DEVELOPER_NAME: string = 'SupremacySakura';
 export const CONTACT_EMAIL: string = '3118654731@qq.com';
 export const PRIVACY_UPDATED_DATE: string = '2026-11-27';

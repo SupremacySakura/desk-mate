@@ -7,6 +7,26 @@
 
 ---
 
+## [v1.7.1] - 2026-11-27
+
+相对 `v1.7.0` 的主要差异：
+
+### ⚡ 性能与体验优化
+- **Windows 120 Hz 节拍器与端到端低延迟管线**：采集循环统一收敛至绝对时间 `FramePacer` 节拍器（高精度可等待定时器 + 微秒级自旋收尾、0.5 ms 系统时钟精度与 `HIGH_PRIORITY_CLASS`），完整排空纯指针位置更新；Media Foundation 硬件编码启用单参考帧（`MaxNumRefFrame = 1`）、合成单调均匀时间戳、单槽位 `LatestFrameQueue`、惰性 NV12 拷贝与 Annex-B VCL 帧过滤，消除高刷帧间抖动与排队积压。
+- **编码前无锁背压与双端硬解防合并输出**：新增基于待发字节数的编码前无锁 USB 拥塞背压并收紧未发帧老化阈值，USB 事件线程提升至 MMCSS `Pro Audio` 优先级；Android 与鸿蒙客户端硬解输出按最小步进拉开渲染目标时间戳，防止连续解码帧合并进同一面板 VSync。
+- **Parsec VDD 自定义高刷模式按需提权注册**：当 `HKLM\SOFTWARE\Parsec\vdd\0` 尚未写入目标分辨率与刷新率时，支持单次按需提权写入自定义模式。
+
+### 🐛 问题修复
+- **修复鸿蒙手机连接 Windows 时掉帧至 0 FPS 卡死与 `LIBUSB_TRANSFER_STALL` 断连**：
+  - 修正 Windows Media Foundation 硬编 `CODECAPI_AVEncVideoForceKeyFrame`（及 `MF_MT_MPEG2_PROFILE`）的官方 GUID，并补充异步 MFT 强制关键帧 50 ms 输出确认重装机制，解决拥塞恢复请求 IDR 失效导致画面冻结等待 60 秒自然 GOP 的问题；
+  - 修正 `eAVEncCommonRateControlMode_PeakConstrainedVBR` 枚举值（`1`），使 1.3× 峰值码率与 250 ms VBV 漏桶限流真正生效，抑制大画面变化时的突发分片洪峰；
+  - 将 Windows USB AOA 异步 Bulk OUT 槽位数收敛至 `8`（与调度器 `max_video_urbs` 对齐），避免压满手机端 `f_accessory` / UDC 请求环引发 NAK 抖动与端点 STALL 断连。
+- **修复连接 Windows 端时概率性不显示鼠标光标**：当无物理鼠标接入、触控抑制系统光标可见性或动态/自定义光标位图提取失败时，自动回退绘制预置系统标准箭头光标并加入失败退避缓存，确保扩展屏光标稳定可见。
+
+安装与驱动说明请见 [README.md](./README.md)。
+
+---
+
 ## [v1.7.0] - 2026-11-27
 
 相对 `v1.6.0` 的主要差异：
