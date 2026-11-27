@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cstring>
+#include <time.h>
 
 #define LOG_TAG "DeskMateDecoder"
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, LOG_TAG, __VA_ARGS__)
@@ -113,6 +114,7 @@ bool VideoDecoder::configure(const DecoderConfig& config, ANativeWindow* window,
   }
   window_ = window;
   config_ = config;
+  last_render_target_ns_ = 0;
   width_.store(config.width, std::memory_order_relaxed);
   height_.store(config.height, std::memory_order_relaxed);
   set_error({});
@@ -141,6 +143,7 @@ void VideoDecoder::close() {
     codec_ = nullptr;
   }
   window_ = nullptr;
+  last_render_target_ns_ = 0;
 }
 
 bool VideoDecoder::push(std::vector<std::uint8_t> access_unit,
@@ -252,8 +255,23 @@ void VideoDecoder::output_loop() {
         AMediaCodec_dequeueOutputBuffer(codec_, &info, 10000);
     if (output >= 0) {
       if ((info.flags & AMEDIACODEC_BUFFER_FLAG_END_OF_STREAM) == 0) {
-        AMediaCodec_releaseOutputBuffer(codec_, static_cast<std::size_t>(output),
-                                        true);
+        struct timespec ts{};
+        clock_gettime(CLOCK_MONOTONIC, &ts);
+        const std::int64_t now_ns =
+            static_cast<std::int64_t>(ts.tv_sec) * 1'000'000'000LL +
+            static_cast<std::int64_t>(ts.tv_nsec);
+        const std::int64_t period_ns =
+            1'000'000'000LL / std::max<std::int32_t>(30, config_.frame_rate);
+        const std::int64_t min_step_ns = (period_ns * 65) / 100;
+        std::int64_t target_ns = now_ns;
+        if (last_render_target_ns_ > 0 &&
+            target_ns < last_render_target_ns_ + min_step_ns) {
+          target_ns = std::min(last_render_target_ns_ + min_step_ns,
+                               now_ns + period_ns);
+        }
+        last_render_target_ns_ = target_ns;
+        AMediaCodec_releaseOutputBufferAtTime(
+            codec_, static_cast<std::size_t>(output), target_ns);
         counters_->rendered.fetch_add(1, std::memory_order_relaxed);
         awaiting_keyframe_.store(false, std::memory_order_release);
       } else {

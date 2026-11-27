@@ -1005,6 +1005,12 @@ void HostController::ensure_capture_for_channel(
   auto capture = make_capture_encoder();
   std::string error;
   std::weak_ptr<LinkChannel> weak_ch = ch;
+  capture->set_congestion_probe([weak_ch]() -> bool {
+    if (auto locked = weak_ch.lock()) {
+      return locked->session != nullptr && locked->session->video_congested();
+    }
+    return false;
+  });
   const bool ok = capture->start(
       cap_opts,
       [weak_ch](EncodedAccessUnit unit) {
@@ -1309,15 +1315,30 @@ void HostController::update_power_assertion() {
     Win32PowerThrottlingState state{1U, enable ? (0x1U | 0x4U) : 0U, 0U};
     (void)set_proc_info(GetCurrentProcess(), 4U, &state, sizeof(state));
   };
+  auto set_nt_timer_resolution = [](bool enable) {
+    using NtSetTimerResolutionFn = LONG(WINAPI*)(ULONG, BOOLEAN, PULONG);
+    static const auto nt_set_timer_res =
+        reinterpret_cast<NtSetTimerResolutionFn>(GetProcAddress(
+            GetModuleHandleW(L"ntdll.dll"), "NtSetTimerResolution"));
+    if (nt_set_timer_res == nullptr) {
+      return;
+    }
+    ULONG actual_res = 0;
+    (void)nt_set_timer_res(5000U, enable ? TRUE : FALSE, &actual_res);
+  };
   if (any_streaming) {
+    (void)SetPriorityClass(GetCurrentProcess(), HIGH_PRIORITY_CLASS);
     SetThreadExecutionState(ES_CONTINUOUS | ES_SYSTEM_REQUIRED |
                             ES_DISPLAY_REQUIRED);
     timeBeginPeriod(1);
+    set_nt_timer_resolution(true);
     set_process_streaming_timer_qos(true);
   } else {
     set_process_streaming_timer_qos(false);
+    set_nt_timer_resolution(false);
     timeEndPeriod(1);
     SetThreadExecutionState(ES_CONTINUOUS);
+    (void)SetPriorityClass(GetCurrentProcess(), NORMAL_PRIORITY_CLASS);
   }
 #endif
 }

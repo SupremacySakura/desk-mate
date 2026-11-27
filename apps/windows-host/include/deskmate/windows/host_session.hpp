@@ -57,6 +57,7 @@ class SessionLink final : public LinkSession {
   [[nodiscard]] int request_refresh_hz_reconfigure(int target_hz) override;
 
   [[nodiscard]] bool has_pending_output() const override;
+  [[nodiscard]] bool video_congested() const override;
   [[nodiscard]] bool is_terminal() const override;
   [[nodiscard]] std::string failure_reason() const override;
   [[nodiscard]] std::string transport_last_error() const override;
@@ -104,6 +105,8 @@ class SessionLink final : public LinkSession {
   std::atomic<bool> input_intent_{false};
   mutable std::mutex video_mutex_;
   std::deque<PendingVideo> video_queue_;
+  std::atomic<std::size_t> queued_video_frames_{0};
+  std::atomic<bool> scheduler_congested_{false};
   std::atomic<std::uint64_t> submitted_{0};
   std::atomic<std::uint64_t> sent_{0};
   std::atomic<std::uint64_t> dropped_{0};

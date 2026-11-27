@@ -71,6 +71,8 @@ void SessionLink::start_new_session(std::uint32_t video_stream_id,
   std::lock_guard lock(session_mutex_);
   capture_intent_.store(false, std::memory_order_release);
   input_intent_.store(false, std::memory_order_release);
+  queued_video_frames_.store(0, std::memory_order_release);
+  scheduler_congested_.store(false, std::memory_order_release);
   requested_idr_.store(0, std::memory_order_release);
   last_idr_request_ns_.store(0, std::memory_order_release);
   drop_until_keyframe_.store(false, std::memory_order_release);
@@ -213,6 +215,11 @@ bool SessionLink::has_pending_output() const {
          session_->has_pending_output();
 }
 
+bool SessionLink::video_congested() const {
+  return queued_video_frames_.load(std::memory_order_relaxed) >= 4U ||
+         scheduler_congested_.load(std::memory_order_relaxed);
+}
+
 bool SessionLink::is_terminal() const {
   std::lock_guard lock(session_mutex_);
   return session_ == nullptr || session_->is_terminal();
@@ -267,7 +274,9 @@ void SessionLink::restart_session() {
   {
     std::lock_guard lock(video_mutex_);
     video_queue_.clear();
+    queued_video_frames_.store(0, std::memory_order_release);
   }
+  scheduler_congested_.store(false, std::memory_order_release);
   if (transport_ == nullptr || !transport_->alive()) {
     return;
   }
@@ -318,6 +327,7 @@ void SessionLink::submit_video(std::vector<std::uint8_t> annex_b,
   }
   video_queue_.push_back(
       PendingVideo{std::move(annex_b), pts_us, keyframe});
+  queued_video_frames_.store(video_queue_.size(), std::memory_order_release);
 }
 
 bool SessionLink::consume_local_keyframe_request() {
@@ -403,6 +413,7 @@ void SessionLink::pump() {
   if (transport_ok) {
     std::lock_guard lock(video_mutex_);
     batch.swap(video_queue_);
+    queued_video_frames_.store(0, std::memory_order_release);
   }
   std::lock_guard lock(session_mutex_);
   if (session_ == nullptr) {
@@ -432,13 +443,17 @@ void SessionLink::pump() {
     }
   }
   session_->pump();
+  scheduler_congested_.store(session_->pending_video_bytes() >= 384U * 1024U,
+                             std::memory_order_relaxed);
 }
 
 void SessionLink::stop() {
   {
     std::lock_guard lock(video_mutex_);
     video_queue_.clear();
+    queued_video_frames_.store(0, std::memory_order_release);
   }
+  scheduler_congested_.store(false, std::memory_order_release);
   std::lock_guard lock(session_mutex_);
   if (session_ != nullptr) {
     session_->stop();

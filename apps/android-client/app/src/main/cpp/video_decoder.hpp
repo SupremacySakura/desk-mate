@@ -85,6 +85,7 @@ class VideoDecoder {
   AMediaCodec* codec_{};
   ANativeWindow* window_{};
   DecoderConfig config_{};
+  std::int64_t last_render_target_ns_{0};
   // MediaCodec emits nothing until it sees an IDR after configure/flush.
   std::atomic<bool> awaiting_keyframe_{true};
   std::shared_ptr<Counters> counters_;

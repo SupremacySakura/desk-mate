@@ -238,6 +238,7 @@ bool VideoDecoder::DestroyCodec()
     codec_ = nullptr;
     surface_set_ = false;
     native_window_ = nullptr;
+    last_render_target_ns_ = 0;
     {
         std::lock_guard lock(mutex_);
         queued_.clear();
@@ -277,6 +278,7 @@ bool VideoDecoder::Open(const DecoderConfig &config, void *native_window)
         last_error_.clear();
         stop_control_ = false;
         waiting_for_keyframe_ = false;
+        last_render_target_ns_ = 0;
     }
     open_.store(true, std::memory_order_release);
     control_thread_ = std::thread([this] { ControlLoop(); });
@@ -466,10 +468,23 @@ void VideoDecoder::DrainEventsAndPump()
                 break;
             }
             case Event::Kind::OutputReady: {
-                // Timestamped render lets the display drop frames on its own
-                // when we run ahead of the panel, instead of blocking.
-                const OH_AVErrCode result = OH_VideoDecoder_RenderOutputBufferAtTime(
-                    codec_, event.index, NowNs());
+                // Keep output spacing bounded against sub-frame USB bursts so
+                // two decoded frames do not collapse into the same panel VSync.
+                const std::int64_t now_ns = NowNs();
+                const std::int64_t period_ns =
+                    1'000'000'000LL / std::max<std::int32_t>(30, config_.frame_rate);
+                const std::int64_t min_step_ns = (period_ns * 65) / 100;
+                std::int64_t target_ns = now_ns;
+                if (last_render_target_ns_ > 0 &&
+                    target_ns < last_render_target_ns_ + min_step_ns) {
+                    target_ns =
+                        std::min(last_render_target_ns_ + min_step_ns,
+                                 now_ns + period_ns);
+                }
+                last_render_target_ns_ = target_ns;
+                const OH_AVErrCode result =
+                    OH_VideoDecoder_RenderOutputBufferAtTime(
+                        codec_, event.index, target_ns);
                 if (result != AV_ERR_OK) {
                     NoteResult("OH_VideoDecoder_RenderOutputBufferAtTime", result);
                     std::lock_guard lock(mutex_);

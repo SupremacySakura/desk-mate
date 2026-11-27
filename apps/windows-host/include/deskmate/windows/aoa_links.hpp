@@ -86,6 +86,7 @@ class LinkSession {
   }
 
   [[nodiscard]] virtual bool has_pending_output() const { return false; }
+  [[nodiscard]] virtual bool video_congested() const { return false; }
   [[nodiscard]] virtual bool is_terminal() const { return false; }
   [[nodiscard]] virtual std::string failure_reason() const { return {}; }
   [[nodiscard]] virtual std::string transport_last_error() const { return {}; }

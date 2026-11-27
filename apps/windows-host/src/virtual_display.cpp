@@ -8,6 +8,7 @@
 #include <cctype>
 #include <cstdlib>
 #include <cstring>
+#include <cwchar>
 #include <limits>
 #include <unordered_set>
 
@@ -20,6 +21,7 @@
 #endif
 #include <windows.h>
 #include <setupapi.h>
+#include <shellapi.h>
 #endif
 
 namespace deskmate::windows {
@@ -129,7 +131,39 @@ bool parsec_vdd_ioctl(HANDLE handle, DWORD code, const void* data,
 // mode we want the next created display to expose. The driver only reads this
 // table at load time and on VDD_IOCTL_ADD, which is why the write has to
 // happen before the add rather than after it.
-// HKLM needs administrator rights; report that instead of failing quietly.
+// HKLM needs administrator rights; check existing values first and request a
+// single hidden elevated helper run only when the slot actually differs.
+bool query_parsec_custom_resolution_matches(int width, int height,
+                                            int refresh_hz) {
+  if (width <= 0 || height <= 0 || refresh_hz <= 0) {
+    return false;
+  }
+  HKEY key = nullptr;
+  if (RegOpenKeyExW(HKEY_LOCAL_MACHINE, L"SOFTWARE\\Parsec\\vdd\\0", 0,
+                    KEY_QUERY_VALUE, &key) != ERROR_SUCCESS ||
+      key == nullptr) {
+    return false;
+  }
+  auto read_dword = [key](const wchar_t* name, DWORD& value) -> bool {
+    DWORD type = 0;
+    DWORD size = sizeof(value);
+    return RegQueryValueExW(key, name, nullptr, &type,
+                            reinterpret_cast<BYTE*>(&value), &size) ==
+               ERROR_SUCCESS &&
+           type == REG_DWORD && size == sizeof(value);
+  };
+  DWORD w = 0;
+  DWORD h = 0;
+  DWORD hz = 0;
+  const bool ok = read_dword(L"width", w) && read_dword(L"height", h) &&
+                  read_dword(L"hz", hz) &&
+                  w == static_cast<DWORD>(width) &&
+                  h == static_cast<DWORD>(height) &&
+                  hz == static_cast<DWORD>(refresh_hz);
+  RegCloseKey(key);
+  return ok;
+}
+
 bool register_parsec_custom_resolution(int width, int height, int refresh_hz,
                                        std::string& error) {
   error.clear();
@@ -137,35 +171,57 @@ bool register_parsec_custom_resolution(int width, int height, int refresh_hz,
     error = "Parsec VDD 自定义分辨率参数无效";
     return false;
   }
-  const std::wstring path = L"SOFTWARE\\Parsec\\vdd\\0";
-  HKEY key = nullptr;
-  const LONG rc = RegCreateKeyExW(HKEY_LOCAL_MACHINE, path.c_str(), 0, nullptr,
-                                  REG_OPTION_NON_VOLATILE, KEY_SET_VALUE,
-                                  nullptr, &key, nullptr);
-  if (rc != ERROR_SUCCESS || key == nullptr) {
-    error =
-        "无法写入 HKLM\\SOFTWARE\\Parsec\\vdd\\0（需要管理员权限），"
-        "当前刷新率可能未被虚拟屏驱动接受";
-    return false;
+  if (query_parsec_custom_resolution_matches(width, height, refresh_hz)) {
+    return true;
   }
-  const DWORD w = static_cast<DWORD>(width);
-  const DWORD h = static_cast<DWORD>(height);
-  const DWORD hz = static_cast<DWORD>(refresh_hz);
-  const LONG w_rc = RegSetValueExW(key, L"width", 0, REG_DWORD,
-                                   reinterpret_cast<const BYTE*>(&w), sizeof(w));
-  const LONG h_rc =
-      RegSetValueExW(key, L"height", 0, REG_DWORD,
-                     reinterpret_cast<const BYTE*>(&h), sizeof(h));
-  const LONG hz_rc =
-      RegSetValueExW(key, L"hz", 0, REG_DWORD,
-                     reinterpret_cast<const BYTE*>(&hz), sizeof(hz));
-  RegCloseKey(key);
-  if (w_rc != ERROR_SUCCESS || h_rc != ERROR_SUCCESS ||
-      hz_rc != ERROR_SUCCESS) {
-    error = "写入 Parsec VDD 自定义分辨率失败（需要管理员权限）";
-    return false;
+  if (write_parsec_custom_mode_direct(width, height, refresh_hz, error)) {
+    return true;
   }
-  return true;
+
+  struct ElevatedAttemptKey {
+    int w{};
+    int h{};
+    int hz{};
+  };
+  static std::mutex s_elevate_mutex;
+  static ElevatedAttemptKey s_last_elevate_attempt{};
+  {
+    std::lock_guard elock(s_elevate_mutex);
+    if (s_last_elevate_attempt.w == width &&
+        s_last_elevate_attempt.h == height &&
+        s_last_elevate_attempt.hz == refresh_hz) {
+      return false;
+    }
+    s_last_elevate_attempt = {width, height, refresh_hz};
+  }
+
+  wchar_t exe_path[MAX_PATH]{};
+  const DWORD exe_len = GetModuleFileNameW(
+      nullptr, exe_path, static_cast<DWORD>(std::size(exe_path)));
+  if (exe_len > 0 && exe_len < std::size(exe_path)) {
+    wchar_t params[128]{};
+    std::swprintf(params, std::size(params),
+                  L"--register-parsec-mode %d %d %d", width, height,
+                  refresh_hz);
+    SHELLEXECUTEINFOW sei{};
+    sei.cbSize = sizeof(sei);
+    sei.fMask = SEE_MASK_NOCLOSEPROCESS;
+    sei.lpVerb = L"runas";
+    sei.lpFile = exe_path;
+    sei.lpParameters = params;
+    sei.nShow = SW_HIDE;
+    if (ShellExecuteExW(&sei)) {
+      if (sei.hProcess != nullptr) {
+        (void)WaitForSingleObject(sei.hProcess, 15000);
+        CloseHandle(sei.hProcess);
+      }
+      if (query_parsec_custom_resolution_matches(width, height, refresh_hz)) {
+        error.clear();
+        return true;
+      }
+    }
+  }
+  return false;
 }
 
 bool send_mtt_vdd_command(const std::string& command, std::string& response) {
@@ -262,6 +318,49 @@ int apply_best_mode_for_monitor(std::uintptr_t monitor_handle, int target_w,
 #endif
 
 }  // namespace
+
+bool write_parsec_custom_mode_direct(int width, int height, int refresh_hz,
+                                     std::string& error) {
+  error.clear();
+  if (width <= 0 || height <= 0 || refresh_hz <= 0) {
+    error = "Parsec VDD 自定义分辨率参数无效";
+    return false;
+  }
+#ifdef _WIN32
+  const std::wstring path = L"SOFTWARE\\Parsec\\vdd\\0";
+  HKEY key = nullptr;
+  const LONG rc = RegCreateKeyExW(HKEY_LOCAL_MACHINE, path.c_str(), 0, nullptr,
+                                  REG_OPTION_NON_VOLATILE, KEY_SET_VALUE,
+                                  nullptr, &key, nullptr);
+  if (rc != ERROR_SUCCESS || key == nullptr) {
+    error =
+        "无法写入 HKLM\\SOFTWARE\\Parsec\\vdd\\0（需要管理员权限），"
+        "当前刷新率可能未被虚拟屏驱动接受";
+    return false;
+  }
+  const DWORD w = static_cast<DWORD>(width);
+  const DWORD h = static_cast<DWORD>(height);
+  const DWORD hz = static_cast<DWORD>(refresh_hz);
+  const LONG w_rc = RegSetValueExW(key, L"width", 0, REG_DWORD,
+                                   reinterpret_cast<const BYTE*>(&w), sizeof(w));
+  const LONG h_rc =
+      RegSetValueExW(key, L"height", 0, REG_DWORD,
+                     reinterpret_cast<const BYTE*>(&h), sizeof(h));
+  const LONG hz_rc =
+      RegSetValueExW(key, L"hz", 0, REG_DWORD,
+                     reinterpret_cast<const BYTE*>(&hz), sizeof(hz));
+  RegCloseKey(key);
+  if (w_rc != ERROR_SUCCESS || h_rc != ERROR_SUCCESS ||
+      hz_rc != ERROR_SUCCESS) {
+    error = "写入 Parsec VDD 自定义分辨率失败（需要管理员权限）";
+    return false;
+  }
+  return true;
+#else
+  error = "non-Windows stub";
+  return false;
+#endif
+}
 
 bool is_virtual_display_adapter_name(const std::string& friendly_name) {
   const std::string low = to_lower_ascii(friendly_name);

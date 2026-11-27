@@ -53,7 +53,7 @@ int resolve_advertised_refresh_hz(int preferred_hz, bool explicit_fallback,
 }
 
 int resolve_idle_keepalive_hz(int effective_hz) noexcept {
-  return std::clamp(std::min(60, effective_hz), 1, 60);
+  return std::clamp(effective_hz, 1, 240);
 }
 
 std::uint32_t compute_idle_acquire_wait_ms(std::int64_t now_us,
@@ -83,7 +83,7 @@ FramePacer::FramePacer(int fps)
 std::int64_t FramePacer::next_deadline_us(
     std::int64_t submitted_at_us) noexcept {
   if (next_deadline_us_ < 0 ||
-      submitted_at_us - next_deadline_us_ >= period_us_ * 4) {
+      submitted_at_us - next_deadline_us_ >= period_us_) {
     next_deadline_us_ = submitted_at_us;
   }
   next_deadline_us_ += period_us_;
@@ -211,6 +211,16 @@ constexpr GUID kCodecApiCommonBufferSize = {
     0xb6a4,
     0x4c8b,
     {0x81, 0x06, 0x37, 0x73, 0xde, 0x03, 0x10, 0xcd}};
+constexpr GUID kCodecApiCommonRealTime = {
+    0x143a0ff6,
+    0xa131,
+    0x43da,
+    {0xb8, 0x1e, 0x98, 0xfb, 0xb8, 0xec, 0x37, 0x8e}};
+constexpr GUID kCodecApiVideoMaxNumRefFrame = {
+    0x964829ed,
+    0x94f9,
+    0x43b4,
+    {0xb7, 0x4d, 0xef, 0x40, 0x94, 0x4b, 0x69, 0xa0}};
 constexpr GUID kMftFriendlyNameAttr = {
     0x314ffbae,
     0x5b41,
@@ -573,7 +583,14 @@ class DxgiCaptureEncoder final : public CaptureEncoder {
     cached_cursor_hotspot_ = {};
     cached_cursor_valid_ = false;
     has_valid_vp_input_ = false;
+    vp_frame_unencoded_ = false;
     has_latest_nv12_ = false;
+    latest_nv12_dirty_ = false;
+    last_rendered_slot_ = -1;
+    encode_pts_index_ = 0;
+    submitted_timestamps_us_.clear();
+    last_emitted_timestamp_us_ = 0;
+    need_input_count_.store(0, std::memory_order_release);
     prev_cursor_patch_rect_ = {};
     has_prev_cursor_patch_ = false;
 
@@ -622,6 +639,10 @@ class DxgiCaptureEncoder final : public CaptureEncoder {
   void request_keyframe() override {
     force_keyframe_.store(true, std::memory_order_release);
     signal_work();
+  }
+
+  void set_congestion_probe(std::function<bool()> is_congested) override {
+    is_congested_ = std::move(is_congested);
   }
 
   void stop() override {
@@ -704,6 +725,9 @@ class DxgiCaptureEncoder final : public CaptureEncoder {
     }
     latest_nv12_.Reset();
     has_latest_nv12_ = false;
+    latest_nv12_dirty_ = false;
+    last_rendered_slot_ = -1;
+    vp_frame_unencoded_ = false;
     transient_gpu_texture_.Reset();
     processor_.Reset();
     enumerator_.Reset();
@@ -867,7 +891,9 @@ class DxgiCaptureEncoder final : public CaptureEncoder {
     is_async_mft_ = false;
     d3d11_encoder_aware_.store(false, std::memory_order_release);
     capture_gpu_enabled_.store(false, std::memory_order_release);
-    need_input_count_ = 0;
+    need_input_count_.store(0, std::memory_order_release);
+    encode_pts_index_ = 0;
+    submitted_timestamps_us_.clear();
   }
 
   bool try_activate_encoder(IMFActivate* activate, std::string& error) {
@@ -981,6 +1007,16 @@ class DxgiCaptureEncoder final : public CaptureEncoder {
       v.ulVal = static_cast<ULONG>(
           static_cast<std::uint64_t>(target_bitrate) / 32ULL);
       (void)codec_api_->SetValue(&kCodecApiCommonBufferSize, &v);
+
+      VariantInit(&v);
+      v.vt = VT_BOOL;
+      v.boolVal = VARIANT_TRUE;
+      (void)codec_api_->SetValue(&kCodecApiCommonRealTime, &v);
+
+      VariantInit(&v);
+      v.vt = VT_UI4;
+      v.ulVal = 1;
+      (void)codec_api_->SetValue(&kCodecApiVideoMaxNumRefFrame, &v);
     };
 
     apply_codec_api_pre_type(bitrate);
@@ -1100,276 +1136,170 @@ class DxgiCaptureEncoder final : public CaptureEncoder {
     const HRESULT com_hr = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
     const bool com_owned = SUCCEEDED(com_hr);
 
-    auto last_static_submit =
-        std::chrono::steady_clock::now() - std::chrono::seconds(1);
     const int effective_hz =
         std::max<int>(1, std::min<int>(
                                options_.refresh_hz,
                                encoder_fps_.load(std::memory_order_acquire)));
-    const bool vsync_paced =
-        (monitor_refresh_hz_ > 0 && monitor_refresh_hz_ <= effective_hz + 2);
-    const int paced_hz = std::clamp(effective_hz, 1, 240);
+    const int paced_hz =
+        std::clamp(resolve_idle_keepalive_hz(effective_hz), 1, 240);
     FramePacer pacer(paced_hz);
-    std::int64_t next_submit_deadline_us = 0;
     const std::int64_t frame_period_us = 1'000'000LL / paced_hz;
-    // Steady-state idle keepalive runs at min(60 Hz, effective_hz) so static
-    // desktops stay smooth without colliding with real DWM frames (which track
-    // last_real_encode_us independently) and never evict real frames from
-    // pending_frames_.
-    const int idle_hz = resolve_idle_keepalive_hz(paced_hz);
-    const std::int64_t idle_period_us = (1'000'000LL + idle_hz / 2) / idle_hz;
-    std::int64_t next_idle_deadline_us = 0;
-    auto reset_idle_deadline_after_active = [&](std::int64_t now_i64) {
-      next_idle_deadline_us = now_i64 + idle_period_us;
-    };
-    auto advance_idle_deadline_from_idle = [&](std::int64_t now_i64) {
-      if (next_idle_deadline_us <= 0 ||
-          now_i64 - next_idle_deadline_us >= idle_period_us) {
-        next_idle_deadline_us = now_i64 + idle_period_us;
-      } else {
-        next_idle_deadline_us += idle_period_us;
-      }
-    };
-    std::int64_t last_real_encode_us = 0;
-    std::int64_t last_any_encode_us = 0;
+    const std::int64_t min_frame_interval_us = (frame_period_us * 92) / 100;
+    std::int64_t next_tick_us = 0;
+    std::int64_t last_submit_us = 0;
     bool cursor_dirty = false;
 
     while (running_.load(std::memory_order_acquire)) {
+      if (next_tick_us > 0) {
+        wait_until_us(next_tick_us);
+        if (!running_.load(std::memory_order_acquire)) {
+          break;
+        }
+      }
+
+      const auto now_us = current_time_us();
+      const auto now_i64 = static_cast<std::int64_t>(now_us);
+      next_tick_us = pacer.next_deadline_us(now_i64);
+
+      const bool need_immediate =
+          encoded_frames_.load(std::memory_order_relaxed) == 0 ||
+          force_keyframe_.load(std::memory_order_acquire);
+      const bool spacing_ok =
+          last_submit_us == 0 ||
+          (now_i64 - last_submit_us) >= min_frame_interval_us;
+      const bool congested =
+          !need_immediate &&
+          ((is_congested_ && is_congested_()) ||
+           (is_async_mft_ &&
+            need_input_count_.load(std::memory_order_acquire) <= 0 &&
+            !pending_frames_.empty()));
+
       if (gdi_fallback_mode_) {
-        const auto now_us = current_time_us();
-        wait_until_us(pacer.next_deadline_us(now_us));
         capture_gdi_fallback();
-        if (!last_nv12_.empty()) {
+        if (!last_nv12_.empty() && !congested &&
+            (need_immediate || spacing_ok)) {
           received_frames_.fetch_add(1, std::memory_order_relaxed);
-          const auto timestamp =
-              std::chrono::duration_cast<std::chrono::microseconds>(
-                  std::chrono::steady_clock::now().time_since_epoch())
-                  .count();
-          submit_nv12(last_nv12_, static_cast<std::uint64_t>(timestamp));
+          submit_nv12(last_nv12_, now_us);
+          last_submit_us = now_i64;
         }
         continue;
       }
 
       if (duplication_ == nullptr) {
-        if (encoded_frames_.load(std::memory_order_relaxed) == 0) {
-          const auto now = std::chrono::steady_clock::now();
-          if ((now - last_static_submit) >= std::chrono::milliseconds(150)) {
-            const auto now_us = static_cast<std::uint64_t>(
-                std::chrono::duration_cast<std::chrono::microseconds>(
-                    now.time_since_epoch())
-                    .count());
-            if (submit_cached_frame(now_us)) {
-              const auto now_i64 = static_cast<std::int64_t>(now_us);
-              last_any_encode_us = now_i64;
-              last_static_submit = now;
-              reset_idle_deadline_after_active(now_i64);
-            }
-          }
-        }
-        (void)wait_for_capture(50);
         (void)reopen_duplication();
-        continue;
-      }
-
-      // When capturing a higher-refresh physical monitor (e.g. 180/240 Hz) for
-      // a 90/120 Hz stream, pace BEFORE AcquireNextFrame so DXGI accumulates
-      // intermediate updates instead of throwing frames away after acquire.
-      if (!vsync_paced && next_submit_deadline_us > 0 &&
-          !force_keyframe_.load(std::memory_order_acquire) &&
-          encoded_frames_.load(std::memory_order_relaxed) > 0) {
-        wait_until_us(next_submit_deadline_us - 500);
-      }
-
-      const bool urgent_retry =
-          encoded_frames_.load(std::memory_order_relaxed) == 0 ||
-          force_keyframe_.load(std::memory_order_acquire);
-      const UINT wait_ms = static_cast<UINT>(compute_idle_acquire_wait_ms(
-          static_cast<std::int64_t>(current_time_us()), next_idle_deadline_us,
-          urgent_retry));
-      if (wait_ms == 0U && !urgent_retry && next_idle_deadline_us > 0) {
-        wait_until_us(next_idle_deadline_us);
-      }
-      DXGI_OUTDUPL_FRAME_INFO info{};
-      ComPtr<IDXGIResource> resource;
-      const HRESULT hr =
-          duplication_->AcquireNextFrame(wait_ms, &info, &resource);
-      if (hr == DXGI_ERROR_WAIT_TIMEOUT) {
-        const auto now = std::chrono::steady_clock::now();
-        const auto now_us = static_cast<std::uint64_t>(
-            std::chrono::duration_cast<std::chrono::microseconds>(
-                now.time_since_epoch())
-                .count());
-        const auto now_i64 = static_cast<std::int64_t>(now_us);
-        if (poll_cursor_changed()) {
-          cursor_dirty = true;
-        }
-        if (cursor_dirty &&
-            (last_any_encode_us == 0 ||
-             now_i64 - last_any_encode_us >= frame_period_us) &&
-            encode_cursor_only_frame(now_us)) {
-          cursor_dirty = false;
-          last_any_encode_us = now_i64;
-          last_static_submit = now;
-          reset_idle_deadline_after_active(now_i64);
+        if (duplication_ == nullptr) {
+          if (!congested && (need_immediate || spacing_ok) &&
+              submit_cached_frame(now_us)) {
+            last_submit_us = now_i64;
+          }
           continue;
         }
-        const auto encoded_so_far =
-            encoded_frames_.load(std::memory_order_relaxed);
-        const bool need_initial_or_idr =
-            encoded_so_far == 0 ||
-            force_keyframe_.load(std::memory_order_acquire);
-        const auto static_retry_interval =
-            force_keyframe_.load(std::memory_order_acquire) &&
-                    encoded_so_far > 0
-                ? std::chrono::milliseconds(25)
-                : std::chrono::milliseconds(150);
-        if (need_initial_or_idr &&
-            (now - last_static_submit) >= static_retry_interval) {
-          if (submit_cached_frame(now_us)) {
-            last_any_encode_us = now_i64;
-            last_static_submit = now;
-            reset_idle_deadline_after_active(now_i64);
+      }
+
+      const bool no_cached_frame =
+          (!capture_gpu_enabled_.load(std::memory_order_acquire) ||
+           (!has_valid_vp_input_ && !has_latest_nv12_ && !has_cached_slot())) &&
+          last_nv12_.empty();
+      const UINT wait_ms =
+          (encoded_frames_.load(std::memory_order_relaxed) == 0 &&
+           no_cached_frame)
+              ? 4U
+              : 0U;
+
+      DXGI_OUTDUPL_FRAME_INFO info{};
+      ComPtr<IDXGIResource> resource;
+      HRESULT hr = duplication_->AcquireNextFrame(wait_ms, &info, &resource);
+      bool got_image = false;
+      if (SUCCEEDED(hr)) {
+        got_image =
+            (info.LastPresentTime.QuadPart != 0 || info.AccumulatedFrames > 0);
+        if (!got_image) {
+          if (poll_cursor_changed()) {
+            cursor_dirty = true;
           }
-        } else if (!need_initial_or_idr && encoded_so_far > 0 &&
-                   pending_frames_.empty()) {
-          if (encoded_so_far < 4) {
-            if (last_any_encode_us == 0 ||
-                (now_i64 - last_any_encode_us) >= frame_period_us) {
-              if (submit_cached_frame(now_us)) {
-                last_any_encode_us = now_i64;
-                last_static_submit = now;
-                reset_idle_deadline_after_active(now_i64);
+          resource.Reset();
+          duplication_->ReleaseFrame();
+          info = {};
+          hr = duplication_->AcquireNextFrame(0U, &info, &resource);
+          if (SUCCEEDED(hr)) {
+            got_image = (info.LastPresentTime.QuadPart != 0 ||
+                         info.AccumulatedFrames > 0);
+            if (!got_image) {
+              if (poll_cursor_changed()) {
+                cursor_dirty = true;
               }
-            }
-          } else if (next_idle_deadline_us <= 0 ||
-                     now_i64 + 750 >= next_idle_deadline_us) {
-            if (submit_cached_frame(now_us)) {
-              last_any_encode_us = now_i64;
-              last_static_submit = now;
-              advance_idle_deadline_from_idle(now_i64);
+              resource.Reset();
+              duplication_->ReleaseFrame();
             }
           }
         }
-        continue;
       }
+
       if (hr == DXGI_ERROR_ACCESS_LOST) {
         duplication_.Reset();
+        (void)reopen_duplication();
+        if (!congested && (need_immediate || spacing_ok) &&
+            submit_cached_frame(now_us)) {
+          last_submit_us = now_i64;
+        }
         continue;
       }
-      if (FAILED(hr)) {
+      if (FAILED(hr) && hr != DXGI_ERROR_WAIT_TIMEOUT) {
         // Fallback cleanly to GDI capture if DXGI duplication fails mid-stream.
         duplication_.Reset();
         gdi_fallback_mode_ = true;
         continue;
       }
-      const bool has_image =
-          (info.LastPresentTime.QuadPart != 0 || info.AccumulatedFrames > 0);
-      if (!has_image) {
-        if (poll_cursor_changed()) {
-          cursor_dirty = true;
-        }
-        duplication_->ReleaseFrame();
-        const auto now = std::chrono::steady_clock::now();
-        const auto now_us = static_cast<std::uint64_t>(
-            std::chrono::duration_cast<std::chrono::microseconds>(
-                now.time_since_epoch())
-                .count());
-        const auto now_i64 = static_cast<std::int64_t>(now_us);
-        if (cursor_dirty &&
-            (last_any_encode_us == 0 ||
-             now_i64 - last_any_encode_us >= frame_period_us) &&
-            encode_cursor_only_frame(now_us)) {
-          cursor_dirty = false;
-          last_any_encode_us = now_i64;
-          last_static_submit = now;
-          reset_idle_deadline_after_active(now_i64);
-          continue;
-        }
-        const bool no_cached_frame =
-            (!capture_gpu_enabled_.load(std::memory_order_acquire) ||
-             (!has_latest_nv12_ && !has_cached_slot())) &&
-            last_nv12_.empty();
-        const auto encoded_so_far =
-            encoded_frames_.load(std::memory_order_relaxed);
-        const auto static_retry_interval =
-            force_keyframe_.load(std::memory_order_acquire) &&
-                    encoded_so_far > 0
-                ? std::chrono::milliseconds(25)
-                : std::chrono::milliseconds(150);
-        if (no_cached_frame ||
-            ((encoded_so_far == 0 ||
-              force_keyframe_.load(std::memory_order_acquire)) &&
-             (now - last_static_submit) >= static_retry_interval)) {
-          if (submit_cached_frame(now_us)) {
-            last_any_encode_us = now_i64;
-            last_static_submit = now;
-            reset_idle_deadline_after_active(now_i64);
-          }
-        } else if (encoded_so_far > 0 && pending_frames_.empty()) {
-          if (encoded_so_far < 4) {
-            if (last_any_encode_us == 0 ||
-                (now_i64 - last_any_encode_us) >= frame_period_us) {
-              if (submit_cached_frame(now_us)) {
-                last_any_encode_us = now_i64;
-                last_static_submit = now;
-                reset_idle_deadline_after_active(now_i64);
-              }
-            }
-          } else if (next_idle_deadline_us <= 0 ||
-                     now_i64 + 750 >= next_idle_deadline_us) {
-            if (submit_cached_frame(now_us)) {
-              last_any_encode_us = now_i64;
-              last_static_submit = now;
-              advance_idle_deadline_from_idle(now_i64);
-            }
-          }
-        }
-        continue;
-      }
 
-      const auto now = std::chrono::steady_clock::now();
-      const auto now_us = static_cast<std::uint64_t>(
-          std::chrono::duration_cast<std::chrono::microseconds>(
-              now.time_since_epoch())
-              .count());
-      const auto now_i64 = static_cast<std::int64_t>(now_us);
-      const bool need_immediate =
-          encoded_frames_.load(std::memory_order_relaxed) == 0 ||
-          force_keyframe_.load(std::memory_order_acquire);
-      // When the virtual display itself runs at the negotiated refresh rate
-      // (vsync_paced), encode every real DWM frame directly without dropping on
-      // minor VSync jitter. Only cap bursts on faster physical monitors.
-      if (!need_immediate && !vsync_paced && last_real_encode_us != 0 &&
-          (now_i64 - last_real_encode_us) < (frame_period_us * 65) / 100) {
+      if (got_image) {
+        (void)poll_cursor_changed();
+        ComPtr<ID3D11Texture2D> texture;
+        D3D11_TEXTURE2D_DESC src_desc{};
+        bool used_gpu_vp = false;
+        bool copied = false;
+        if (SUCCEEDED(resource.As(&texture)) && texture != nullptr) {
+          received_frames_.fetch_add(1, std::memory_order_relaxed);
+          copied = copy_source_for_readback(texture.Get(), src_desc, used_gpu_vp);
+        }
+        // Release the DXGI frame immediately after the GPU CopyResource so DWM is
+        // never stalled while we run VideoProcessorBlt, readback Map, or MFT encode.
+        texture.Reset();
         resource.Reset();
         duplication_->ReleaseFrame();
-        wait_until_us(last_real_encode_us + frame_period_us);
+
+        if (copied) {
+          if (!congested && (need_immediate || spacing_ok)) {
+            if (encode_copied_frame(src_desc, used_gpu_vp, now_us)) {
+              vp_frame_unencoded_ = false;
+              cursor_dirty = false;
+              last_submit_us = now_i64;
+            } else if (used_gpu_vp) {
+              vp_frame_unencoded_ = true;
+            }
+          } else if (used_gpu_vp) {
+            vp_frame_unencoded_ = true;
+          }
+        }
         continue;
       }
 
-      (void)poll_cursor_changed();
-      ComPtr<ID3D11Texture2D> texture;
-      D3D11_TEXTURE2D_DESC src_desc{};
-      bool used_gpu_vp = false;
-      bool copied = false;
-      if (SUCCEEDED(resource.As(&texture)) && texture != nullptr) {
-        received_frames_.fetch_add(1, std::memory_order_relaxed);
-        copied = copy_source_for_readback(texture.Get(), src_desc, used_gpu_vp);
+      if (poll_cursor_changed()) {
+        cursor_dirty = true;
       }
-      // Release the DXGI frame immediately after the GPU CopyResource so DWM is
-      // never stalled while we run VideoProcessorBlt, readback Map, or MFT encode.
-      texture.Reset();
-      resource.Reset();
-      duplication_->ReleaseFrame();
-
-      if (copied && encode_copied_frame(src_desc, used_gpu_vp, now_us)) {
-        cursor_dirty = false;
-        last_real_encode_us = now_i64;
-        last_any_encode_us = now_i64;
-        last_static_submit = now;
-        reset_idle_deadline_after_active(now_i64);
+      if (!congested && (need_immediate || spacing_ok)) {
+        if (vp_frame_unencoded_ && has_valid_vp_input_) {
+          if (encode_copied_frame(last_vp_src_desc_, true, now_us)) {
+            vp_frame_unencoded_ = false;
+            cursor_dirty = false;
+            last_submit_us = now_i64;
+          }
+        } else if (cursor_dirty && encode_cursor_only_frame(now_us)) {
+          cursor_dirty = false;
+          last_submit_us = now_i64;
+        } else if (submit_cached_frame(now_us)) {
+          last_submit_us = now_i64;
+        }
       }
-      next_submit_deadline_us = pacer.next_deadline_us(now_i64);
     }
 
     if (com_owned) {
@@ -1388,28 +1318,38 @@ class DxgiCaptureEncoder final : public CaptureEncoder {
   }
 
   void wait_until_us(std::int64_t deadline_us) {
-    const auto remaining_us = std::max<std::int64_t>(
-        0, deadline_us - static_cast<std::int64_t>(current_time_us()));
+    constexpr std::int64_t kSpinLeadUs = 350;
+    const auto now_us = static_cast<std::int64_t>(current_time_us());
+    const auto remaining_us = deadline_us - now_us;
     if (remaining_us <= 0) {
       return;
     }
-    // WaitForSingleObject has ~15.6 ms resolution without a timer tick bump.
-    // At 120 Hz the whole frame budget is 8.3 ms, so pacing must use a
-    // high-resolution waitable timer and stay interruptible by stop().
-    if (pacing_timer_ == nullptr) {
-      std::this_thread::sleep_for(std::chrono::microseconds(remaining_us));
-      return;
+    const auto sleep_us = remaining_us - kSpinLeadUs;
+    if (sleep_us > 0) {
+      if (pacing_timer_ == nullptr) {
+        std::this_thread::sleep_for(std::chrono::microseconds(sleep_us));
+      } else {
+        LARGE_INTEGER due{};
+        due.QuadPart = -static_cast<LONGLONG>(sleep_us * 10);
+        if (!SetWaitableTimer(pacing_timer_.get(), &due, 0, nullptr, nullptr,
+                              FALSE)) {
+          std::this_thread::sleep_for(std::chrono::microseconds(sleep_us));
+        } else {
+          HANDLE handles[2]{pacing_timer_.get(), capture_wait_event_.get()};
+          const DWORD wait_rc = WaitForMultipleObjects(
+              2, handles, FALSE,
+              static_cast<DWORD>((sleep_us + 999) / 1000 + 2));
+          if (wait_rc == WAIT_OBJECT_0 + 1 ||
+              !running_.load(std::memory_order_acquire)) {
+            return;
+          }
+        }
+      }
     }
-    LARGE_INTEGER due{};
-    due.QuadPart = -static_cast<LONGLONG>(remaining_us * 10);
-    if (!SetWaitableTimer(pacing_timer_.get(), &due, 0, nullptr, nullptr,
-                          FALSE)) {
-      std::this_thread::sleep_for(std::chrono::microseconds(remaining_us));
-      return;
+    while (running_.load(std::memory_order_relaxed) &&
+           static_cast<std::int64_t>(current_time_us()) < deadline_us) {
+      YieldProcessor();
     }
-    HANDLE handles[2]{pacing_timer_.get(), capture_wait_event_.get()};
-    (void)WaitForMultipleObjects(2, handles, FALSE,
-                                 static_cast<DWORD>((remaining_us + 999) / 1000));
   }
 
   void signal_work() {
@@ -1611,6 +1551,9 @@ class DxgiCaptureEncoder final : public CaptureEncoder {
     }
     latest_nv12_.Reset();
     has_latest_nv12_ = false;
+    latest_nv12_dirty_ = false;
+    last_rendered_slot_ = -1;
+    vp_frame_unencoded_ = false;
     transient_gpu_texture_.Reset();
     readback_.Reset();
     vp_verified_ = false;
@@ -2565,12 +2508,16 @@ float4 main_ps(VSOut i) : SV_Target {
           }
         }
         if (direct_gpu) {
-          // Snapshot into dedicated GPU texture so idle keepalives can rotate
-          // through the 12-slot ring via pure VRAM CopyResource without
-          // stalling on MFT reference release of the previous input slot.
-          if (latest_nv12_ != nullptr) {
+          // Defer copying into latest_nv12_ until an idle tick actually needs
+          // it, avoiding an extra full-frame VRAM copy + lock contention on
+          // every active frame.
+          if (slot_index >= 0) {
+            last_rendered_slot_ = slot_index;
+            latest_nv12_dirty_ = true;
+          } else if (latest_nv12_ != nullptr) {
             device_context_->CopyResource(latest_nv12_.Get(), nv12);
             has_latest_nv12_ = true;
+            latest_nv12_dirty_ = false;
           }
           // Dispatch the GPU VideoProcessorBlt immediately before the MFT
           // worker thread consumes the NV12 surface on a separate thread.
@@ -2671,14 +2618,15 @@ float4 main_ps(VSOut i) : SV_Target {
       MediaEventType type = MEUnknown;
       if (SUCCEEDED(event->GetType(&type))) {
         if (type == METransformNeedInput) {
-          ++need_input_count_;
+          need_input_count_.fetch_add(1, std::memory_order_acq_rel);
         } else if (type == METransformHaveOutput) {
           // Drain first, retire second: the input texture is only guaranteed
           // to be free once ProcessOutput has handed the encoded sample back.
           // Retiring before the drain let the capture thread reuse a texture
           // the GPU was still reading.
-          drain_output(timestamp_us);
-          release_inflight_slot();
+          if (drain_output(timestamp_us)) {
+            release_inflight_slot();
+          }
         } else if (type == MEError) {
           HRESULT ev_hr = E_FAIL;
           (void)event->GetStatus(&ev_hr);
@@ -2731,6 +2679,8 @@ float4 main_ps(VSOut i) : SV_Target {
     submitted_frames_ = 0;
     first_submit_time_ = {};
     consecutive_process_input_errors_ = 0;
+    encode_pts_index_ = 0;
+    submitted_timestamps_us_.clear();
     reset_slot_bookkeeping();
     transient_gpu_texture_.Reset();
     force_keyframe_.store(true, std::memory_order_release);
@@ -2738,6 +2688,23 @@ float4 main_ps(VSOut i) : SV_Target {
   }
 
   bool submit_cached_frame(std::uint64_t now_us) {
+    if (capture_gpu_enabled_.load(std::memory_order_acquire) &&
+        !gpu_processor_failed_ && latest_nv12_dirty_ &&
+        latest_nv12_ != nullptr && last_rendered_slot_ >= 0) {
+      ComPtr<ID3D11Texture2D> src_tex;
+      {
+        std::lock_guard lock(pool_mutex_);
+        if (static_cast<std::size_t>(last_rendered_slot_) < nv12_pool_.size()) {
+          src_tex =
+              nv12_pool_[static_cast<std::size_t>(last_rendered_slot_)].texture;
+        }
+      }
+      if (src_tex != nullptr) {
+        device_context_->CopyResource(latest_nv12_.Get(), src_tex.Get());
+        has_latest_nv12_ = true;
+      }
+      latest_nv12_dirty_ = false;
+    }
     if (capture_gpu_enabled_.load(std::memory_order_acquire) &&
         !gpu_processor_failed_ && has_latest_nv12_ && latest_nv12_ != nullptr) {
       const int slot = acquire_nv12_slot();
@@ -2870,7 +2837,7 @@ float4 main_ps(VSOut i) : SV_Target {
 
     if (is_async_mft_) {
       pump_async_events(timestamp_us);
-      if (need_input_count_ == 0) {
+      if (need_input_count_.load(std::memory_order_acquire) <= 0) {
         if (force_keyframe_.load(std::memory_order_acquire) &&
             now - last_idr_retry_ >= std::chrono::milliseconds(120)) {
           last_idr_retry_ = now;
@@ -2902,6 +2869,16 @@ float4 main_ps(VSOut i) : SV_Target {
         (void)codec_api_->SetValue(&kCodecApiVideoForceKeyFrame, &v);
       }
     }
+
+    // Feed uniform synthetic 100ns SampleTime/Duration to the MFT so its rate
+    // controller / VBV leaky bucket never sees acquisition timer jitter, while
+    // keeping true capture timestamps in submitted_timestamps_us_ for the wire.
+    const int enc_fps =
+        std::max<int>(1, encoder_fps_.load(std::memory_order_acquire));
+    const LONGLONG dur_100ns = 10'000'000LL / enc_fps;
+    (void)sample->SetSampleTime(
+        static_cast<LONGLONG>(encode_pts_index_) * dur_100ns);
+    (void)sample->SetSampleDuration(dur_100ns);
 
     const HRESULT hr = encoder_->ProcessInput(0, sample, 0);
     if (FAILED(hr)) {
@@ -2938,6 +2915,11 @@ float4 main_ps(VSOut i) : SV_Target {
     }
     consecutive_process_input_errors_ = 0;
     ++submitted_frames_;
+    ++encode_pts_index_;
+    if (submitted_timestamps_us_.size() >= 32U) {
+      submitted_timestamps_us_.pop_front();
+    }
+    submitted_timestamps_us_.push_back(timestamp_us);
     if (is_async_mft_) {
       commit_inflight_slot(pool_slot);
     } else if (pool_slot >= 0) {
@@ -2945,8 +2927,10 @@ float4 main_ps(VSOut i) : SV_Target {
     }
 
     if (is_async_mft_) {
-      if (need_input_count_ > 0) {
-        --need_input_count_;
+      int cur_need = need_input_count_.load(std::memory_order_acquire);
+      while (cur_need > 0 &&
+             !need_input_count_.compare_exchange_weak(
+                 cur_need, cur_need - 1, std::memory_order_acq_rel)) {
       }
       pump_async_events(timestamp_us);
       if (encoded_frames_.load(std::memory_order_relaxed) == 0 &&
@@ -2955,30 +2939,31 @@ float4 main_ps(VSOut i) : SV_Target {
         (void)fallback_to_sync_encoder();
       }
     } else {
-      drain_output(timestamp_us);
+      (void)drain_output(timestamp_us);
     }
     return true;
   }
 
-  void drain_output(std::uint64_t timestamp_us) {
+  bool drain_output(std::uint64_t timestamp_us) {
     int stream_changes = 0;
+    bool produced_vcl = false;
     for (;;) {
       MFT_OUTPUT_STREAM_INFO info{};
       if (FAILED(encoder_->GetOutputStreamInfo(0, &info))) {
-        return;
+        return produced_vcl;
       }
       const bool mft_provides_samples =
           (info.dwFlags & MFT_OUTPUT_STREAM_PROVIDES_SAMPLES) != 0;
       ComPtr<IMFSample> sample;
       if (!mft_provides_samples) {
         if (FAILED(MFCreateSample(&sample)) || sample == nullptr) {
-          return;
+          return produced_vcl;
         }
         ComPtr<IMFMediaBuffer> buffer;
         if (FAILED(MFCreateMemoryBuffer(
                 std::max<DWORD>(info.cbSize, 64U * 1024U), &buffer)) ||
             buffer == nullptr) {
-          return;
+          return produced_vcl;
         }
         sample->AddBuffer(buffer.Get());
       }
@@ -3004,14 +2989,14 @@ float4 main_ps(VSOut i) : SV_Target {
           }
           continue;
         }
-        return;
+        return produced_vcl;
       }
       if (hr == MF_E_TRANSFORM_NEED_MORE_INPUT) {
-        return;
+        return produced_vcl;
       }
       if (FAILED(hr)) {
         last_encode_error_ = "ProcessOutput failed: " + hex_hr(hr);
-        return;
+        return produced_vcl;
       }
       ComPtr<IMFSample> produced;
       if (mft_provides_samples) {
@@ -3023,7 +3008,7 @@ float4 main_ps(VSOut i) : SV_Target {
         produced = sample;
       }
       if (produced == nullptr) {
-        return;
+        return produced_vcl;
       }
       ComPtr<IMFMediaBuffer> contiguous;
       produced->ConvertToContiguousBuffer(&contiguous);
@@ -3031,7 +3016,7 @@ float4 main_ps(VSOut i) : SV_Target {
       DWORD length = 0;
       if (contiguous == nullptr ||
           FAILED(contiguous->Lock(&data, nullptr, &length))) {
-        return;
+        return produced_vcl;
       }
       std::vector<std::uint8_t> raw(data, data + length);
       contiguous->Unlock();
@@ -3041,6 +3026,12 @@ float4 main_ps(VSOut i) : SV_Target {
           deskmate::platform::collect_parameter_sets(annex_b, options_.hevc);
       if (!inline_sets.empty()) {
         cached_param_sets_ = inline_sets;
+      }
+      if (!annex_b_has_vcl_nal(annex_b, options_.hevc)) {
+        if (is_async_mft_) {
+          return produced_vcl;
+        }
+        continue;
       }
 
       bool keyframe = false;
@@ -3060,13 +3051,19 @@ float4 main_ps(VSOut i) : SV_Target {
       }
 
       std::uint64_t out_timestamp_us = timestamp_us;
-      LONGLONG sample_time_100ns = 0;
-      if (SUCCEEDED(produced->GetSampleTime(&sample_time_100ns)) &&
-          sample_time_100ns >= 0) {
-        out_timestamp_us = static_cast<std::uint64_t>(sample_time_100ns / 10);
+      if (!submitted_timestamps_us_.empty()) {
+        out_timestamp_us = submitted_timestamps_us_.front();
+        submitted_timestamps_us_.pop_front();
+      } else if (out_timestamp_us == 0) {
+        out_timestamp_us = current_time_us();
       }
+      if (out_timestamp_us <= last_emitted_timestamp_us_) {
+        out_timestamp_us = last_emitted_timestamp_us_ + 1U;
+      }
+      last_emitted_timestamp_us_ = out_timestamp_us;
 
       encoded_frames_.fetch_add(1, std::memory_order_relaxed);
+      produced_vcl = true;
       EncodedAccessUnit unit;
       unit.annex_b = std::move(annex_b);
       unit.timestamp_us = out_timestamp_us;
@@ -3076,7 +3073,7 @@ float4 main_ps(VSOut i) : SV_Target {
       }
       if (is_async_mft_) {
         // Async MFT emits one METransformHaveOutput per output sample.
-        return;
+        return produced_vcl;
       }
     }
   }
@@ -3084,6 +3081,7 @@ float4 main_ps(VSOut i) : SV_Target {
   CaptureOptions options_{};
   FrameCallback on_frame_;
   FailureCallback on_failure_;
+  std::function<bool()> is_congested_;
   std::atomic<bool> running_{false};
   std::atomic<bool> force_keyframe_{true};
   std::atomic<std::uint64_t> encoded_frames_{0};
@@ -3100,12 +3098,15 @@ float4 main_ps(VSOut i) : SV_Target {
   int vp_zero_frames_{0};
   bool gdi_fallback_mode_{false};
   bool sync_fallback_attempted_{false};
-  int need_input_count_{0};
+  std::atomic<int> need_input_count_{0};
   std::atomic<int> encoder_fps_{60};
-  int monitor_refresh_hz_{0};
+  [[maybe_unused]] int monitor_refresh_hz_{0};
   int submitted_frames_{0};
   int consecutive_process_input_errors_{0};
   std::chrono::steady_clock::time_point first_submit_time_{};
+  std::uint64_t encode_pts_index_{0};
+  std::deque<std::uint64_t> submitted_timestamps_us_;
+  std::uint64_t last_emitted_timestamp_us_{0};
   mutable std::mutex name_mutex_;
   std::string encoder_name_;
   std::string last_encode_error_;
@@ -3113,7 +3114,7 @@ float4 main_ps(VSOut i) : SV_Target {
   RECT monitor_rect_{};
   std::thread capture_thread_;
   std::thread encoder_thread_;
-  LatestFrameQueue<PendingFrame, 2> pending_frames_;
+  LatestFrameQueue<PendingFrame, 1> pending_frames_;
   struct EventHandleDeleter {
     void operator()(void* handle) const {
       if (handle != nullptr && handle != INVALID_HANDLE_VALUE) {
@@ -3145,6 +3146,7 @@ float4 main_ps(VSOut i) : SV_Target {
   ComPtr<ID3D11Texture2D> vp_input_;
   D3D11_TEXTURE2D_DESC last_vp_src_desc_{};
   bool has_valid_vp_input_{false};
+  bool vp_frame_unencoded_{false};
   static constexpr UINT kCursorPatchSize = 128;
   ComPtr<ID3D11Texture2D> cursor_backup_;
   ComPtr<ID3D11Texture2D> cursor_sprite_;
@@ -3182,6 +3184,8 @@ float4 main_ps(VSOut i) : SV_Target {
   std::chrono::steady_clock::time_point pool_starved_since_{};
   ComPtr<ID3D11Texture2D> latest_nv12_;
   bool has_latest_nv12_{false};
+  bool latest_nv12_dirty_{false};
+  int last_rendered_slot_{-1};
   ComPtr<ID3D11Texture2D> transient_gpu_texture_;
   bool pool_ready_{false};
   ComPtr<ID3D11Texture2D> readback_;

@@ -2,6 +2,7 @@
 #include "deskmate/windows/host_controller.hpp"
 #include "deskmate/windows/studio_ui.hpp"
 #include "deskmate/windows/updater.hpp"
+#include "deskmate/windows/virtual_display.hpp"
 
 #include <chrono>
 #include <cstdio>
@@ -72,6 +73,18 @@ void print_usage() {
 }
 
 int run_deskmate_host(int argc, char** argv) {
+  for (int index = 1; index < argc; ++index) {
+    if (std::string(argv[index]) == "--register-parsec-mode" &&
+        index + 3 < argc) {
+      const int w = std::atoi(argv[index + 1]);
+      const int h = std::atoi(argv[index + 2]);
+      const int hz = std::atoi(argv[index + 3]);
+      std::string err;
+      return deskmate::windows::write_parsec_custom_mode_direct(w, h, hz, err)
+                 ? 0
+                 : 1;
+    }
+  }
   bool show_help = false;
   const auto options = parse_options(argc, argv, show_help);
   if (show_help) {

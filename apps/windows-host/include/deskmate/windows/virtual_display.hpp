@@ -44,6 +44,11 @@ struct DisplayModeCandidate {
     const std::vector<DisplayModeCandidate>& modes, int target_w, int target_h,
     int target_hz);
 
+// Writes a custom Parsec VDD mode slot directly to HKLM\SOFTWARE\Parsec\vdd\0.
+// Used both in-process (when elevated) and by `--register-parsec-mode`.
+bool write_parsec_custom_mode_direct(int width, int height, int refresh_hz,
+                                     std::string& error);
+
 // Manages programmatic virtual extended monitors on Windows using installed IddCx
 // user-mode bridges (Parsec Virtual Display Driver via IOCTLs and MttVDD /
 // Virtual-Display-Driver via MTTVirtualDisplayPipe), plus DisplayConfig extend

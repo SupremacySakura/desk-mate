@@ -1105,6 +1105,10 @@ struct HostSession::Impl final : EndpointCore {
     return !scheduler_.idle();
   }
 
+  [[nodiscard]] std::size_t pending_video_bytes() const {
+    return scheduler_.pending_video_bytes();
+  }
+
   SessionCommandStatus pause() {
     if (state() != SessionState::Streaming || !negotiated_stream().has_value()) {
       if (state() == SessionState::Paused) {
@@ -2751,6 +2755,9 @@ const std::optional<SchedulerIdrRequest>& HostSession::pending_idr_request()
 }
 bool HostSession::has_pending_output() const {
   return impl_->has_pending_output();
+}
+std::size_t HostSession::pending_video_bytes() const {
+  return impl_->pending_video_bytes();
 }
 bool HostSession::capture_encoding_intent() const {
   return impl_->capture_encoding_intent();

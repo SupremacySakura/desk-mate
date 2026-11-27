@@ -27,6 +27,7 @@
 #define NOMINMAX
 #endif
 #include <windows.h>
+#include <avrt.h>
 #include <cfgmgr32.h>
 #include <setupapi.h>
 #endif
@@ -831,7 +832,20 @@ void LibusbBulkTransport::handle_out_complete(libusb_transfer* transfer) {
 
 void LibusbBulkTransport::event_loop() {
 #ifdef _WIN32
-  SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_ABOVE_NORMAL);
+  SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_HIGHEST);
+  DWORD task_index = 0;
+  HANDLE mmcs = AvSetMmThreadCharacteristicsW(L"Pro Audio", &task_index);
+  if (mmcs != nullptr) {
+    (void)AvSetMmThreadPriority(mmcs, AVRT_PRIORITY_HIGH);
+  }
+  struct MmcsGuard {
+    HANDLE handle;
+    ~MmcsGuard() {
+      if (handle != nullptr) {
+        (void)AvRevertMmThreadCharacteristics(handle);
+      }
+    }
+  } mmcs_guard{mmcs};
 #endif
   auto drain_deadline = std::chrono::steady_clock::time_point{};
   while (true) {

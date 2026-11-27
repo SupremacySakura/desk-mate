@@ -115,6 +115,7 @@ private:
     void *native_window_ = nullptr;
     bool surface_set_ = false;
     std::uint64_t generation_ = 0;
+    std::int64_t last_render_target_ns_ = 0;
 
     mutable std::mutex mutex_;
     std::condition_variable control_cv_;

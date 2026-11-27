@@ -608,8 +608,10 @@ void test_high_fps_pacing_uses_absolute_deadlines() {
   CHECK(pacer_120.next_deadline_us(0) == 8333);
   CHECK(pacer_120.next_deadline_us(1000) == 16666);
   CHECK(pacer_120.next_deadline_us(2000) == 24999);
-  CHECK(pacer_120.next_deadline_us(100000) == 108333);
-  CHECK(pacer_120.next_deadline_us(100000) == 116666);
+  // Falling behind by >= 1 period re-anchors immediately instead of bursting.
+  CHECK(pacer_120.next_deadline_us(40000) == 48333);
+  CHECK(pacer_120.next_deadline_us(41000) == 56666);
+  CHECK(pacer_120.next_deadline_us(66666) == 74999);
 
   FramePacer pacer_90(90);
   CHECK(pacer_90.next_deadline_us(0) == 11111);
@@ -801,8 +803,8 @@ void test_idle_keepalive_60hz_pacing() {
   using deskmate::windows::compute_idle_acquire_wait_ms;
   using deskmate::windows::resolve_idle_keepalive_hz;
 
-  CHECK(resolve_idle_keepalive_hz(120) == 60);
-  CHECK(resolve_idle_keepalive_hz(90) == 60);
+  CHECK(resolve_idle_keepalive_hz(120) == 120);
+  CHECK(resolve_idle_keepalive_hz(90) == 90);
   CHECK(resolve_idle_keepalive_hz(60) == 60);
   CHECK(resolve_idle_keepalive_hz(30) == 30);
 
@@ -837,6 +839,71 @@ void test_idle_keepalive_60hz_pacing() {
   }
 }
 
+void test_annex_b_vcl_detection_filters_parameter_sets() {
+  using deskmate::windows::annex_b_has_vcl_nal;
+  const std::vector<std::uint8_t> h264_sps_pps{
+      0x00, 0x00, 0x00, 0x01, 0x67, 0x42, 0x80, 0x1E,
+      0x00, 0x00, 0x00, 0x01, 0x68, 0xCE, 0x3C, 0x80,
+      0x00, 0x00, 0x00, 0x01, 0x06, 0x05, 0x01};
+  CHECK(!annex_b_has_vcl_nal(h264_sps_pps, false));
+
+  const std::vector<std::uint8_t> h264_idr{
+      0x00, 0x00, 0x00, 0x01, 0x67, 0x42,
+      0x00, 0x00, 0x00, 0x01, 0x65, 0x88};
+  CHECK(annex_b_has_vcl_nal(h264_idr, false));
+
+  const std::vector<std::uint8_t> h264_p{0x00, 0x00, 0x00, 0x01, 0x41, 0x9A};
+  CHECK(annex_b_has_vcl_nal(h264_p, false));
+
+  const std::vector<std::uint8_t> hevc_param_only{
+      0x00, 0x00, 0x00, 0x01, 0x40, 0x01, 0x0C,
+      0x00, 0x00, 0x00, 0x01, 0x42, 0x01, 0x01,
+      0x00, 0x00, 0x00, 0x01, 0x44, 0x01, 0xC0,
+      0x00, 0x00, 0x00, 0x01, 0x46, 0x01, 0x50};
+  CHECK(!annex_b_has_vcl_nal(hevc_param_only, true));
+
+  const std::vector<std::uint8_t> hevc_idr{
+      0x00, 0x00, 0x00, 0x01, 0x26, 0x01, 0xAF};
+  CHECK(annex_b_has_vcl_nal(hevc_idr, true));
+
+  const std::vector<std::uint8_t> hevc_trail{
+      0x00, 0x00, 0x00, 0x01, 0x02, 0x01, 0xD0};
+  CHECK(annex_b_has_vcl_nal(hevc_trail, true));
+}
+
+void test_session_link_video_congestion_probe() {
+  class InertTransport final : public deskmate::windows::LinkTransport {
+   public:
+    deskmate::protocol::IoResult read(std::span<std::uint8_t>) override {
+      return {deskmate::protocol::IoStatus::WouldBlock, 0};
+    }
+    deskmate::protocol::IoResult write(
+        std::span<const std::uint8_t> source) override {
+      return {deskmate::protocol::IoStatus::Ok, source.size()};
+    }
+    [[nodiscard]] bool alive() const override { return true; }
+  };
+
+  deskmate::platform::AoaIdentity id;
+  id.product = "MatePad";
+  id.port_path = "7:2";
+  deskmate::windows::SessionLink link(std::make_unique<InertTransport>(), id,
+                                      22U, 0x11223344U, 1U, 1920, 1200, 120,
+                                      true, true);
+  CHECK(!link.video_congested());
+  for (int i = 0; i < 3; ++i) {
+    link.submit_video(std::vector<std::uint8_t>{0x00, 0x00, 0x01, 0x65},
+                      static_cast<std::uint64_t>(1000 + i), i == 0);
+    CHECK(!link.video_congested());
+  }
+  link.submit_video(std::vector<std::uint8_t>{0x00, 0x00, 0x01, 0x41}, 1003,
+                    false);
+  CHECK(link.video_congested());
+  link.pump();
+  CHECK(!link.video_congested());
+  link.stop();
+}
+
 }  // namespace
 
 int main() {
@@ -859,6 +926,8 @@ int main() {
   test_bulk_out_chunking_avoids_usb_packet_multiples();
   test_two_slot_frame_queue_and_touch_capability_helper();
   test_idle_keepalive_60hz_pacing();
+  test_annex_b_vcl_detection_filters_parameter_sets();
+  test_session_link_video_congestion_probe();
   if (failures != 0) {
     return 1;
   }

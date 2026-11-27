@@ -159,7 +159,7 @@ class LibusbBulkTransport final : public LinkTransport {
 
   static constexpr std::size_t kInTransferCount = 4;
   static constexpr std::size_t kInTransferBytes = 16384;
-  static constexpr std::size_t kOutSlotCount = 4;
+  static constexpr std::size_t kOutSlotCount = 12;
   static constexpr std::size_t kMaxOutTransferBytes = 16384;
 
   [[maybe_unused]] std::array<libusb_transfer*, kInTransferCount>

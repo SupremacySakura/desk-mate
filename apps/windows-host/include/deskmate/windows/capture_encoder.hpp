@@ -60,6 +60,9 @@ class CaptureEncoder {
                      FailureCallback on_failure, std::string& error) = 0;
   virtual void request_keyframe() = 0;
   virtual void stop() = 0;
+  virtual void set_congestion_probe(std::function<bool()> is_congested) {
+    (void)is_congested;
+  }
   [[nodiscard]] virtual bool running() const = 0;
   [[nodiscard]] virtual std::uint64_t encoded_frame_count() const { return 0; }
   [[nodiscard]] virtual std::uint64_t received_frame_count() const { return 0; }
@@ -112,8 +115,8 @@ bool apply_monitor_layout(const std::vector<MonitorPlacement>& placements);
                                                 bool explicit_fallback,
                                                 int fallback_hz) noexcept;
 
-// Steady-state idle keepalive targets up to 60 Hz so static desktops stay
-// responsive at 60 FPS even without mouse movement, while 30 Hz stays at 30 Hz.
+// Steady-state idle keepalive matches the active target refresh rate so static
+// desktops maintain the same cadence as active windows without 60 Hz dips.
 [[nodiscard]] int resolve_idle_keepalive_hz(int effective_hz) noexcept;
 
 // Two-phase idle AcquireNextFrame timeout: uses short (1..8 ms) DXGI waits
