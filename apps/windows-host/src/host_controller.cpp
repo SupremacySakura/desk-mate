@@ -62,6 +62,7 @@ HostController::HostController(HostOptions options, std::string settings_path)
   default_position_ = prefs.default_position;
   allow_input_ = prefs.allow_input;
   touch_mode_ = prefs.touch_input_mode;
+  touch_mode_atomic_.store(touch_mode_, std::memory_order_relaxed);
   preferred_refresh_hz_ =
       options_.refresh_hz_explicit
           ? normalize_preferred_refresh_hz(options_.refresh_hz)
@@ -750,6 +751,10 @@ void HostController::link_worker_loop(const std::shared_ptr<LinkChannel>& ch) {
         for (const auto& ev : input_batch) {
           (void)ch->injector->inject(ev);
         }
+        if (touch_mode_atomic_.load(std::memory_order_acquire) !=
+            TouchInputMode::NativeTouch) {
+          ch->last_mouse_ns.store(now_ns, std::memory_order_release);
+        }
       }
     }
 
@@ -935,6 +940,7 @@ void HostController::ensure_capture_for_channel(
     const auto* monitor = pick_monitor_locked(ch);
     if (monitor != nullptr) {
       ch->monitor_handle = monitor->handle;
+      ch->monitor_device_name = monitor->name;
       ch->monitor_display_id = monitor->display_id;
       monitor_label = monitor->name;
       active_monitor_handle = monitor->handle;
@@ -946,8 +952,10 @@ void HostController::ensure_capture_for_channel(
             monitor->left, monitor->top, monitor->width, monitor->height});
       }
       cap_opts.monitor_handle = monitor->handle;
+      cap_opts.monitor_device_name = monitor->name;
     } else {
       ch->monitor_handle = 0;
+      ch->monitor_device_name.clear();
       ch->monitor_display_id = 0;
       if (auto_virtual_display_) {
         missing_virtual_display = true;
@@ -999,6 +1007,7 @@ void HostController::ensure_capture_for_channel(
     std::lock_guard lock(mutex_);
     if (ch->monitor_handle != 0) {
       cap_opts.monitor_handle = ch->monitor_handle;
+      cap_opts.monitor_device_name = ch->monitor_device_name;
     }
   }
 
@@ -1010,6 +1019,27 @@ void HostController::ensure_capture_for_channel(
       return locked->session != nullptr && locked->session->video_congested();
     }
     return false;
+  });
+  capture->set_cursor_fallback_probe([this, weak_ch]() -> bool {
+    if (touch_mode_atomic_.load(std::memory_order_acquire) ==
+        TouchInputMode::NativeTouch) {
+      return false;
+    }
+#ifdef _WIN32
+    if (GetSystemMetrics(SM_MOUSEPRESENT) == 0) {
+      return true;
+    }
+#endif
+    auto locked = weak_ch.lock();
+    if (!locked) {
+      return false;
+    }
+    const auto now_ns =
+        std::chrono::duration_cast<std::chrono::nanoseconds>(
+            std::chrono::steady_clock::now().time_since_epoch())
+            .count();
+    const auto last_ns = locked->last_mouse_ns.load(std::memory_order_acquire);
+    return last_ns > 0 && (now_ns - last_ns) < 10'000'000'000LL;
   });
   const bool ok = capture->start(
       cap_opts,
@@ -1228,12 +1258,30 @@ void HostController::rearrange_monitors() {
     refresh_monitors_locked();
     for (auto& [id, ch] : channels_) {
       (void)id;
-      for (const auto& m : monitors_) {
-        if (m.handle == ch->monitor_handle && ch->injector != nullptr) {
+      const MonitorInfo* matched = nullptr;
+      if (!ch->monitor_device_name.empty()) {
+        for (const auto& m : monitors_) {
+          if (m.name == ch->monitor_device_name) {
+            matched = &m;
+            break;
+          }
+        }
+      }
+      if (matched == nullptr && ch->monitor_handle != 0) {
+        for (const auto& m : monitors_) {
+          if (m.handle == ch->monitor_handle) {
+            matched = &m;
+            break;
+          }
+        }
+      }
+      if (matched != nullptr) {
+        ch->monitor_handle = matched->handle;
+        ch->monitor_device_name = matched->name;
+        if (ch->injector != nullptr) {
           std::lock_guard ilock(ch->injector_mutex);
-          ch->injector->set_target(
-              InjectorTarget{m.left, m.top, m.width, m.height});
-          break;
+          ch->injector->set_target(InjectorTarget{
+              matched->left, matched->top, matched->width, matched->height});
         }
       }
     }
@@ -1400,6 +1448,7 @@ void HostController::set_input_enabled(bool enabled) {
 void HostController::set_touch_input_mode(TouchInputMode mode) {
   std::lock_guard lock(mutex_);
   touch_mode_ = mode;
+  touch_mode_atomic_.store(mode, std::memory_order_release);
   store_.prefs().touch_input_mode = mode;
   store_.save();
   for (auto& [id, ch] : channels_) {
@@ -1581,25 +1630,41 @@ void HostController::apply_display_layout(
 
     for (auto& [id, ch] : channels_) {
       (void)id;
-      for (const auto& m : monitors_) {
-        if (m.handle == ch->monitor_handle) {
-          if (ch->injector != nullptr) {
-            std::lock_guard ilock(ch->injector_mutex);
-            ch->injector->set_target(
-                InjectorTarget{m.left, m.top, m.width, m.height});
+      const MonitorInfo* matched = nullptr;
+      if (!ch->monitor_device_name.empty()) {
+        for (const auto& m : monitors_) {
+          if (m.name == ch->monitor_device_name) {
+            matched = &m;
+            break;
           }
-          TopologyDisplayItem t_item;
-          t_item.x = static_cast<double>(m.left);
-          t_item.y = static_cast<double>(m.top);
-          t_item.width = static_cast<double>(m.width);
-          t_item.height = static_cast<double>(m.height);
-          const int code = infer_cardinal_position_code(p_item, t_item);
-          const auto pos = static_cast<DisplayPosition>(std::clamp(code, 0, 3));
-          ch->position = pos;
-          if (!ch->device_id.empty()) {
-            store_.set_preferred_position(ch->device_id, pos);
+        }
+      }
+      if (matched == nullptr && ch->monitor_handle != 0) {
+        for (const auto& m : monitors_) {
+          if (m.handle == ch->monitor_handle) {
+            matched = &m;
+            break;
           }
-          break;
+        }
+      }
+      if (matched != nullptr) {
+        ch->monitor_handle = matched->handle;
+        ch->monitor_device_name = matched->name;
+        if (ch->injector != nullptr) {
+          std::lock_guard ilock(ch->injector_mutex);
+          ch->injector->set_target(InjectorTarget{
+              matched->left, matched->top, matched->width, matched->height});
+        }
+        TopologyDisplayItem t_item;
+        t_item.x = static_cast<double>(matched->left);
+        t_item.y = static_cast<double>(matched->top);
+        t_item.width = static_cast<double>(matched->width);
+        t_item.height = static_cast<double>(matched->height);
+        const int code = infer_cardinal_position_code(p_item, t_item);
+        const auto pos = static_cast<DisplayPosition>(std::clamp(code, 0, 3));
+        ch->position = pos;
+        if (!ch->device_id.empty()) {
+          store_.set_preferred_position(ch->device_id, pos);
         }
       }
     }

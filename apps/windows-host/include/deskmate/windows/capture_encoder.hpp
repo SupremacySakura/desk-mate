@@ -23,6 +23,7 @@ struct CaptureOptions {
   // Empty selects the primary monitor. A monitor handle from the Win32
   // enumeration is used when the host needs a dedicated virtual display.
   std::uintptr_t monitor_handle{};
+  std::string monitor_device_name;
 };
 
 struct EncodedAccessUnit {
@@ -62,6 +63,9 @@ class CaptureEncoder {
   virtual void stop() = 0;
   virtual void set_congestion_probe(std::function<bool()> is_congested) {
     (void)is_congested;
+  }
+  virtual void set_cursor_fallback_probe(std::function<bool()> probe) {
+    (void)probe;
   }
   [[nodiscard]] virtual bool running() const = 0;
   [[nodiscard]] virtual std::uint64_t encoded_frame_count() const { return 0; }

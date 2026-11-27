@@ -182,10 +182,10 @@ constexpr GUID kCodecApiCommonLowLatency = {
     0x490a,
     {0x97, 0x0a, 0x0c, 0x95, 0x48, 0xd5, 0xa5, 0x6e}};
 constexpr GUID kCodecApiVideoForceKeyFrame = {
-    0x3f9aac90,
-    0x67aa,
-    0x4f1e,
-    {0x87, 0x0a, 0x65, 0x0d, 0x39, 0x64, 0x21, 0x8e}};
+    0x398c1b98,
+    0x8353,
+    0x475a,
+    {0x9e, 0xf2, 0x8f, 0x26, 0x5d, 0x26, 0x03, 0x45}};
 constexpr GUID kCodecApiMPVDefaultBPictureCount = {
     0x8d390aac,
     0xdc5c,
@@ -230,7 +230,7 @@ constexpr GUID kMfMtMpeg2Profile = {
     0xad76a80b,
     0x2d5c,
     0x4e0b,
-    {0x92, 0xfd, 0x38, 0xc7, 0x25, 0x27, 0xd8, 0xde}};
+    {0xb3, 0x75, 0x64, 0xe5, 0x20, 0x13, 0x70, 0x36}};
 constexpr GUID kMfLowLatencyAttr = {
     0x9c27891a,
     0xed7a,
@@ -446,6 +446,73 @@ void convert_bgra_to_nv12(const std::uint8_t* src, int src_pitch, int src_w,
   }
 }
 
+#ifndef CURSOR_SUPPRESSED
+#define CURSOR_SUPPRESSED 0x00000002
+#endif
+
+bool is_standard_system_cursor(HCURSOR cursor) {
+  if (cursor == nullptr) {
+    return false;
+  }
+  static const HCURSOR kStdCursors[] = {
+      LoadCursorW(nullptr, IDC_ARROW),
+      LoadCursorW(nullptr, IDC_IBEAM),
+      LoadCursorW(nullptr, IDC_WAIT),
+      LoadCursorW(nullptr, IDC_CROSS),
+      LoadCursorW(nullptr, IDC_UPARROW),
+      LoadCursorW(nullptr, IDC_SIZENWSE),
+      LoadCursorW(nullptr, IDC_SIZENESW),
+      LoadCursorW(nullptr, IDC_SIZEWE),
+      LoadCursorW(nullptr, IDC_SIZENS),
+      LoadCursorW(nullptr, IDC_SIZEALL),
+      LoadCursorW(nullptr, IDC_NO),
+      LoadCursorW(nullptr, IDC_HAND),
+      LoadCursorW(nullptr, IDC_APPSTARTING),
+  };
+  for (HCURSOR std_cur : kStdCursors) {
+    if (std_cur != nullptr && cursor == std_cur) {
+      return true;
+    }
+  }
+  return false;
+}
+
+void build_fallback_arrow_premul(std::vector<std::uint32_t>& premul, int size) {
+  premul.assign(static_cast<std::size_t>(size) * size, 0U);
+  static constexpr const char* kShape[] = {
+      "X...........",
+      "XX..........",
+      "XWX.........",
+      "XWWX........",
+      "XWWWX.......",
+      "XWWWWX......",
+      "XWWWWWX.....",
+      "XWWWWWWX....",
+      "XWWWWWWWX...",
+      "XWWWWWWWWX..",
+      "XWWWWWXXXXX.",
+      "XWWXWWX.....",
+      "XWX.XWWX....",
+      "XX..XWWX....",
+      "X....XWWX...",
+      ".....XWWX...",
+      "......XX....",
+  };
+  constexpr int kRows = static_cast<int>(std::size(kShape));
+  for (int y = 0; y < kRows && y < size; ++y) {
+    const char* row = kShape[y];
+    for (int x = 0; row[x] != '\0' && x < size; ++x) {
+      if (row[x] == 'X') {
+        premul[static_cast<std::size_t>(y) * size + x] =
+            (255U << 24U) | (20U << 16U) | (20U << 8U) | 20U;
+      } else if (row[x] == 'W') {
+        premul[static_cast<std::size_t>(y) * size + x] =
+            (255U << 24U) | (255U << 16U) | (255U << 8U) | 255U;
+      }
+    }
+  }
+}
+
 class DxgiCaptureEncoder final : public CaptureEncoder {
   struct PendingFrame {
     Microsoft::WRL::ComPtr<IMFSample> sample;
@@ -568,6 +635,7 @@ class DxgiCaptureEncoder final : public CaptureEncoder {
     consecutive_process_input_errors_ = 0;
     sync_fallback_attempted_ = false;
     gdi_fallback_mode_ = false;
+    gpu_processor_failed_ = false;
     vp_zero_frames_ = 0;
     last_duplication_retry_ = {};
     last_idr_retry_ = {};
@@ -578,10 +646,13 @@ class DxgiCaptureEncoder final : public CaptureEncoder {
     last_cursor_pos_ = {std::numeric_limits<LONG>::min(),
                         std::numeric_limits<LONG>::min()};
     last_cursor_on_monitor_ = false;
+    last_polled_cursor_handle_ = nullptr;
     last_monitor_rect_check_ = {};
     cached_cursor_handle_ = nullptr;
     cached_cursor_hotspot_ = {};
     cached_cursor_valid_ = false;
+    fallback_cursor_uploaded_ = false;
+    last_cursor_retry_ = {};
     has_valid_vp_input_ = false;
     vp_frame_unencoded_ = false;
     has_latest_nv12_ = false;
@@ -593,6 +664,7 @@ class DxgiCaptureEncoder final : public CaptureEncoder {
     need_input_count_.store(0, std::memory_order_release);
     prev_cursor_patch_rect_ = {};
     has_prev_cursor_patch_ = false;
+    target_device_name_w_.clear();
 
     if (FAILED(MFStartup(MF_VERSION, MFSTARTUP_LITE))) {
       error = "MFStartup failed";
@@ -643,6 +715,10 @@ class DxgiCaptureEncoder final : public CaptureEncoder {
 
   void set_congestion_probe(std::function<bool()> is_congested) override {
     is_congested_ = std::move(is_congested);
+  }
+
+  void set_cursor_fallback_probe(std::function<bool()> probe) override {
+    cursor_fallback_probe_ = std::move(probe);
   }
 
   void stop() override {
@@ -712,6 +788,8 @@ class DxgiCaptureEncoder final : public CaptureEncoder {
     cached_cursor_handle_ = nullptr;
     cached_cursor_hotspot_ = {};
     cached_cursor_valid_ = false;
+    fallback_cursor_uploaded_ = false;
+    last_cursor_retry_ = {};
     prev_cursor_patch_rect_ = {};
     has_prev_cursor_patch_ = false;
     {
@@ -738,7 +816,9 @@ class DxgiCaptureEncoder final : public CaptureEncoder {
     device_context_.Reset();
     device_.Reset();
     target_monitor_ = nullptr;
+    target_device_name_w_.clear();
     monitor_refresh_hz_ = 0;
+    processor_format_ = DXGI_FORMAT_UNKNOWN;
     vp_verified_ = false;
     vp_zero_frames_ = 0;
     disable_d3d11_encoder_ = false;
@@ -760,45 +840,68 @@ class DxgiCaptureEncoder final : public CaptureEncoder {
         options_.monitor_handle != 0
             ? reinterpret_cast<HMONITOR>(options_.monitor_handle)
             : MonitorFromPoint(POINT{0, 0}, MONITOR_DEFAULTTOPRIMARY);
+    target_device_name_w_ = utf8_to_wide(options_.monitor_device_name);
+    if (target_device_name_w_.empty() && target != nullptr) {
+      MONITORINFOEXW mi{};
+      mi.cbSize = sizeof(mi);
+      if (GetMonitorInfoW(target, &mi) != FALSE) {
+        target_device_name_w_ = mi.szDevice;
+      }
+    }
 
     ComPtr<IDXGIAdapter1> matched_adapter;
     ComPtr<IDXGIOutput> matched_output;
-    for (UINT adapter_idx = 0;; ++adapter_idx) {
-      ComPtr<IDXGIAdapter1> adapter;
-      if (factory->EnumAdapters1(adapter_idx, &adapter) ==
-          DXGI_ERROR_NOT_FOUND) {
-        break;
-      }
-      for (UINT out_idx = 0;; ++out_idx) {
-        ComPtr<IDXGIOutput> output;
-        if (adapter->EnumOutputs(out_idx, &output) == DXGI_ERROR_NOT_FOUND) {
+    DXGI_OUTPUT_DESC matched_desc{};
+    auto search_output = [&](bool by_name) {
+      for (UINT adapter_idx = 0;; ++adapter_idx) {
+        ComPtr<IDXGIAdapter1> adapter;
+        if (factory->EnumAdapters1(adapter_idx, &adapter) ==
+            DXGI_ERROR_NOT_FOUND) {
           break;
         }
-        DXGI_OUTPUT_DESC desc{};
-        if (SUCCEEDED(output->GetDesc(&desc)) && desc.Monitor == target) {
-          matched_adapter = adapter;
-          matched_output = output;
-          monitor_rect_ = desc.DesktopCoordinates;
-          DEVMODEW mon_mode{};
-          mon_mode.dmSize = sizeof(mon_mode);
-          if (EnumDisplaySettingsW(desc.DeviceName, ENUM_CURRENT_SETTINGS,
-                                   &mon_mode) != 0 &&
-              mon_mode.dmDisplayFrequency > 1) {
-            monitor_refresh_hz_ = static_cast<int>(mon_mode.dmDisplayFrequency);
-          } else {
-            monitor_refresh_hz_ = 60;
+        for (UINT out_idx = 0;; ++out_idx) {
+          ComPtr<IDXGIOutput> output;
+          if (adapter->EnumOutputs(out_idx, &output) == DXGI_ERROR_NOT_FOUND) {
+            break;
           }
-          break;
+          DXGI_OUTPUT_DESC desc{};
+          if (SUCCEEDED(output->GetDesc(&desc))) {
+            const bool match =
+                by_name
+                    ? (!target_device_name_w_.empty() &&
+                       _wcsicmp(desc.DeviceName,
+                                target_device_name_w_.c_str()) == 0)
+                    : (desc.Monitor == target);
+            if (match) {
+              matched_adapter = adapter;
+              matched_output = output;
+              matched_desc = desc;
+              return true;
+            }
+          }
         }
       }
-      if (matched_output != nullptr) {
-        break;
-      }
+      return false;
+    };
+
+    if (!search_output(true)) {
+      (void)search_output(false);
     }
 
     if (matched_adapter == nullptr || matched_output == nullptr) {
       error = "target monitor is not exposed by DXGI";
       return false;
+    }
+    target_device_name_w_ = matched_desc.DeviceName;
+    monitor_rect_ = matched_desc.DesktopCoordinates;
+    DEVMODEW mon_mode{};
+    mon_mode.dmSize = sizeof(mon_mode);
+    if (EnumDisplaySettingsW(matched_desc.DeviceName, ENUM_CURRENT_SETTINGS,
+                             &mon_mode) != 0 &&
+        mon_mode.dmDisplayFrequency > 1) {
+      monitor_refresh_hz_ = static_cast<int>(mon_mode.dmDisplayFrequency);
+    } else {
+      monitor_refresh_hz_ = 60;
     }
 
     const D3D_FEATURE_LEVEL levels[] = {D3D_FEATURE_LEVEL_11_1,
@@ -853,7 +956,8 @@ class DxgiCaptureEncoder final : public CaptureEncoder {
       gdi_fallback_mode_ = true;
     }
     output_ = matched_output;
-    target_monitor_ = target;
+    target_monitor_ =
+        matched_desc.Monitor != nullptr ? matched_desc.Monitor : target;
     return true;
   }
 
@@ -869,6 +973,13 @@ class DxgiCaptureEncoder final : public CaptureEncoder {
     last_duplication_retry_ = now;
     if (device_ == nullptr || output_ == nullptr) {
       return;
+    }
+    DXGI_OUTPUT_DESC desc{};
+    if (SUCCEEDED(output_->GetDesc(&desc))) {
+      monitor_rect_ = desc.DesktopCoordinates;
+      if (desc.Monitor != nullptr) {
+        target_monitor_ = desc.Monitor;
+      }
     }
     ComPtr<IDXGIOutput1> output1;
     if (FAILED(output_.As(&output1))) {
@@ -894,6 +1005,8 @@ class DxgiCaptureEncoder final : public CaptureEncoder {
     need_input_count_.store(0, std::memory_order_release);
     encode_pts_index_ = 0;
     submitted_timestamps_us_.clear();
+    awaiting_forced_idr_ = false;
+    forced_idr_submitted_at_ = {};
   }
 
   bool try_activate_encoder(IMFActivate* activate, std::string& error) {
@@ -978,12 +1091,12 @@ class DxgiCaptureEncoder final : public CaptureEncoder {
       v.ulVal = 0;
       (void)codec_api_->SetValue(&kCodecApiMPVDefaultBPictureCount, &v);
 
-      // Prefer PeakConstrainedVBR (2) so MaxBitRate (1.3x) and BufferSize
+      // Prefer PeakConstrainedVBR (1) so MaxBitRate (1.3x) and BufferSize
       // (0.25s leaky bucket) are actually honored by hardware MFTs; fall back
       // to CBR (0) if the driver rejects PeakConstrainedVBR.
       VariantInit(&v);
       v.vt = VT_UI4;
-      v.ulVal = 2;  // eAVEncCommonRateControlMode_PeakConstrainedVBR
+      v.ulVal = 1;  // eAVEncCommonRateControlMode_PeakConstrainedVBR
       if (FAILED(codec_api_->SetValue(&kCodecApiCommonRateControlMode, &v))) {
         VariantInit(&v);
         v.vt = VT_UI4;
@@ -1252,7 +1365,9 @@ class DxgiCaptureEncoder final : public CaptureEncoder {
       }
 
       if (got_image) {
-        (void)poll_cursor_changed();
+        if (poll_cursor_changed()) {
+          cursor_dirty = true;
+        }
         ComPtr<ID3D11Texture2D> texture;
         D3D11_TEXTURE2D_DESC src_desc{};
         bool used_gpu_vp = false;
@@ -1288,6 +1403,10 @@ class DxgiCaptureEncoder final : public CaptureEncoder {
       }
       if (!congested && (need_immediate || spacing_ok)) {
         if (vp_frame_unencoded_ && has_valid_vp_input_) {
+          if (cursor_dirty) {
+            restore_prev_cursor_patch();
+            draw_cursor_on_vp_input();
+          }
           if (encode_copied_frame(last_vp_src_desc_, true, now_us)) {
             vp_frame_unencoded_ = false;
             cursor_dirty = false;
@@ -1483,18 +1602,17 @@ class DxgiCaptureEncoder final : public CaptureEncoder {
       HGDIOBJ prev = SelectObject(mem_dc, bmp);
       if (BitBlt(mem_dc, 0, 0, src_w, src_h, screen_dc, monitor_rect_.left,
                  monitor_rect_.top, SRCCOPY | CAPTUREBLT)) {
-        CURSORINFO ci{};
-        ci.cbSize = sizeof(ci);
-        if (GetCursorInfo(&ci) && (ci.flags & CURSOR_SHOWING) != 0 &&
-            ci.hCursor != nullptr &&
-            PtInRect(&monitor_rect_, ci.ptScreenPos)) {
+        POINT cur_pos{};
+        HCURSOR cur_handle = nullptr;
+        if (query_effective_cursor(cur_pos, cur_handle)) {
           ICONINFO ii{};
-          if (GetIconInfo(ci.hCursor, &ii)) {
+          if (GetIconInfo(cur_handle, &ii)) {
             const int cx =
-                ci.ptScreenPos.x - monitor_rect_.left - static_cast<int>(ii.xHotspot);
+                cur_pos.x - monitor_rect_.left - static_cast<int>(ii.xHotspot);
             const int cy =
-                ci.ptScreenPos.y - monitor_rect_.top - static_cast<int>(ii.yHotspot);
-            DrawIconEx(mem_dc, cx, cy, ci.hCursor, 0, 0, 0, nullptr, DI_NORMAL);
+                cur_pos.y - monitor_rect_.top - static_cast<int>(ii.yHotspot);
+            (void)DrawIconEx(mem_dc, cx, cy, cur_handle, 0, 0, 0, nullptr,
+                             DI_NORMAL);
             if (ii.hbmMask != nullptr) DeleteObject(ii.hbmMask);
             if (ii.hbmColor != nullptr) DeleteObject(ii.hbmColor);
           }
@@ -1515,6 +1633,7 @@ class DxgiCaptureEncoder final : public CaptureEncoder {
     const UINT out_height = options_.height;
     if (processor_ != nullptr && vp_input_ != nullptr &&
         processor_width_ == desc.Width && processor_height_ == desc.Height &&
+        processor_format_ == desc.Format &&
         output_width_ == out_width && output_height_ == out_height) {
       return true;
     }
@@ -1537,6 +1656,8 @@ class DxgiCaptureEncoder final : public CaptureEncoder {
     cached_cursor_handle_ = nullptr;
     cached_cursor_hotspot_ = {};
     cached_cursor_valid_ = false;
+    fallback_cursor_uploaded_ = false;
+    last_cursor_retry_ = {};
     prev_cursor_patch_rect_ = {};
     has_prev_cursor_patch_ = false;
     {
@@ -1583,6 +1704,7 @@ class DxgiCaptureEncoder final : public CaptureEncoder {
     video_context_ = video_context;
     processor_width_ = desc.Width;
     processor_height_ = desc.Height;
+    processor_format_ = desc.Format;
     output_width_ = out_width;
     output_height_ = out_height;
 
@@ -1620,23 +1742,25 @@ class DxgiCaptureEncoder final : public CaptureEncoder {
       }
     }
 
-    if (desc.Format == DXGI_FORMAT_B8G8R8A8_UNORM ||
-        desc.Format == DXGI_FORMAT_B8G8R8X8_UNORM) {
-      D3D11_TEXTURE2D_DESC backup_desc{};
-      backup_desc.Width = kCursorPatchSize;
-      backup_desc.Height = kCursorPatchSize;
-      backup_desc.MipLevels = 1;
-      backup_desc.ArraySize = 1;
-      backup_desc.Format = desc.Format;
-      backup_desc.SampleDesc.Count = 1;
-      backup_desc.SampleDesc.Quality = 0;
-      backup_desc.Usage = D3D11_USAGE_DEFAULT;
-      backup_desc.BindFlags = 0;
-      backup_desc.MiscFlags = 0;
-      (void)device_->CreateTexture2D(&backup_desc, nullptr, &cursor_backup_);
-      (void)device_->CreateRenderTargetView(vp_input_.Get(), nullptr,
-                                            &vp_input_rtv_);
+    D3D11_TEXTURE2D_DESC backup_desc{};
+    backup_desc.Width = kCursorPatchSize;
+    backup_desc.Height = kCursorPatchSize;
+    backup_desc.MipLevels = 1;
+    backup_desc.ArraySize = 1;
+    backup_desc.Format = desc.Format;
+    backup_desc.SampleDesc.Count = 1;
+    backup_desc.SampleDesc.Quality = 0;
+    backup_desc.Usage = D3D11_USAGE_DEFAULT;
+    backup_desc.BindFlags = 0;
+    backup_desc.MiscFlags = 0;
+    if (SUCCEEDED(device_->CreateTexture2D(&backup_desc, nullptr,
+                                           &cursor_backup_)) &&
+        SUCCEEDED(device_->CreateRenderTargetView(vp_input_.Get(), nullptr,
+                                                  &vp_input_rtv_))) {
       (void)ensure_cursor_pipeline();
+    } else {
+      cursor_backup_.Reset();
+      vp_input_rtv_.Reset();
     }
 
     D3D11_TEXTURE2D_DESC target{};
@@ -1951,31 +2075,108 @@ class DxgiCaptureEncoder final : public CaptureEncoder {
     return cached_slot_;
   }
 
-  bool poll_cursor_changed() {
-    const auto now = std::chrono::steady_clock::now();
-    if (target_monitor_ != nullptr &&
-        (last_monitor_rect_check_.time_since_epoch().count() == 0 ||
-         (now - last_monitor_rect_check_) >= std::chrono::milliseconds(500))) {
-      last_monitor_rect_check_ = now;
-      MONITORINFOEXW mi{};
-      mi.cbSize = sizeof(mi);
-      if (GetMonitorInfoW(target_monitor_, &mi)) {
-        monitor_rect_ = mi.rcMonitor;
-      }
-    }
+  bool query_effective_cursor(POINT& pos_out, HCURSOR& cursor_out) {
     CURSORINFO ci{};
     ci.cbSize = sizeof(ci);
-    const bool ok = (GetCursorInfo(&ci) != FALSE);
-    const bool on_monitor = ok && (ci.flags & CURSOR_SHOWING) != 0 &&
-                            ci.hCursor != nullptr &&
-                            PtInRect(&monitor_rect_, ci.ptScreenPos) != FALSE;
+    if (GetCursorInfo(&ci) != FALSE && (ci.flags & CURSOR_SHOWING) != 0 &&
+        ci.hCursor != nullptr) {
+      pos_out = ci.ptScreenPos;
+      cursor_out = ci.hCursor;
+      return PtInRect(&monitor_rect_, pos_out) != FALSE;
+    }
+    const bool suppressed = ((ci.flags & CURSOR_SUPPRESSED) != 0);
+    const bool no_mouse = (GetSystemMetrics(SM_MOUSEPRESENT) == 0);
+    if ((suppressed || no_mouse) && cursor_fallback_probe_ &&
+        cursor_fallback_probe_()) {
+      if (GetCursorPos(&pos_out) == FALSE) {
+        return false;
+      }
+      static const HCURSOR kArrow = LoadCursorW(nullptr, IDC_ARROW);
+      cursor_out = ci.hCursor != nullptr ? ci.hCursor : kArrow;
+      return cursor_out != nullptr &&
+             PtInRect(&monitor_rect_, pos_out) != FALSE;
+    }
+    return false;
+  }
+
+  void restore_prev_cursor_patch() {
+    if (!has_prev_cursor_patch_ || cursor_backup_ == nullptr ||
+        vp_input_ == nullptr) {
+      return;
+    }
+    const UINT pw = static_cast<UINT>(prev_cursor_patch_rect_.right -
+                                      prev_cursor_patch_rect_.left);
+    const UINT ph = static_cast<UINT>(prev_cursor_patch_rect_.bottom -
+                                      prev_cursor_patch_rect_.top);
+    if (pw > 0 && ph > 0) {
+      const D3D11_BOX restore_box{0, 0, 0, pw, ph, 1};
+      device_context_->CopySubresourceRegion(
+          vp_input_.Get(), 0,
+          static_cast<UINT>(prev_cursor_patch_rect_.left),
+          static_cast<UINT>(prev_cursor_patch_rect_.top), 0,
+          cursor_backup_.Get(), 0, &restore_box);
+    }
+    has_prev_cursor_patch_ = false;
+  }
+
+  bool poll_cursor_changed() {
+    const auto now = std::chrono::steady_clock::now();
+    if (last_monitor_rect_check_.time_since_epoch().count() == 0 ||
+        (now - last_monitor_rect_check_) >= std::chrono::milliseconds(250)) {
+      last_monitor_rect_check_ = now;
+      bool rect_ok = false;
+      if (target_monitor_ != nullptr) {
+        MONITORINFOEXW mi{};
+        mi.cbSize = sizeof(mi);
+        if (GetMonitorInfoW(target_monitor_, &mi) != FALSE &&
+            (target_device_name_w_.empty() ||
+             _wcsicmp(mi.szDevice, target_device_name_w_.c_str()) == 0)) {
+          monitor_rect_ = mi.rcMonitor;
+          rect_ok = true;
+        }
+      }
+      if (!rect_ok && !target_device_name_w_.empty()) {
+        struct SearchCtx {
+          const wchar_t* name;
+          HMONITOR handle{};
+          RECT rect{};
+          bool found{false};
+        } ctx{target_device_name_w_.c_str()};
+        EnumDisplayMonitors(
+            nullptr, nullptr,
+            [](HMONITOR mon, HDC, LPRECT, LPARAM lp) -> BOOL {
+              auto* s = reinterpret_cast<SearchCtx*>(lp);
+              MONITORINFOEXW mi{};
+              mi.cbSize = sizeof(mi);
+              if (GetMonitorInfoW(mon, &mi) != FALSE &&
+                  _wcsicmp(mi.szDevice, s->name) == 0) {
+                s->handle = mon;
+                s->rect = mi.rcMonitor;
+                s->found = true;
+                return FALSE;
+              }
+              return TRUE;
+            },
+            reinterpret_cast<LPARAM>(&ctx));
+        if (ctx.found) {
+          target_monitor_ = ctx.handle;
+          monitor_rect_ = ctx.rect;
+        }
+      }
+    }
+
+    POINT pos{};
+    HCURSOR cur = nullptr;
+    const bool on_monitor = query_effective_cursor(pos, cur);
     const bool changed =
         (on_monitor != last_cursor_on_monitor_) ||
-        (on_monitor && (ci.ptScreenPos.x != last_cursor_pos_.x ||
-                        ci.ptScreenPos.y != last_cursor_pos_.y));
+        (on_monitor &&
+         (pos.x != last_cursor_pos_.x || pos.y != last_cursor_pos_.y ||
+          cur != last_polled_cursor_handle_));
     last_cursor_on_monitor_ = on_monitor;
+    last_polled_cursor_handle_ = on_monitor ? cur : nullptr;
     last_cursor_pos_ =
-        on_monitor ? ci.ptScreenPos
+        on_monitor ? pos
                    : POINT{std::numeric_limits<LONG>::min(),
                            std::numeric_limits<LONG>::min()};
     return changed;
@@ -1993,7 +2194,7 @@ class DxgiCaptureEncoder final : public CaptureEncoder {
     }
 
     static constexpr char kCursorHlsl[] = R"(
-cbuffer Params : register(b0) { float4 uv_rect; };
+cbuffer Params : register(b0) { float4 uv_rect; float4 color_params; };
 struct VSOut { float4 pos : SV_Position; float2 uv : TEXCOORD0; };
 VSOut main_vs(uint id : SV_VertexID) {
   float2 p = float2((id & 1u) ? 1.0 : 0.0, (id & 2u) ? 1.0 : 0.0);
@@ -2005,7 +2206,13 @@ VSOut main_vs(uint id : SV_VertexID) {
 Texture2D spriteTex : register(t0);
 SamplerState samp : register(s0);
 float4 main_ps(VSOut i) : SV_Target {
-  return spriteTex.Sample(samp, i.uv);
+  float4 c = spriteTex.Sample(samp, i.uv);
+  if (color_params.x > 0.5 && c.a > 0.0001) {
+    float3 unpremul = saturate(c.rgb / c.a);
+    float3 lin = pow(max(unpremul, float3(0.00001, 0.00001, 0.00001)), 2.2) * color_params.y;
+    return float4(lin * c.a, c.a);
+  }
+  return c;
 }
 )";
     ComPtr<ID3DBlob> vs_blob;
@@ -2062,7 +2269,7 @@ float4 main_ps(VSOut i) : SV_Target {
     }
 
     D3D11_BUFFER_DESC cb_desc{};
-    cb_desc.ByteWidth = 16;
+    cb_desc.ByteWidth = 32;
     cb_desc.Usage = D3D11_USAGE_DYNAMIC;
     cb_desc.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
     cb_desc.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
@@ -2091,116 +2298,152 @@ float4 main_ps(VSOut i) : SV_Target {
   }
 
   bool update_cursor_sprite(HCURSOR cursor) {
-    if (cursor == nullptr) {
+    if (cursor == nullptr || cursor_sprite_ == nullptr) {
       return false;
     }
     if (cursor == cached_cursor_handle_ && cached_cursor_valid_) {
       return true;
     }
-    ICONINFO ii{};
-    if (GetIconInfo(cursor, &ii) == FALSE) {
-      return false;
+    const auto now = std::chrono::steady_clock::now();
+    if (!cached_cursor_valid_ && fallback_cursor_uploaded_ &&
+        (now - last_cursor_retry_) < std::chrono::milliseconds(250)) {
+      return true;
     }
-    const LONG hotspot_x = static_cast<LONG>(ii.xHotspot);
-    const LONG hotspot_y = static_cast<LONG>(ii.yHotspot);
-    if (ii.hbmMask != nullptr) DeleteObject(ii.hbmMask);
-    if (ii.hbmColor != nullptr) DeleteObject(ii.hbmColor);
 
     constexpr int kSize = static_cast<int>(kCursorPatchSize);
-    BITMAPINFO bmi{};
-    bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
-    bmi.bmiHeader.biWidth = kSize;
-    bmi.bmiHeader.biHeight = -kSize;  // top-down
-    bmi.bmiHeader.biPlanes = 1;
-    bmi.bmiHeader.biBitCount = 32;
-    bmi.bmiHeader.biCompression = BI_RGB;
+    cursor_premul_buf_.assign(static_cast<std::size_t>(kSize) * kSize, 0U);
+    LONG hotspot_x = 0;
+    LONG hotspot_y = 0;
 
-    HDC screen_dc = GetDC(nullptr);
-    if (screen_dc == nullptr) {
-      return false;
+    ICONINFO ii{};
+    const bool ii_ok = (GetIconInfo(cursor, &ii) != FALSE);
+    if (ii_ok) {
+      hotspot_x = static_cast<LONG>(ii.xHotspot);
+      hotspot_y = static_cast<LONG>(ii.yHotspot);
+      if (ii.hbmMask != nullptr) DeleteObject(ii.hbmMask);
+      if (ii.hbmColor != nullptr) DeleteObject(ii.hbmColor);
     }
-    HDC black_dc = CreateCompatibleDC(screen_dc);
-    HDC white_dc = CreateCompatibleDC(screen_dc);
-    void* black_bits = nullptr;
-    void* white_bits = nullptr;
-    HBITMAP black_bmp =
-        black_dc != nullptr
-            ? CreateDIBSection(black_dc, &bmi, DIB_RGB_COLORS, &black_bits,
-                               nullptr, 0)
-            : nullptr;
-    HBITMAP white_bmp =
-        white_dc != nullptr
-            ? CreateDIBSection(white_dc, &bmi, DIB_RGB_COLORS, &white_bits,
-                               nullptr, 0)
-            : nullptr;
 
-    bool ok = false;
-    std::vector<std::uint32_t> premul(static_cast<std::size_t>(kSize) * kSize,
-                                      0U);
-    if (black_dc != nullptr && white_dc != nullptr && black_bmp != nullptr &&
-        white_bmp != nullptr && black_bits != nullptr && white_bits != nullptr) {
-      const HGDIOBJ old_b = SelectObject(black_dc, black_bmp);
-      const HGDIOBJ old_w = SelectObject(white_dc, white_bmp);
-      const std::size_t pixel_count = static_cast<std::size_t>(kSize) * kSize;
-      std::memset(black_bits, 0x00, pixel_count * 4U);
-      std::memset(white_bits, 0xFF, pixel_count * 4U);
-      (void)DrawIconEx(black_dc, 0, 0, cursor, 0, 0, 0, nullptr, DI_NORMAL);
-      (void)DrawIconEx(white_dc, 0, 0, cursor, 0, 0, 0, nullptr, DI_NORMAL);
-      GdiFlush();
+    bool draw_ok = false;
+    bool any_visible = false;
+    if (ii_ok) {
+      BITMAPINFO bmi{};
+      bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+      bmi.bmiHeader.biWidth = kSize;
+      bmi.bmiHeader.biHeight = -kSize;  // top-down
+      bmi.bmiHeader.biPlanes = 1;
+      bmi.bmiHeader.biBitCount = 32;
+      bmi.bmiHeader.biCompression = BI_RGB;
 
-      const auto* b_px = static_cast<const std::uint8_t*>(black_bits);
-      const auto* w_px = static_cast<const std::uint8_t*>(white_bits);
-      for (std::size_t i = 0; i < pixel_count; ++i) {
-        const std::size_t off = i * 4U;
-        const int bb = b_px[off + 0];
-        const int bg = b_px[off + 1];
-        const int br = b_px[off + 2];
-        const int ba = b_px[off + 3];
-        const int wb = w_px[off + 0];
-        const int wg = w_px[off + 1];
-        const int wr = w_px[off + 2];
+      HDC screen_dc = GetDC(nullptr);
+      if (screen_dc != nullptr) {
+        HDC black_dc = CreateCompatibleDC(screen_dc);
+        HDC white_dc = CreateCompatibleDC(screen_dc);
+        void* black_bits = nullptr;
+        void* white_bits = nullptr;
+        HBITMAP black_bmp =
+            black_dc != nullptr
+                ? CreateDIBSection(black_dc, &bmi, DIB_RGB_COLORS, &black_bits,
+                                   nullptr, 0)
+                : nullptr;
+        HBITMAP white_bmp =
+            white_dc != nullptr
+                ? CreateDIBSection(white_dc, &bmi, DIB_RGB_COLORS, &white_bits,
+                                   nullptr, 0)
+                : nullptr;
 
-        if (wb < bb || wg < bg || wr < br) {
-          // Inverted XOR mask (e.g. I-beam): render a high-contrast dark
-          // cursor stroke with soft alpha so it stays visible on light & dark.
-          premul[i] = (230U << 24U) | (22U << 16U) | (22U << 8U) | 22U;
-        } else if (ba > 0) {
-          premul[i] = (static_cast<std::uint32_t>(ba) << 24U) |
-                      (static_cast<std::uint32_t>(br) << 16U) |
-                      (static_cast<std::uint32_t>(bg) << 8U) |
-                      static_cast<std::uint32_t>(bb);
-        } else {
-          const int diff = ((wb - bb) + (wg - bg) + (wr - br)) / 3;
-          const int alpha = std::clamp(255 - diff, 0, 255);
-          if (alpha == 0) {
-            premul[i] = 0U;
-          } else {
-            premul[i] = (static_cast<std::uint32_t>(alpha) << 24U) |
-                        (static_cast<std::uint32_t>(std::min(br, alpha)) << 16U) |
-                        (static_cast<std::uint32_t>(std::min(bg, alpha)) << 8U) |
-                        static_cast<std::uint32_t>(std::min(bb, alpha));
+        if (black_dc != nullptr && white_dc != nullptr &&
+            black_bmp != nullptr && white_bmp != nullptr &&
+            black_bits != nullptr && white_bits != nullptr) {
+          const HGDIOBJ old_b = SelectObject(black_dc, black_bmp);
+          const HGDIOBJ old_w = SelectObject(white_dc, white_bmp);
+          const std::size_t pixel_count =
+              static_cast<std::size_t>(kSize) * kSize;
+          std::memset(black_bits, 0x00, pixel_count * 4U);
+          std::memset(white_bits, 0xFF, pixel_count * 4U);
+          const BOOL d_black = DrawIconEx(black_dc, 0, 0, cursor, 0, 0, 0,
+                                          nullptr, DI_NORMAL);
+          const BOOL d_white = DrawIconEx(white_dc, 0, 0, cursor, 0, 0, 0,
+                                          nullptr, DI_NORMAL);
+          GdiFlush();
+
+          if (d_black != FALSE && d_white != FALSE) {
+            const auto* b_px = static_cast<const std::uint8_t*>(black_bits);
+            const auto* w_px = static_cast<const std::uint8_t*>(white_bits);
+            for (std::size_t i = 0; i < pixel_count; ++i) {
+              const std::size_t off = i * 4U;
+              const int bb = b_px[off + 0];
+              const int bg = b_px[off + 1];
+              const int br = b_px[off + 2];
+              const int ba = b_px[off + 3];
+              const int wb = w_px[off + 0];
+              const int wg = w_px[off + 1];
+              const int wr = w_px[off + 2];
+
+              if (wb < bb || wg < bg || wr < br) {
+                // Inverted XOR mask (e.g. I-beam): render a high-contrast dark
+                // cursor stroke with soft alpha so it stays visible on light & dark.
+                cursor_premul_buf_[i] =
+                    (230U << 24U) | (22U << 16U) | (22U << 8U) | 22U;
+                any_visible = true;
+              } else if (ba > 0) {
+                cursor_premul_buf_[i] =
+                    (static_cast<std::uint32_t>(ba) << 24U) |
+                    (static_cast<std::uint32_t>(br) << 16U) |
+                    (static_cast<std::uint32_t>(bg) << 8U) |
+                    static_cast<std::uint32_t>(bb);
+                any_visible = true;
+              } else {
+                const int diff = ((wb - bb) + (wg - bg) + (wr - br)) / 3;
+                const int alpha = std::clamp(255 - diff, 0, 255);
+                if (alpha == 0) {
+                  cursor_premul_buf_[i] = 0U;
+                } else {
+                  cursor_premul_buf_[i] =
+                      (static_cast<std::uint32_t>(alpha) << 24U) |
+                      (static_cast<std::uint32_t>(std::min(br, alpha)) << 16U) |
+                      (static_cast<std::uint32_t>(std::min(bg, alpha)) << 8U) |
+                      static_cast<std::uint32_t>(std::min(bb, alpha));
+                  any_visible = true;
+                }
+              }
+            }
+            draw_ok = true;
           }
+          SelectObject(black_dc, old_b);
+          SelectObject(white_dc, old_w);
         }
+
+        if (black_bmp != nullptr) DeleteObject(black_bmp);
+        if (white_bmp != nullptr) DeleteObject(white_bmp);
+        if (black_dc != nullptr) DeleteDC(black_dc);
+        if (white_dc != nullptr) DeleteDC(white_dc);
+        ReleaseDC(nullptr, screen_dc);
       }
-      SelectObject(black_dc, old_b);
-      SelectObject(white_dc, old_w);
-      ok = true;
     }
 
-    if (black_bmp != nullptr) DeleteObject(black_bmp);
-    if (white_bmp != nullptr) DeleteObject(white_bmp);
-    if (black_dc != nullptr) DeleteDC(black_dc);
-    if (white_dc != nullptr) DeleteDC(white_dc);
-    ReleaseDC(nullptr, screen_dc);
-
-    if (!ok || cursor_sprite_ == nullptr) {
-      return false;
+    if (!draw_ok || (!any_visible && is_standard_system_cursor(cursor))) {
+      last_cursor_retry_ = now;
+      if (!fallback_cursor_uploaded_) {
+        build_fallback_arrow_premul(cursor_premul_buf_, kSize);
+        device_context_->UpdateSubresource(cursor_sprite_.Get(), 0, nullptr,
+                                           cursor_premul_buf_.data(),
+                                           kSize * 4U, 0);
+        fallback_cursor_uploaded_ = true;
+      }
+      cached_cursor_hotspot_ = {0, 0};
+      cached_cursor_handle_ = nullptr;
+      cached_cursor_valid_ = false;
+      return true;
     }
+
     device_context_->UpdateSubresource(cursor_sprite_.Get(), 0, nullptr,
-                                       premul.data(), kSize * 4U, 0);
+                                       cursor_premul_buf_.data(), kSize * 4U,
+                                       0);
     cached_cursor_handle_ = cursor;
     cached_cursor_hotspot_ = {hotspot_x, hotspot_y};
     cached_cursor_valid_ = true;
+    fallback_cursor_uploaded_ = false;
     return true;
   }
 
@@ -2210,18 +2453,17 @@ float4 main_ps(VSOut i) : SV_Target {
         processor_height_ == 0 || !ensure_cursor_pipeline()) {
       return;
     }
-    CURSORINFO ci{};
-    ci.cbSize = sizeof(ci);
-    if (GetCursorInfo(&ci) == FALSE || (ci.flags & CURSOR_SHOWING) == 0 ||
-        ci.hCursor == nullptr || !PtInRect(&monitor_rect_, ci.ptScreenPos)) {
+    POINT cur_pos{};
+    HCURSOR cur_handle = nullptr;
+    if (!query_effective_cursor(cur_pos, cur_handle)) {
       return;
     }
-    if (!update_cursor_sprite(ci.hCursor)) {
+    if (!update_cursor_sprite(cur_handle)) {
       return;
     }
-    const int cx = ci.ptScreenPos.x - monitor_rect_.left -
+    const int cx = cur_pos.x - monitor_rect_.left -
                    static_cast<int>(cached_cursor_hotspot_.x);
-    const int cy = ci.ptScreenPos.y - monitor_rect_.top -
+    const int cy = cur_pos.y - monitor_rect_.top -
                    static_cast<int>(cached_cursor_hotspot_.y);
     const int tex_w = static_cast<int>(processor_width_);
     const int tex_h = static_cast<int>(processor_height_);
@@ -2257,6 +2499,11 @@ float4 main_ps(VSOut i) : SV_Target {
       params[1] = static_cast<float>(patch_y - cy) * kInvSize;
       params[2] = static_cast<float>(patch_w) * kInvSize;
       params[3] = static_cast<float>(patch_h) * kInvSize;
+      params[4] =
+          (processor_format_ == DXGI_FORMAT_R16G16B16A16_FLOAT) ? 1.0F : 0.0F;
+      params[5] = 2.0F;
+      params[6] = 0.0F;
+      params[7] = 0.0F;
       device_context_->Unmap(cursor_cb_.Get(), 0);
     }
 
@@ -2281,6 +2528,7 @@ float4 main_ps(VSOut i) : SV_Target {
     device_context_->RSSetViewports(1, &vp);
     device_context_->RSSetState(cursor_raster_.Get());
     device_context_->PSSetShader(cursor_ps_.Get(), nullptr, 0);
+    device_context_->PSSetConstantBuffers(0, 1, &cb);
     device_context_->PSSetShaderResources(0, 1, &srv);
     device_context_->PSSetSamplers(0, 1, &samp);
     device_context_->OMSetRenderTargets(1, &rtv, nullptr);
@@ -2305,21 +2553,7 @@ float4 main_ps(VSOut i) : SV_Target {
         vp_input_ == nullptr || gpu_processor_failed_) {
       return false;
     }
-    if (has_prev_cursor_patch_) {
-      const UINT pw = static_cast<UINT>(prev_cursor_patch_rect_.right -
-                                        prev_cursor_patch_rect_.left);
-      const UINT ph = static_cast<UINT>(prev_cursor_patch_rect_.bottom -
-                                        prev_cursor_patch_rect_.top);
-      if (pw > 0 && ph > 0) {
-        const D3D11_BOX restore_box{0, 0, 0, pw, ph, 1};
-        device_context_->CopySubresourceRegion(
-            vp_input_.Get(), 0,
-            static_cast<UINT>(prev_cursor_patch_rect_.left),
-            static_cast<UINT>(prev_cursor_patch_rect_.top), 0,
-            cursor_backup_.Get(), 0, &restore_box);
-      }
-      has_prev_cursor_patch_ = false;
-    }
+    restore_prev_cursor_patch();
     draw_cursor_on_vp_input();
     received_frames_.fetch_add(1, std::memory_order_relaxed);
     return encode_copied_frame(last_vp_src_desc_, true, now_us);
@@ -2400,12 +2634,23 @@ float4 main_ps(VSOut i) : SV_Target {
     }
     const std::size_t y_bytes =
         static_cast<std::size_t>(output_width_) * output_height_;
+    const std::size_t uv_bytes = y_bytes / 2U;
     bool any_nonzero = false;
     const std::size_t step = std::max<std::size_t>(1, y_bytes / 32U);
     for (std::size_t pos = 0; pos < y_bytes; pos += step) {
       if (out[pos] != 0U) {
         any_nonzero = true;
         break;
+      }
+    }
+    if (!any_nonzero && out.size() >= y_bytes + uv_bytes) {
+      const std::size_t uv_step = std::max<std::size_t>(1, uv_bytes / 32U);
+      for (std::size_t pos = y_bytes; pos < y_bytes + uv_bytes;
+           pos += uv_step) {
+        if (out[pos] != 0U) {
+          any_nonzero = true;
+          break;
+        }
       }
     }
     if (any_nonzero) {
@@ -2912,6 +3157,8 @@ float4 main_ps(VSOut i) : SV_Target {
     }
     if (want_keyframe) {
       force_keyframe_.store(false, std::memory_order_release);
+      awaiting_forced_idr_ = true;
+      forced_idr_submitted_at_ = now;
     }
     consecutive_process_input_errors_ = 0;
     ++submitted_frames_;
@@ -3043,6 +3290,14 @@ float4 main_ps(VSOut i) : SV_Target {
           break;
         }
       }
+      if (keyframe) {
+        awaiting_forced_idr_ = false;
+      } else if (awaiting_forced_idr_ &&
+                 (std::chrono::steady_clock::now() - forced_idr_submitted_at_) >=
+                     std::chrono::milliseconds(50)) {
+        awaiting_forced_idr_ = false;
+        force_keyframe_.store(true, std::memory_order_release);
+      }
       // Only prepend cached parameter sets when the MFT did not already emit
       // them inline with this IDR frame (prevents duplicate SPS/PPS).
       if (keyframe && inline_sets.empty() && !cached_param_sets_.empty()) {
@@ -3082,6 +3337,7 @@ float4 main_ps(VSOut i) : SV_Target {
   FrameCallback on_frame_;
   FailureCallback on_failure_;
   std::function<bool()> is_congested_;
+  std::function<bool()> cursor_fallback_probe_;
   std::atomic<bool> running_{false};
   std::atomic<bool> force_keyframe_{true};
   std::atomic<std::uint64_t> encoded_frames_{0};
@@ -3111,6 +3367,7 @@ float4 main_ps(VSOut i) : SV_Target {
   std::string encoder_name_;
   std::string last_encode_error_;
   HMONITOR target_monitor_{nullptr};
+  std::wstring target_device_name_w_;
   RECT monitor_rect_{};
   std::thread capture_thread_;
   std::thread encoder_thread_;
@@ -3130,6 +3387,8 @@ float4 main_ps(VSOut i) : SV_Target {
   bool async_event_armed_{false};
   std::chrono::steady_clock::time_point last_duplication_retry_{};
   std::chrono::steady_clock::time_point last_idr_retry_{};
+  bool awaiting_forced_idr_{false};
+  std::chrono::steady_clock::time_point forced_idr_submitted_at_{};
 
   ComPtr<ID3D11Device> device_;
   ComPtr<ID3D11DeviceContext> device_context_;
@@ -3161,12 +3420,16 @@ float4 main_ps(VSOut i) : SV_Target {
   HCURSOR cached_cursor_handle_{nullptr};
   POINT cached_cursor_hotspot_{};
   bool cached_cursor_valid_{false};
+  bool fallback_cursor_uploaded_{false};
+  std::chrono::steady_clock::time_point last_cursor_retry_{};
+  std::vector<std::uint32_t> cursor_premul_buf_;
   RECT prev_cursor_patch_rect_{};
   bool has_prev_cursor_patch_{false};
   std::chrono::steady_clock::time_point last_monitor_rect_check_{};
   POINT last_cursor_pos_{std::numeric_limits<LONG>::min(),
                          std::numeric_limits<LONG>::min()};
   bool last_cursor_on_monitor_{false};
+  HCURSOR last_polled_cursor_handle_{nullptr};
   struct Nv12Slot {
     ComPtr<ID3D11Texture2D> texture;
     ComPtr<ID3D11VideoProcessorOutputView> view;
@@ -3192,6 +3455,7 @@ float4 main_ps(VSOut i) : SV_Target {
   ComPtr<ID3D11Texture2D> bgra_staging_;
   UINT processor_width_{};
   UINT processor_height_{};
+  DXGI_FORMAT processor_format_{DXGI_FORMAT_UNKNOWN};
   UINT output_width_{};
   UINT output_height_{};
   UINT bgra_w_{};

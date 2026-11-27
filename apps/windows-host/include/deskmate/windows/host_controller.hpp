@@ -101,6 +101,7 @@ class HostController {
     mutable std::mutex injector_mutex;
     std::unique_ptr<InputInjector> injector;
     std::uintptr_t monitor_handle{};
+    std::string monitor_device_name;
     std::uint32_t monitor_display_id{};
     bool owns_virtual_display{false};
     std::optional<deskmate::protocol::StreamProfile> capture_profile;
@@ -117,6 +118,7 @@ class HostController {
     int live_fps{0};
     double live_bitrate_mbps{0.0};
     std::chrono::steady_clock::time_point last_device_touch{};
+    std::atomic<std::int64_t> last_mouse_ns{0};
 
     // Per-link dedicated full-duplex worker
     std::thread worker;
@@ -182,6 +184,8 @@ class HostController {
   std::atomic<bool> video_enabled_{true};
   std::atomic<bool> allow_input_{true};
   TouchInputMode touch_mode_{TouchInputMode::CompatibleGestures};
+  std::atomic<TouchInputMode> touch_mode_atomic_{
+      TouchInputMode::CompatibleGestures};
   bool auto_virtual_display_{true};
   DisplayPosition default_position_{DisplayPosition::Right};
   std::atomic<int> preferred_refresh_hz_{0};
